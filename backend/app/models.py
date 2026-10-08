@@ -347,7 +347,7 @@ class HealthResponse(_Model):
 
 class SourceStatus(_Model):
     name: str
-    kind: Literal["forecast", "sites", "beacons", "airspaces", "elevation"]
+    kind: Literal["forecast", "sites", "beacons", "airspaces", "elevation", "sensitive_areas"]
     mode: Literal["live", "mock", "disabled"]
     healthy: bool
     requires_api_key: bool

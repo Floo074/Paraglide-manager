@@ -218,7 +218,7 @@ export interface HealthResponse {
   version: string;
 }
 
-export type SourceKind = "forecast" | "sites" | "beacons" | "airspaces" | "elevation";
+export type SourceKind = "forecast" | "sites" | "beacons" | "airspaces" | "elevation" | "sensitive_areas";
 
 export interface SourceStatus {
   name: string;
@@ -271,6 +271,32 @@ export interface AirspaceFeature {
 export interface AirspaceFeatureCollection {
   type: "FeatureCollection";
   features: AirspaceFeature[];
+}
+
+/** GET /api/sensitive-areas?bbox=… → GeoJSON FeatureCollection (Biodiv'Sports + cœurs de parcs nationaux) */
+export interface SensitiveAreaProperties {
+  id: string;
+  name: string;
+  species: string | null;
+  kind: "species" | "regulatory" | "national_park_core";
+  period_months: number[]; // 1..12, mois de sensibilité
+  active_now: boolean;
+  recommendation: string; // consigne en français
+  min_height_agl_m: number | null; // hauteur de survol recommandée
+  source: "biodivsports" | "fixture";
+  url: string | null;
+}
+
+export interface SensitiveAreaFeature {
+  type: "Feature";
+  id?: string | number;
+  geometry: AirspaceGeometry;
+  properties: SensitiveAreaProperties;
+}
+
+export interface SensitiveAreaFeatureCollection {
+  type: "FeatureCollection";
+  features: SensitiveAreaFeature[];
 }
 
 /** GET /api/forecast/point?lat=..&lon=..&time=ISO */

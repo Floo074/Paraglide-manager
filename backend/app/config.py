@@ -14,7 +14,9 @@ APP_VERSION = "0.1.0"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     # live = sources réelles uniquement ; mock = fixtures + météo synthétique ;
     # auto = live avec repli automatique sur mock en cas d'erreur réseau.
@@ -45,6 +47,9 @@ class Settings(BaseSettings):
     openaip_api_key: str | None = None
     openaip_url: str = "https://api.core.openaip.net/api"
 
+    # --- Biodiv'Sports (zones sensibles faune, libre) ---
+    biodivsports_url: str = "https://biodiv-sports.fr/api/v2"
+
     # --- Fichiers OpenAir locaux (espaces aériens sans clé) ---
     airspace_openair_dir: Path = BACKEND_DIR / "data" / "airspaces"
 
@@ -60,6 +65,7 @@ class Settings(BaseSettings):
     cache_ttl_beacons_s: int = 2 * 60
     cache_ttl_plans_s: int = 6 * 3600
     cache_ttl_airspaces_s: int = 24 * 3600
+    cache_ttl_sensitive_s: int = 24 * 3600
     cache_ttl_elevation_s: int = 7 * 24 * 3600
 
     # --- Météo synthétique (mode mock) ---
