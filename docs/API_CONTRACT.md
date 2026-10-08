@@ -20,7 +20,10 @@ type ThermalPreference = "required" | "allowed" | "avoid";
 type FlightType = "local" | "ridge_soaring" | "cross_country";
 type Flyability = "go" | "marginal" | "no_go";
 type RiskLevel = "info" | "caution" | "danger";
-type SiteSource = "ffvl" | "paraglidingearth" | "spotair" | "fixture";
+type SiteSource = "ffvl" | "paraglidingearth" | "spotair" | "osm" | "user" | "fixture";
+type LandingKind = "official" | "community" | "field";
+// official = atterro officiel / référencé ; community = utilisé par les pilotes (PGE non officiel, OSM free_flying…) ;
+// field = champ candidat détecté (OSM + relief), jamais repéré : à vérifier sur place
 type BeaconSource = "ffvl" | "pioupiou" | "fixture";
 type DataMode = "live" | "mock" | "mixed";
 ```
@@ -50,6 +53,8 @@ interface Site {
   source: SiteSource;
   url: string | null;
   associated_landing_ids: string[]; // pour un décollage : atterrissages officiels associés
+  official: boolean;                // site officiel / référencé (FFVL, PGE validé, fixture)
+  landing_kind: LandingKind | null; // pour un atterrissage
 }
 
 interface Beacon {                   // balise météo temps réel
@@ -144,6 +149,24 @@ interface AirspaceWarning {
   intersects_route: boolean;
 }
 
+interface LandingCandidate {
+  site: Site;                        // site.landing_kind renseigné ; source "osm" pour un champ détecté
+  kind: LandingKind;
+  score: number;                     // 0..100
+  required_glide_ratio: number;      // finesse sol nécessaire depuis le déco (vent compris)
+  available_glide_ratio: number;     // finesse de calcul retenue (prudente)
+  arrival_height_m: number;          // hauteur estimée à l'arrivée au-dessus de l'atterro
+  size_m: { length: number; width: number } | null;
+  slope_pct: number | null;
+  surface: string | null;            // "prairie", "pré fauché", "plage"…
+  obstacles: string[];               // "ligne électrique à 80 m", "forêt en bout de champ"…
+  wind_at_arrival: { speed_kmh: number; direction_deg: number; gust_kmh: number } | null;
+  community_usage: "frequent" | "occasional" | "unknown";
+  access: string | null;             // route / parking / navette
+  warnings: string[];                // ex. "Non officiel : autorisation du propriétaire à vérifier"
+  reasons: string[];                 // pourquoi ce classement
+}
+
 interface ScoreItem { criterion: string; score: number; weight: number; comment: string } // score 0..100
 
 interface FlightPlan {
@@ -164,6 +187,7 @@ interface FlightPlan {
   takeoff: Site;
   landing: Site;
   alternate_landings: Site[];
+  landing_analysis: LandingCandidate[]; // atterros candidats évalués, triés (le 1er = landing)
   waypoints: Waypoint[];
   route: { type: "LineString"; coordinates: [number, number, number][] }; // GeoJSON [lon, lat, alt]
   distance_km: number;
@@ -247,6 +271,14 @@ interface PlanRequest {
     flight_types?: FlightType[];     // défaut : tous
     max_results?: number;            // défaut 5, max 20
     wing_glide_ratio?: number;       // finesse de l'aile, défaut 8.5
+    landing_policy?: "official_only" | "include_community" | "include_fields"; // défaut "official_only"
+  };
+  mode?: "classic" | "custom_takeoff"; // défaut "classic" = déco ET atterro officiels
+  custom_takeoff?: {                 // requis si mode = "custom_takeoff" (ex. vol rando)
+    lat: number; lon: number;
+    elevation_m?: number;            // sinon altitude terrain (MNT)
+    orientations?: string[];         // sinon déduites de la pente (exposition MNT)
+    name?: string;
   };
 }
 ```
@@ -265,6 +297,11 @@ interface PlanResponse {
 }
 ```
 Erreurs : `422` si requête invalide (zone > 150 km de rayon / bbox > 3° de côté, durée min > max…).
+
+### `POST /api/landings/analyze`
+Analyse des atterrissages possibles depuis un point de décollage libre (clic sur la carte).
+Requête : `{ takeoff: { lat, lon, elevation_m?, orientations? }, horizon: Horizon, reference_time?: string, wing_glide_ratio?: number, difficulty: Difficulty, landing_policy: "official_only" | "include_community" | "include_fields" }`
+Réponse : `{ takeoff: Site /* source "user" */, target_time: string, glide_cone: GeoJSON Polygon /* zone atteignable avec marge, vent compris */, candidates: LandingCandidate[], warnings: string[] }`
 
 ### `GET /api/plans/{id}` → `FlightPlan` (cache mémoire, TTL 6h ; 404 sinon)
 ### `GET /api/plans/{id}/gpx` → `application/gpx+xml` (GPX 1.1 : `wpt` déco/balises/atterros, `rte` route, `metadata` avec briefing résumé)

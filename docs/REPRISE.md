@@ -31,4 +31,30 @@ Travail mis en pause volontairement (limite de tokens). Tout est sur la branche
    tests contre le vrai backend, captures `docs/screenshots/`.
 7. Expert : valeurs pour les balises atterro / tendance / 15 min, puis revue des plans réels
    sur Annecy, Chamonix, Saint-Hilaire, Saint-André (mock et live).
-8. Commit final propre, puis proposition de PR.
+8. **Nouvelle demande utilisateur — décollage libre et atterros non officiels** (contrat mis à
+   jour : `PlanRequest.mode`, `custom_takeoff`, `filters.landing_policy`, `Site.official`,
+   `Site.landing_kind`, `LandingCandidate`, `FlightPlan.landing_analysis`,
+   `POST /api/landings/analyze`) :
+   - Mode **classique** (défaut) : déco ET atterro officiels uniquement.
+   - Mode **décollage libre** : le pilote clique un point (vol rando…) ; altitude et orientation
+     déduites du MNT (Open-Meteo Elevation sur une petite grille) ; évaluation du vent au point.
+   - **Recherche du meilleur atterro** dans le cône de finesse (vent compris, marge prudente
+     de l'expert) parmi : officiels → communautaires (ParaglidingEarth non officiels, OSM
+     `free_flying:site=landing`) → champs candidats OSM (prairie/pré ≥ ~150×50 m, pente faible
+     au MNT, loin des lignes électriques, forêts, bâtiments, eau, routes), si
+     `landing_policy` le permet. Classement : usage communautaire, taille, pente, obstacles,
+     vent/brise à l'arrivée, balise proche, accès, marge de finesse.
+   - Les atterros non officiels portent toujours l'avertissement « non officiel : repérage et
+     autorisation du propriétaire à vérifier » ; les champs détectés ne sont jamais proposés aux
+     débutants (règle à fixer par l'expert).
+   - Balises atterro utilisées quand il y en a une représentative.
+   - Frontend : bascule « Classique / Décollage libre », clic sur la carte pour poser le déco,
+     cône de finesse affiché, atterros colorés par type (officiel / communautaire / champ),
+     fiche de chaque candidat (obstacles, pente, taille, vent à l'arrivée).
+   - Expert : règles de choix d'un atterro de fortune, critères minimaux par niveau,
+     scénarios de validation.
+   - Réseau : l'API Overpass (OpenStreetMap) est bloquée ici → ajouter `overpass-api.de` aux
+     domaines autorisés, sinon repli sur fixtures.
+   - Piste « communauté » non disponible en API ouverte : points d'atterrissage tirés des
+     traces XContest (pas d'API publique) ; à étudier plus tard.
+9. Commit final propre, puis proposition de PR.
