@@ -7,8 +7,12 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "VITE_");
   const target = env.VITE_API_PROXY_TARGET || "http://localhost:8000";
+  // `vite --mode mock` (npm run dev:mock) force le mode démonstration sans fichier .env.
+  const define: Record<string, string> =
+    mode === "mock" ? { "import.meta.env.VITE_USE_MOCKS": JSON.stringify("true") } : {};
   return {
     plugins: [react()],
+    define,
     server: {
       host: true,
       port: 5173,
