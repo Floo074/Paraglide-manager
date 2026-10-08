@@ -150,8 +150,8 @@ export function Emagram({ sounding, ceiling, cloudBase, takeoffAlt }: Props) {
         </span>
         {hl ? (
           <span className="chart-readout num">
-            {formatNumber(hl.altitude_m)} m · {hl.pressure_hpa} hPa · T {formatNumber(hl.temperature_c, 1)} °C · Td {formatNumber(hl.dew_point_c, 1)} °C · vent{" "}
-            {degToCardinalFr(hl.wind_direction_deg)} {hl.wind_speed_kmh} km/h
+            {formatNumber(hl.altitude_m)} m · {Math.round(hl.pressure_hpa)} hPa · T {formatNumber(hl.temperature_c, 1)} °C · Td {formatNumber(hl.dew_point_c, 1)} °C · vent{" "}
+            {degToCardinalFr(hl.wind_direction_deg)} {Math.round(hl.wind_speed_kmh)} km/h
           </span>
         ) : (
           <span className="faint">Survole le graphique pour lire un niveau.</span>

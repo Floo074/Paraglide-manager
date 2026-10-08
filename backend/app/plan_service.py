@@ -11,7 +11,16 @@ from app.engine.planner import evaluate_sites
 from app.geo import expand_bbox, haversine_km
 from app.meteo.snapshot import iso
 from app.meteo.solar import sunrise_sunset
-from app.models import HORIZON_MINUTES, BBoxZone, CircleZone, FlightPlan, PlanRequest, PlanResponse, SourceRef, zone_bbox
+from app.models import (
+    HORIZON_MINUTES,
+    BBoxZone,
+    CircleZone,
+    FlightPlan,
+    PlanRequest,
+    PlanResponse,
+    SourceRef,
+    zone_bbox,
+)
 from app.providers.fixture_data import fixture_relief
 from app.providers.synthetic_terrain import smoothed_terrain
 from app.services import DataService, build_timeline, hours_window, smoothed_ground

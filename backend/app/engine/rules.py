@@ -163,6 +163,12 @@ AVOID_THERMAL_MAX_MS: Final = 1.5  # §9.3 avoid : exclure si vario > 1,5 pendan
 REQUIRED_THERMAL_MIN_MS: Final = 0.8  # §9.3 required : exclure si vario < 0,8
 BEGINNER_THERMAL_OFFPEAK_AFTER_START_H: Final = 1.0  # §2.1 beginner : avant convection + 1 h
 LOCAL_THERMAL_BEGINNER_MAX_MIN: Final = 45.0
+# lot 6.9 : durée réaliste d'un local thermique (vario moyen m/s → durée max min ; plafond bas → 45 min)
+LOCAL_THERMAL_DURATION_CAPS: Final = ((1.2, 60.0), (2.0, 120.0))
+LOCAL_THERMAL_LOW_CEILING_M: Final = 400.0
+LOCAL_THERMAL_LOW_CEILING_MAX_MIN: Final = 45.0
+LOCAL_TRIGGER_MAX_GLIDE_RATIO: Final = 0.80  # lot 6.6 : déclencheur gardé si r ≤ 0,80 vers un atterro
+ALLOWED_GENTLE_THERMAL_FRACTION: Final = 0.6  # lot 6.4 : « allowed » → 100 jusqu'à 60 % du seuil
 COLD_AT_CEILING_BEGINNER_C: Final = -10.0  # §3 #14
 MIDHIGH_CLOUD_CAUTION_PCT: Final = 80.0  # §3 #13 voile épais
 LOW_CLOUD_NOGO_PCT: Final = 80.0  # §3 #6 nuages bas ≥ 80 % avec base < déco + 300

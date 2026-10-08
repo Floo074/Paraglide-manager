@@ -12,7 +12,7 @@ Toute divergence doit être corrigée **ici d'abord**, puis dans le code.
 ## Énumérations
 
 ```ts
-type Horizon = "30m" | "1h" | "2h" | "8h" | "12h" | "24h" | "48h";
+type Horizon = "15m" | "30m" | "1h" | "2h" | "8h" | "12h" | "24h" | "48h";
 type Difficulty = "beginner" | "intermediate" | "advanced" | "expert";
 // beginner = élève / brevet initial, intermediate = brevet de pilote,
 // advanced = brevet de pilote confirmé, expert = compétiteur / pilote cross aguerri
@@ -62,6 +62,24 @@ interface Beacon {                   // balise météo temps réel
   temperature_c: number | null;
   source: BeaconSource;
   stale: boolean;                    // mesure > 30 min
+  trend: {                           // tendance sur l'historique récent (null si indisponible)
+    window_min: number;              // ex. 60
+    speed_change_kmh: number;        // vent moyen actuel − vent moyen au début de la fenêtre
+    direction_change_deg: number;    // rotation signée (+ = horaire)
+    gust_max_kmh: number | null;     // rafale max sur la fenêtre
+    samples: number;
+  } | null;
+}
+
+interface StationReading {           // balise rattachée à un site du plan (nowcasting)
+  site_role: "takeoff" | "landing" | "alternate_landing";
+  site_id: string;
+  beacon: Beacon;
+  distance_km: number;
+  altitude_diff_m: number;           // balise − site
+  representative: boolean;           // assez proche/fraîche/à la bonne altitude pour corriger la prévision
+  weight: number;                    // poids appliqué dans la correction (0..1)
+  comment: string;                   // ex. "Doussard : 12 km/h NNW, rafales 18, il y a 4 min — conforme à la prévision"
 }
 
 interface WindLevel { altitude_m: number; pressure_hpa: number | null; speed_kmh: number; direction_deg: number }
@@ -89,7 +107,7 @@ interface WeatherSnapshot {
   thermal_strength_ms: number;       // vario moyen estimé en thermique (m/s)
   wstar_ms: number;                  // vitesse convective de Deardorff
   shortwave_radiation_w_m2: number;
-  nowcast_correction: {              // correction court terme par balises (horizons <= 2h)
+  nowcast_correction: {              // correction court terme par balises (horizons <= 2h), au déco ET à l'atterro
     beacon_ids: string[]; wind_speed_bias_kmh: number; wind_direction_bias_deg: number;
   } | null;
 }
@@ -140,7 +158,8 @@ interface FlightPlan {
   summary: string;                   // 1-2 phrases
   target_time: string;
   window: { start: string; end: string; latest_landing?: string };   // créneau de décollage recommandé ;
-                                     // latest_landing (optionnel) = dernier atterrissage compatible avec ce verdict
+                                     // latest_landing (optionnel) = min(window.end + est_duration_min, plafond horaire
+                                     // du verdict : fin des thermiques / surdév − 1 h…, coucher du soleil)
   sun?: { sunrise: string | null; sunset: string | null };          // (optionnel) lever/coucher au déco, ISO UTC
   takeoff: Site;
   landing: Site;
@@ -155,6 +174,7 @@ interface FlightPlan {
   thermals: ThermalAnalysis;
   sounding: SoundingLevel[];
   beacons_nearby: Beacon[];
+  station_readings: StationReading[]; // balises du déco, de l'atterro et des atterros de secours
   airspaces: AirspaceWarning[];
   risks: Risk[];
   briefing: string[];                // puces ordonnées, en français
@@ -182,7 +202,10 @@ interface FlightPlan {
 `{ "beacons": Beacon[] }`
 
 ### `GET /api/airspaces?bbox=min_lon,min_lat,max_lon,max_lat`
-GeoJSON `FeatureCollection` ; `properties`: `{ name, airspace_class, type, floor_m, ceiling_m }`.
+GeoJSON `FeatureCollection` ; `properties`: `{ name, airspace_class, type, floor_m, ceiling_m, floor_reference }`.
+`floor_m` / `ceiling_m` toujours en m AMSL (FL convertis en atmosphère standard ×30,48 m) ; `floor_reference` :
+`"AMSL"` ou `"GND"` (plancher publié par rapport au sol, converti en AMSL avec l'altitude du terrain au centre de la
+zone quand elle est connue). `airspace_class` : A…G, `R`, `Q` (dangereuse), `P`, `SIV`, `UNCLASSIFIED`.
 
 ### `GET /api/sensitive-areas?bbox=min_lon,min_lat,max_lon,max_lat&time=ISO` (`time` optionnel, défaut maintenant : sert à `active_now`)
 Zones sensibles pour la faune (Biodiv'Sports, pratique « aérien / vol libre ») + cœurs de parcs nationaux.
@@ -195,7 +218,7 @@ Les zones actives au temps cible et touchées par la route produisent un `Risk` 
 
 ### `GET /api/forecast/grid?bbox=min_lon,min_lat,max_lon,max_lat&time=ISO&layer=..&altitude_m=..`
 - `layer` ∈ `wind | thermal | cloudbase | ceiling | cape | precipitation | useful_height`
-  (`useful_height` = plafond utile − terrain, en m/sol : « où peut-on tenir en l'air » ; `cloudbase` : points
+  (`useful_height` = plafond utile − terrain, unit `"m_agl"` (m/sol) : « où peut-on tenir en l'air » ; `cloudbase` : points
   sans cumulus omis ; `legend` = min/max des valeurs présentes ; grille ≤ 20×20 en mock, ≤ 10×10 en live)
 - `altitude_m` (pour `wind`) ∈ `10 | 1000 | 1500 | 2000 | 2500 | 3000 | 4000` (défaut 10)
 - Grille ≤ 20×20 points.

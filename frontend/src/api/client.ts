@@ -147,7 +147,10 @@ export async function checkBackend(timeoutMs = 3000): Promise<boolean> {
   if (FORCE_MOCKS) return false;
   try {
     const h = await request<HealthResponse>("GET", "/health", { timeoutMs, noFallback: true });
-    backendDataMode = h.data_mode;
+    if (backendDataMode !== h.data_mode) {
+      backendDataMode = h.data_mode;
+      listeners.forEach((l) => l());
+    }
     setMode("live");
     return true;
   } catch {

@@ -352,7 +352,7 @@ def airspace_feature(a: Airspace) -> dict:
             "type": a.type,
             "floor_m": round(a.floor_m),
             "ceiling_m": round(a.ceiling_m),
-            "floor_reference": "AGL+terrain" if a.floor_agl else "AMSL",
+            "floor_reference": "GND" if a.floor_agl else "AMSL",
         },
     }
 

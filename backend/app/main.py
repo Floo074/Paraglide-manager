@@ -17,7 +17,6 @@ from app.export.gpx import plan_to_gpx
 from app.export.xctrack import plan_to_xctsk
 from app.geo import parse_bbox
 from app.meteo.snapshot import iso, snapshot_from_analysis, sounding_from_analysis
-from app.meteo.thermals import analyze_hour
 from app.models import (
     FlightPlan,
     GridLegend,
@@ -44,7 +43,7 @@ GRID_LAYERS = {
     "ceiling": "m",
     "cape": "J/kg",
     "precipitation": "mm/h",
-    "useful_height": "m",
+    "useful_height": "m_agl",
 }
 GRID_ALTITUDES = (10, 1000, 1500, 2000, 2500, 3000, 4000)
 MAX_GET_BBOX_DEG = 5.0

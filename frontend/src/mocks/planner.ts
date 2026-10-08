@@ -765,6 +765,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   let allOk = worst.req <= worst.avail;
   for (const p of pts) {
     // CDC §5.4 : il suffit qu'UN atterro identifié soit dans le cône → meilleur atterro pour ce point
+    if (haversineKm(p, landing) < 0.6) continue; // approche finale : PTU et dernier virage
     const options = [landing, ...alternates].filter((l) => haversineKm(p, l) >= 0.3).map((l) => legRatio(p, l));
     if (options.length === 0) continue;
     const r = options.reduce((best, o) => (o.req / Math.max(0.1, o.avail) < best.req / Math.max(0.1, best.avail) ? o : best));
@@ -901,7 +902,11 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     title,
     summary,
     target_time: target.toISOString(),
-    window: { start: start.toISOString(), end: end.toISOString() },
+    window: { start: start.toISOString(), end: end.toISOString(), latest_landing: landBefore.toISOString() },
+    sun: (() => {
+      const st = sunTimes(site.lat, site.lon, target);
+      return { sunrise: st?.sunrise.toISOString() ?? null, sunset: st?.sunset.toISOString() ?? null };
+    })(),
     takeoff: site,
     landing,
     alternate_landings: alternates,

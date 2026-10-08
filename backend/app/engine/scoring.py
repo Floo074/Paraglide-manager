@@ -7,7 +7,7 @@ import statistics
 from dataclasses import dataclass
 
 from app.engine import rules
-from app.engine.findings import Finding, ratio_subscore
+from app.engine.findings import Finding
 from app.meteo.ensemble import circular_std_deg
 from app.models import Risk, ScoreItem
 
@@ -91,6 +91,7 @@ class ScoreResult:
     items: list[ScoreItem]
     subscores: dict[str, float]
     weakest_safety: str
+    raw_score: float = 0.0  # score avant plafonnement de sécurité (départage, lot 6.2)
 
 
 def thermal_match_subscore(pref: str, vario: float, thermal_used: bool, level: str) -> tuple[float, str]:
@@ -107,11 +108,13 @@ def thermal_match_subscore(pref: str, vario: float, thermal_used: bool, level: s
         if vario <= 0.5:
             return 100.0, "air calme, conforme à ta préférence"
         return linear(vario, 0.5, 100, rules.AVOID_THERMAL_MAX_MS, 50), f"quelques thermiques ({vario:.1f} m/s)"
-    # allowed
+    # allowed (lot 6.4) : 70 sans thermique, 100 pour des thermiques doux (≤ 60 % du seuil), décroissance ensuite
     if vario < rules.THERMAL_USABLE_MIN_MS:
         return rules.ALLOWED_NO_THERMAL_SUBSCORE, "pas de thermique exploitable (neutre)"
-    s = min(100.0, ratio_subscore(vario / thr) + (10 if thermal_used else 0))
-    return s, f"thermiques {vario:.1f} m/s ({'exploités' if thermal_used else 'non nécessaires'})"
+    gentle = rules.ALLOWED_GENTLE_THERMAL_FRACTION * thr
+    if vario <= gentle:
+        return 100.0, f"thermiques doux {vario:.1f} m/s ({'exploités' if thermal_used else 'non nécessaires'})"
+    return linear(vario, gentle, 100, thr, 40), f"thermiques soutenus pour ton niveau ({vario:.1f} m/s)"
 
 
 def duration_subscore(est: float, dmin: float, dmax: float) -> tuple[float, str]:
@@ -156,11 +159,11 @@ def aggregate_score(
     if "airspace" in extra:
         s, c = extra["airspace"]
         items.append(ScoreItem(criterion="airspace", score=round(s, 1), weight=0.0, comment=c))
-    score = total / wsum if wsum else 0.0
+    raw = total / wsum if wsum else 0.0
     safety = {c: subs[c] for c in rules.SAFETY_CRITERIA}
     weakest = min(safety, key=lambda c: safety[c])
-    score = min(score, rules.SAFETY_CAP_OFFSET + safety[weakest])
-    return ScoreResult(round(score, 1), items, subs, weakest)
+    score = min(raw, rules.SAFETY_CAP_OFFSET + safety[weakest])
+    return ScoreResult(round(score, 1), items, subs, weakest, round(raw, 2))
 
 
 def verdict(

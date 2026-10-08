@@ -95,9 +95,9 @@ export interface XctskTask {
 }
 
 /**
- * Tâche XCTrack (format v1) : déco en TAKEOFF, balises/points tournants, atterrissage en dernier
- * point (= but, `goal` de type CYLINDER). Les déclencheurs thermiques ne sont pas des balises
- * de tâche, les atterrissages de secours non plus.
+ * Tâche XCTrack (format v1, contrat) : déco en TAKEOFF, balises, atterrissage = dernière balise
+ * typée ESS et décrite par l'objet `goal` (XCTrack n'a pas de type « GOAL »). Les déclencheurs
+ * thermiques et les atterrissages de secours ne sont pas des balises de tâche.
  */
 export function buildXctsk(plan: FlightPlan): XctskTask {
   const name = (w: Waypoint) => w.name.slice(0, 40);
@@ -118,7 +118,7 @@ export function buildXctsk(plan: FlightPlan): XctskTask {
   const list: XctskTurnpoint[] = [];
   if (takeoff) list.push(tp(takeoff, 400, "TAKEOFF"));
   for (const w of turnpoints) list.push(tp(w, 400));
-  if (landing) list.push(tp(landing, 200));
+  if (landing) list.push(tp(landing, 200, "ESS"));
   return { taskType: "CLASSIC", version: 1, earthModel: "WGS84", turnpoints: list, goal: { type: "CYLINDER" } };
 }
 

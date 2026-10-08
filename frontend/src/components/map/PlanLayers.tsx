@@ -67,7 +67,7 @@ export function WaypointMarkers({ plan }: { plan: FlightPlan }) {
                   </div>
                   {eta ? (
                     <div>
-                      <span className="muted">Passage estimé :</span> {formatTime(eta)} (+{w.eta_min} min, si déco à {formatTime(plan.window.start)})
+                      <span className="muted">Passage estimé :</span> {formatTime(eta)} (+{Math.round(w.eta_min!)} min, si déco à {formatTime(plan.window.start)})
                     </div>
                   ) : null}
                   {w.radius_m ? (

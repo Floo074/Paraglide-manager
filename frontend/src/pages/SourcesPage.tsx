@@ -1,10 +1,10 @@
 import { CheckCircle2, CircleSlash, KeyRound, RefreshCw, XCircle } from "lucide-react";
-import { FORCE_MOCKS, checkBackend, getBackendDataMode, getHealth, getSources } from "../api/client";
+import { FORCE_MOCKS, checkBackend, getHealth, getSources } from "../api/client";
 import type { SourceKind, SourceStatus } from "../api/types";
 import { Card } from "../components/ui/Card";
 import { ErrorBox, Spinner } from "../components/ui/Spinner";
 import { BASE_LAYERS, KK7 } from "../config/map";
-import { useApiMode } from "../hooks/useApiMode";
+import { useApiMode, useBackendDataMode } from "../hooks/useApiMode";
 import { useAsync } from "../hooks/useAsync";
 
 const KIND_LABEL: Record<SourceKind, string> = {
@@ -58,6 +58,7 @@ function ModeBadge({ s }: { s: SourceStatus }) {
 
 export function SourcesPage() {
   const mode = useApiMode();
+  const dataMode = useBackendDataMode();
   const sources = useAsync((s) => getSources(s), [mode]);
   const health = useAsync(() => getHealth(), [mode]);
   const grouped = KIND_ORDER.map((k) => ({ kind: k, items: (sources.data?.sources ?? []).filter((s) => s.kind === k) })).filter((g) => g.items.length);
@@ -91,7 +92,7 @@ export function SourcesPage() {
           </dd>
           <dt>Mode des données</dt>
           <dd>
-            {mode === "live" ? (getBackendDataMode() ?? health.data?.data_mode ?? "—") : "démonstration (navigateur)"}
+            {mode === "live" ? (dataMode ?? health.data?.data_mode ?? "—") : "démonstration (navigateur)"}
             {health.data?.version ? <span className="faint small"> · version {health.data.version}</span> : null}
           </dd>
           <dt>Fonds de carte</dt>

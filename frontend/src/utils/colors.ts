@@ -74,6 +74,9 @@ export const HEIGHT_STOPS: ColorStop[] = [s(500, "#7c3aed"), s(1200, "#2563eb"),
 export const CAPE_STOPS: ColorStop[] = [s(0, "#94a3b8"), s(200, "#a3e635"), s(600, "#eab308"), s(1200, "#f97316"), s(2000, "#dc2626"), s(3000, "#a21caf")];
 export const PRECIP_STOPS: ColorStop[] = [s(0, "#cbd5e1"), s(0.2, "#93c5fd"), s(1, "#3b82f6"), s(3, "#1d4ed8"), s(8, "#7c3aed"), s(15, "#c026d3")];
 
+/** Hauteur utile (m/sol) : rouge = on ne tient pas, vert/bleu = marge confortable. */
+export const USEFUL_HEIGHT_STOPS: ColorStop[] = [s(0, "#b91c1c"), s(300, "#f97316"), s(600, "#eab308"), s(1000, "#22c55e"), s(1500, "#06b6d4"), s(2200, "#2563eb")];
+
 /** Couleur d'une jauge de score 0..100. */
 export function scoreColor(score: number): string {
   return interpolateStops([s(0, "#dc2626"), s(40, "#f97316"), s(60, "#eab308"), s(75, "#84cc16"), s(100, "#16a34a")], score);

@@ -67,8 +67,8 @@ export function WindowBlock({ plan, level }: { plan: FlightPlan; level: Difficul
                       {degToCardinalFr(w.wind_10m.direction_deg)}
                     </span>
                     <span className="num">
-                      {w.wind_10m.speed_kmh}
-                      <span className="strip__gust">/{w.wind_10m.gust_kmh}</span>
+                      {Math.round(w.wind_10m.speed_kmh)}
+                      <span className="strip__gust">/{Math.round(w.wind_10m.gust_kmh)}</span>
                     </span>
                   </td>
                 );
@@ -86,7 +86,7 @@ export function WindowBlock({ plan, level }: { plan: FlightPlan; level: Difficul
               <th scope="row">CAPE</th>
               {plan.weather.timeline.map((w) => (
                 <td key={w.time} className={`num${inWindow(w) ? " in-window" : ""}${w.cape_j_kg >= 800 ? " wv--over" : w.cape_j_kg >= 300 ? " wv--near" : ""}`}>
-                  {w.cape_j_kg}
+                  {Math.round(w.cape_j_kg)}
                 </td>
               ))}
             </tr>

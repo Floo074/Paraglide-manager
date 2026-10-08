@@ -5,10 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-
+import shapely
 from shapely.geometry import LineString, Point
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform
 
 from app.engine import rules
 from app.engine.context import Airspace, DataContext, SensitiveArea
@@ -29,7 +28,8 @@ class Projector:
     def geom(self, g: BaseGeometry) -> BaseGeometry:
         key = id(g)
         if key not in self._cache:
-            self._cache[key] = transform(self._xy, g)
+            kx, ky, lon0, lat0 = self.proj.kx, self.proj.ky, self.proj.lon0, self.proj.lat0
+            self._cache[key] = shapely.transform(g, lambda c: np.column_stack(((c[:, 0] - lon0) * kx, (c[:, 1] - lat0) * ky)))
         return self._cache[key]
 
     def _xy(self, x, y, z=None):

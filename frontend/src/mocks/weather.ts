@@ -378,6 +378,7 @@ const LAYER_UNIT: Record<GridLayer, string> = {
   ceiling: "m",
   cape: "J/kg",
   precipitation: "mm/h",
+  useful_height: "m",
 };
 
 /** Grille synthétique ≤ 16×16 points sur la bbox. */
@@ -425,6 +426,11 @@ export function gridAt(
       if (layer === "thermal") value = r1(Math.max(0, wx.thermal_strength_ms * sunSlope * relief * (0.9 + 0.2 * n)));
       else if (layer === "ceiling") value = Math.round(wx.thermal_ceiling_m + 0.25 * Math.max(0, terrain - floor) + (n - 0.5) * 120);
       else if (layer === "cloudbase") value = wx.cloud_base_m === null ? null : Math.round(wx.cloud_base_m + (n - 0.5) * 100);
+      else if (layer === "useful_height") {
+        const ceil = wx.thermal_ceiling_m + 0.25 * Math.max(0, terrain - floor) + (n - 0.5) * 120;
+        const useful = Math.min(ceil, wx.cloud_base_m !== null ? wx.cloud_base_m - 300 : Infinity);
+        value = Math.max(0, Math.round(useful - terrain));
+      }
       else if (layer === "cape") value = Math.round(wx.cape_j_kg * (0.75 + 0.5 * n) * relief);
       else if (layer === "precipitation") {
         const cell = 0.5 + 0.5 * Math.sin(lat * 60 + time.getUTCHours()) * Math.cos(lon * 45);

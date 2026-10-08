@@ -27,7 +27,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from app.geo import wind_components, wind_from_components
 from app.meteo.solar import clear_sky_ghi, cloud_attenuation, solar_local_hour, sun_elevation_deg, sunrise_sunset
-from app.meteo.thermo import DRY_LAPSE_K_PER_M, ESPY_M_PER_K, RD, G, T0K, dew_point_from_mixing_ratio, mixing_ratio
+from app.meteo.thermo import DRY_LAPSE_K_PER_M, ESPY_M_PER_K, RD, T0K, G, dew_point_from_mixing_ratio, mixing_ratio
 from app.meteo.types import PRESSURE_LEVELS_HPA, HourData, LevelData
 from app.providers.synthetic_terrain import smooth_noise, terrain_gradient
 

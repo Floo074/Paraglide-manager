@@ -41,6 +41,7 @@ describe("exports", () => {
     expect(task.taskType).toBe("CLASSIC");
     expect(task.turnpoints[0]!.type).toBe("TAKEOFF");
     expect(task.turnpoints.at(-1)!.waypoint.name).toBe(plan.landing.name.slice(0, 40));
+    expect(task.turnpoints.at(-1)!.type).toBe("ESS");
     expect(task.goal.type).toBe("CYLINDER");
   });
   it("nom de fichier sûr", () => {

@@ -24,8 +24,8 @@ from app.meteo.thermo import (
     CP,
     DRY_LAPSE_K_PER_M,
     ESPY_M_PER_K,
-    G,
     T0K,
+    G,
     air_density,
     moist_lapse_rate_k_per_m,
     rh_from_dew_point,
@@ -333,8 +333,18 @@ def overdevelopment_level(a: HourAnalysis) -> str:
     return "moderate"
 
 
-def convection_window(hours: list[HourAnalysis]) -> ConvectionWindow:
-    """Début / fin / pic de la convection (§4.1) et risque de surdéveloppement de la journée."""
+def convection_window(
+    hours: list[HourAnalysis], sunrise: datetime | None = None, sunset: datetime | None = None
+) -> ConvectionWindow:
+    """Début / fin / pic de la convection (§4.1) et risque de surdéveloppement de la journée.
+
+    `hours` doit couvrir le jour LOCAL de la cible ; avec `sunrise`/`sunset`, on ne garde que les heures
+    de jour (lot expert 6.1 : ni la veille au soir ni le lendemain).
+    """
+    from datetime import timedelta
+
+    if sunrise is not None and sunset is not None:
+        hours = [a for a in hours if sunrise - timedelta(hours=1) <= a.time <= sunset + timedelta(hours=1)]
     start = end = peak = first_cu = None
     peak_strength = 0.0
     for a in hours:
@@ -359,13 +369,16 @@ def convection_window(hours: list[HourAnalysis]) -> ConvectionWindow:
             risk = lvl
     od_time = None
     if risk != "low":
-        from datetime import timedelta
-
         # heure de surdéveloppement (lot expert 2.6 / 4.1) : la plus précoce entre
         # - la 1re heure où le risque horaire atteint « moderate » (CAPE/LI, humidité + cumulus) ;
         # - premier cumulus + 3,5 h ;
         # - à défaut, début de convection + 3,5 h.
-        candidates = [a.time for a in hours if overdevelopment_level(a) != "low"][:1]
+        not_before = (start - timedelta(hours=1)) if start is not None else None
+        if sunrise is not None and (not_before is None or not_before < sunrise):
+            not_before = sunrise
+        candidates = [
+            a.time for a in hours if overdevelopment_level(a) != "low" and (not_before is None or a.time >= not_before)
+        ][:1]
         if first_cu is not None:
             candidates.append(first_cu + timedelta(hours=rules.OVERDEV_DELAY_AFTER_FIRST_CU_H))
         if not candidates and start is not None:

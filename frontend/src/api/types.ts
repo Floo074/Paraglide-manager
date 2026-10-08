@@ -185,7 +185,9 @@ export interface FlightPlan {
   title: string; // "Col de la Forclaz → Doussard · local thermique 1h30"
   summary: string; // 1-2 phrases
   target_time: string;
-  window: { start: string; end: string }; // créneau de décollage recommandé
+  window: { start: string; end: string; latest_landing?: string }; // créneau de décollage recommandé ;
+  // latest_landing (optionnel) = dernier atterrissage compatible avec ce verdict
+  sun?: { sunrise: string | null; sunset: string | null }; // (optionnel) lever/coucher au déco, ISO UTC
   takeoff: Site;
   landing: Site;
   alternate_landings: Site[];
@@ -306,7 +308,7 @@ export interface ForecastPointResponse {
   timeline: WeatherSnapshot[]; // timeline horaire sur la journée
 }
 
-export type GridLayer = "wind" | "thermal" | "cloudbase" | "ceiling" | "cape" | "precipitation";
+export type GridLayer = "wind" | "thermal" | "cloudbase" | "ceiling" | "cape" | "precipitation" | "useful_height";
 export const WIND_GRID_ALTITUDES = [10, 1000, 1500, 2000, 2500, 3000, 4000] as const;
 export type WindGridAltitude = (typeof WIND_GRID_ALTITUDES)[number];
 
@@ -317,7 +319,11 @@ export interface GridPoint {
   direction_deg: number | null;
 }
 
-/** GET /api/forecast/grid?bbox=…&time=ISO&layer=..&altitude_m=.. */
+/**
+ * GET /api/forecast/grid?bbox=…&time=ISO&layer=..&altitude_m=..
+ * useful_height = plafond utile − terrain (m/sol) ; cloudbase : points sans cumulus omis ;
+ * legend = min/max des valeurs présentes ; grille ≤ 20×20 (mock), ≤ 10×10 (live).
+ */
 export interface ForecastGridResponse {
   time: string;
   layer: string;

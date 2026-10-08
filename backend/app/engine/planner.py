@@ -113,6 +113,7 @@ class Candidate:
     difficulty: str = "beginner"
     flyability: str = "no_go"
     score: float = 0.0
+    raw_score: float = 0.0
     score_items: list = field(default_factory=list)
     risks: list[Risk] = field(default_factory=list)
     reject_reasons: list[str] = field(default_factory=list)
@@ -275,7 +276,9 @@ def aloft_findings(
             rs = [v / rules.interp_aloft_threshold(z, lv) for z, v, _ in speeds]
         ratios[lv] = max(rs) if rs else 0.0
     out.append(
-        Finding("STRONG_WIND_ALOFT", "Vent en altitude", f"Vent jusqu'à {vmax:.0f} km/h vers {vmax_z:.0f} m sur la tranche volée.",
+        Finding("TAKEOFF_WIND" if ridge else "STRONG_WIND_ALOFT",
+                "Vent devant la crête" if ridge else "Vent en altitude",
+                f"Vent jusqu'à {vmax:.0f} km/h vers {vmax_z:.0f} m sur la tranche volée.",
                 criterion="wind_aloft", ratios=ratios)
     )  # fmt: skip
     if vmax >= rules.NOGO["wind_any_level_kmh"]:
@@ -326,6 +329,36 @@ def aloft_findings(
             elif v7 >= rules.FOEHN_CAUTION_700HPA_KMH and dry:
                 out.append(Finding("FOEHN", "Tendance foehn", f"Flux de {dir_label(d7)} {v7:.0f} km/h à 700 hPa, air sec : tendance foehn.",
                                    caution=True))  # fmt: skip
+    return out
+
+
+def landing_findings(lw: LandingWind, landing: Site, end: datetime) -> list[Finding]:
+    out: list[Finding] = []
+    lw_lim = rules.LANDING_WIND_MAX_KMH
+    lg_lim = rules.LANDING_GUST_MAX_KMH
+    breeze = lw.breeze_factor > 1.0
+    breeze_txt = f" (brise de vallée ×{lw.breeze_factor:.2f} incluse)" if breeze else ""
+    out.append(
+        Finding("LANDING_WIND", "Vent à l'atterrissage",
+                f"Vent à {landing.name} vers {fmt_hm(end)} : {dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h{breeze_txt}.",
+                criterion="landing", value=lw.speed_kmh, limits=dict(lw_lim), band=not breeze)
+    )  # fmt: skip
+    out.append(
+        Finding("LANDING_WIND", "Rafales à l'atterrissage", f"Rafales {lw.gust_kmh:.0f} km/h à {landing.name}{breeze_txt}.",
+                criterion="landing", value=lw.gust_kmh, limits=dict(lg_lim), band=not breeze)
+    )  # fmt: skip
+    if lw.speed_kmh > rules.LANDING_WIND_ABS_MAX_KMH or lw.gust_kmh > rules.LANDING_GUST_ABS_MAX_KMH:
+        out.append(Finding("LANDING_WIND", "Vent à l'atterrissage hors limites",
+                           f"{lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} à {landing.name} : no-go.", absolute_nogo=True))  # fmt: skip
+    if breeze:
+        # VALLEY_BREEZE : info sous 80 % du seuil, caution entre 80 et 100 % (le no-go reste LANDING_WIND)
+        ratios = {lv: min(1.0, max(lw.speed_kmh / lw_lim[lv], lw.gust_kmh / lg_lim[lv])) for lv in LEVELS}
+        out.append(
+            Finding("VALLEY_BREEZE", "Brise de vallée à l'atterrissage",
+                    f"Brise de vallée attendue à {landing.name} vers {fmt_hm(end)} : {lw.speed_kmh:.0f} km/h, rafales "
+                    f"{lw.gust_kmh:.0f} (×{lw.breeze_factor:.2f} sur le modèle). Approche face à la brise.",
+                    ratios=ratios, info=True, band=True)
+        )  # fmt: skip
     return out
 
 
@@ -580,6 +613,16 @@ def evaluate_variant(
             max_d = min(max_d, rules.LOCAL_THERMAL_BEGINNER_MAX_MIN)
         if td.cw.overdevelopment_risk == "high":
             max_d = min(max_d, rules.OVERDEV_HIGH_MAX_DURATION_MIN)
+        realism_cap = None
+        for vmax, cap_min in rules.LOCAL_THERMAL_DURATION_CAPS:
+            if vario < vmax:
+                realism_cap = cap_min
+                break
+        if usable - alt < rules.LOCAL_THERMAL_LOW_CEILING_M:
+            realism_cap = min(realism_cap or 1e9, rules.LOCAL_THERMAL_LOW_CEILING_MAX_MIN)
+        if realism_cap is not None and realism_cap < max_d:
+            max_d = realism_cap
+            cap_reason = f"thermiques {vario:.1f} m/s, plafond utile {usable - alt:.0f} m au-dessus du déco"
         if max_d < plouf_min + 10:
             return _codes_prefix("WEAK_THERMALS", f"Fenêtre thermique trop courte après {fmt_hm(start)} ({cap_reason}).")
         dur = max_d
@@ -614,8 +657,13 @@ def evaluate_variant(
         dur = xc.duration_min
         max_alt = usable
         thermal_usage = "essential"
-        if dur < filters.duration_min_minutes:
-            duration_note = f"Cross réaliste de ~{duration_label(dur)} ({cap_reason}) : plus court que demandé."
+        if xc.limited:
+            duration_note = (
+                f"Distance limitée par la couverture des atterrissages identifiés (cône de finesse) : "
+                f"{route.distance_km:.0f} km au lieu de ~{xc.target_km:.0f} km possibles en {duration_label(budget)}."
+            )
+        elif dur < filters.duration_min_minutes:
+            duration_note = f"Cross réaliste de ~{duration_label(dur)} : plus court que demandé."
     else:  # pragma: no cover
         return "variante inconnue"
 
@@ -635,7 +683,7 @@ def evaluate_variant(
     vario_max = max(h.thermal_strength_ms for h in flight_hours)
     findings.append(
         Finding("STRONG_THERMALS", "Thermiques forts", f"Vario moyen jusqu'à {vario_max:.1f} m/s pendant le vol.",
-                criterion="thermal_match", value=vario_max, limits={lv: float(x) for lv, x in rules.THERMAL_MAX_MS.items()})
+                criterion=None, value=vario_max, limits={lv: float(x) for lv, x in rules.THERMAL_MAX_MS.items()})
     )  # fmt: skip
     if filters.thermals == "avoid" and vario_max > rules.AVOID_THERMAL_MAX_MS:
         return _codes_prefix("STRONG_THERMALS", f"Thermiques {vario_max:.1f} m/s pendant le créneau : incompatible avec « sans thermiques ».")
@@ -656,27 +704,10 @@ def evaluate_variant(
     if inv is not None:
         findings.append(Finding("INVERSION", "Inversion", f"Inversion vers {inv:.0f} m : thermiques bloqués en dessous, turbulence au passage.",
                                 info=True))  # fmt: skip
-    # atterrissage à l'heure d'arrivée
+    # atterrissage à l'heure d'arrivée (en top landing : même vent que le déco, déjà contrôlé — lot 6.8)
     top_ldg = ridge and td.top_landing
-    lw_lim = rules.RIDGE["max_kmh"] if top_ldg else rules.LANDING_WIND_MAX_KMH
-    lg_lim = rules.RIDGE_GUST_MAX_KMH if top_ldg else rules.LANDING_GUST_MAX_KMH
-    breeze_txt = " (brise de vallée ×{:.2f} incluse)".format(lw.breeze_factor) if lw.breeze_factor > 1 else ""
-    findings.append(Finding("LANDING_WIND", "Vent à l'atterrissage",
-                            f"Vent à {landing.name} vers {fmt_hm(end)} : {dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h{breeze_txt}.",
-                            criterion="landing", value=lw.speed_kmh, limits=dict(lw_lim), band=lw.breeze_factor <= 1.0))  # fmt: skip
-    findings.append(Finding("LANDING_WIND", "Rafales à l'atterrissage", f"Rafales {lw.gust_kmh:.0f} km/h à {landing.name}{breeze_txt}.",
-                            criterion="landing", value=lw.gust_kmh, limits=dict(lg_lim), band=lw.breeze_factor <= 1.0))  # fmt: skip
-    if lw.speed_kmh > rules.LANDING_WIND_ABS_MAX_KMH or lw.gust_kmh > rules.LANDING_GUST_ABS_MAX_KMH:
-        findings.append(Finding("LANDING_WIND", "Vent à l'atterrissage hors limites", f"{lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} : no-go.",
-                                absolute_nogo=True))  # fmt: skip
-    if lw.breeze_factor > 1.0:
-        ratios = {lv: max(lw.speed_kmh / lw_lim[lv], lw.gust_kmh / lg_lim[lv]) for lv in LEVELS}
-        findings.append(Finding("VALLEY_BREEZE", "Brise de vallée à l'atterrissage",
-                                f"Brise de vallée attendue à {landing.name} vers {fmt_hm(end)} : {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} "
-                                f"(×{lw.breeze_factor:.2f} sur le modèle). Approche face à la brise.",
-                                ratios=ratios, soft=False, info=True, band=True))  # fmt: skip
-        findings[-1].limits = None  # évalué par ratios ; ne bloque que via la bande (caution), le no-go est LANDING_WIND
-        findings[-1].ratios = {lv: min(r, 1.0) for lv, r in ratios.items()}
+    if not top_ldg:
+        findings += landing_findings(lw, landing, end)
     # finesse (par niveau)
     glide_ratios: dict[str, float] = {}
     glide_by_level: dict[str, GlideCheck] = {}
@@ -729,9 +760,13 @@ def evaluate_variant(
 
 
 def _route_glide(ctx: DataContext, td: TakeoffData, route: Route, level: str, wing: float, wind: tuple[float, float]) -> GlideCheck:
-    if route.kind == "xc":
-        return route.glide
+    """Pire cas (lot 6.11) : (a) déco → atterro principal à l'altitude du déco ; (b) chaque point de route à
+    son altitude de point bas → meilleur atterro identifié."""
     g = glide_to(ctx, td.site.lat, td.site.lon, td.site.elevation_m, td.landing, level, wing, wind)
+    if route.kind == "xc":
+        if route.glide.ratio > g.ratio:
+            g = route.glide
+        return g
     if route.kind == "local_thermal":
         for w in route.waypoints:
             if w.type != "thermal_trigger":
@@ -852,6 +887,8 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     conv_sub = cand.score_items[0] if cand.score_items else 100.0
     vario_flight = cand.vario
     th_s, th_c = thermal_match_subscore(filters.thermals, vario_flight, cand.thermal_usage != "none", level)
+    if filters.thermals == "required" and cand.variant == "xc" and cand.vario > rules.THERMAL_MAX_MS[level] * rules.MARGINAL_BAND:
+        th_c += " (zone de vigilance de ton niveau)"
     du_s, du_c = duration_subscore(cand.duration_min, filters.duration_min_minutes, filters.duration_max_minutes)
     conf_s = linear(conf_raw, 0.3, 0.0, 0.9, 100.0)
     site_s = 100.0 if cand.takeoff.status == "open" else 60.0
@@ -894,6 +931,7 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
                           detail=f"Critère « {CRITERION_LABEL_FR[weak]} » à {sr.subscores[weak]:.0f}/100 : conditions moyennes."))  # fmt: skip
     cand.flyability = v
     cand.score = sr.score
+    cand.raw_score = sr.raw_score
     cand.score_items = sr.items
     cand.risks = risks
     return cand
@@ -913,17 +951,18 @@ def _blocks(findings: list[Finding], risk: Risk, level: str) -> bool:
 
 
 def _risks(findings: list[Finding], level: str) -> list[Risk]:
-    out: list[Risk] = []
-    seen: set[tuple[str, str, str]] = set()
+    """Un seul Risk par code (lot 6.8) : niveau le plus grave, titre du constat le plus grave, détails concaténés."""
+    by_code: dict[str, list[Risk]] = {}
     for f in findings:
         r = f.to_risk(level)
         if r is None:
             continue
-        key = (r.code, r.level, r.title)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(r)
+        by_code.setdefault(r.code, []).append(r)
+    out: list[Risk] = []
+    for code, rs in by_code.items():
+        rs.sort(key=lambda r: ALL_CODES_ORDER.index(r.level))
+        details = list(dict.fromkeys(r.detail for r in rs))
+        out.append(Risk(code=code, level=rs[0].level, title=rs[0].title, detail=" ".join(details)))
     out.sort(key=lambda r: ALL_CODES_ORDER.index(r.level))
     return out
 
@@ -1044,7 +1083,7 @@ def evaluate_takeoff(
     proj = Projector(site.lat, site.lon)
     rise, sset = sun_times(ctx.target_time, site.lat, site.lon)
     day_hours = [h for h in tl.hours if abs((h.time - ctx.target_time).total_seconds()) <= 16 * 3600]
-    cw = convection_window(sorted(day_hours, key=lambda h: h.time))
+    cw = convection_window(sorted(day_hours, key=lambda h: h.time), rise, sset)
     td = TakeoffData(
         site=site, tl=tl, landing=landing, ltl=ltl, alternates=alternates if not top_landing else [x for x in pool if x.id != landing.id][:2],
         landings_pool=pool, big_valley=_big_valley(ctx, landing), top_landing=top_landing, cw=cw, sunrise=rise, sunset=sset,
@@ -1090,11 +1129,63 @@ def evaluate_takeoff(
                 if level == "beginner" and _only_strong_thermals(cand):
                     continue
                 break
+            _compute_window(ctx, vt, cand, filters)
             accepted.append(cand)
             break
         if not any(c.variant == variant for c in accepted) and first_reasons:
             reasons_first += first_reasons
+    # lot 6.3 : le plouf n'est « seul possible » que si aucune variante thermique n'est faisable
+    if any(c.thermal_usage != "none" and c.variant in ("local_thermal", "xc") for c in accepted):
+        for c in accepted:
+            if c.variant == "plouf":
+                c.duration_note = f"Variante sans thermique : plouf direct de ~{c.duration_min:.0f} min (plan B si ça ne monte pas)."
     return accepted, list(dict.fromkeys(reasons_first))
+
+
+def _wind_ratio_at(ctx: DataContext, td: TakeoffData, cand: Candidate, t: datetime, level: str) -> tuple[float, bool]:
+    """(ratio max vent/seuil au déco à t et à l'atterro à t + durée, no-go ?)."""
+    ridge = cand.variant == "ridge"
+    tw = takeoff_wind(ctx, td.site, td.tl, t)
+    wl = rules.RIDGE["max_kmh"][level] if ridge else rules.TAKEOFF_WIND_MAX_KMH[level]
+    gl = rules.RIDGE_GUST_MAX_KMH[level] if ridge else rules.TAKEOFF_GUST_MAX_KMH[level]
+    r = max(tw.speed_kmh / wl, tw.gust_kmh / gl)
+    if not (ridge and td.top_landing):
+        lw = landing_wind(td.ltl, t + timedelta(minutes=cand.duration_min), td.big_valley)
+        r = max(r, lw.speed_kmh / rules.LANDING_WIND_MAX_KMH[level], lw.gust_kmh / rules.LANDING_GUST_MAX_KMH[level])
+    wet = td.tl.at(t).precipitation_mm_h >= rules.NOGO["precip_mm_h"]
+    tail = tw.angle.category == "tail" and tw.speed_kmh > rules.TAILWIND_MAX_KMH[level]
+    return r, (r > 1.0 or wet or tail)
+
+
+def _compute_window(ctx: DataContext, td: TakeoffData, cand: Candidate, filters: PlanFilters) -> None:
+    """Fin du créneau (lot 6.7) : on coupe avant la première heure qui ferait passer le plan en no-go
+    (vent / rafales au déco, vent à l'atterro à l'arrivée, pluie) ; WIND_INCREASING si le vent entre
+    dans la bande 80-100 % alors qu'il en était hors au départ."""
+    level = filters.difficulty
+    start = cand.start
+    latest_start = cand.latest_landing - timedelta(minutes=cand.duration_min)
+    hard_end = min(latest_start, start + timedelta(hours=rules.WINDOW_START_AFTER_TARGET_H))
+    if cand.variant in ("plouf", "restitution") and cand.sunset:
+        hard_end = min(hard_end, cand.sunset - timedelta(minutes=cand.duration_min))
+    r0, _ = _wind_ratio_at(ctx, td, cand, start, level)
+    end = start
+    t = start + timedelta(minutes=30)
+    increasing_at: datetime | None = None
+    while t <= hard_end:
+        r, nogo = _wind_ratio_at(ctx, td, cand, t, level)
+        if nogo:
+            break
+        if increasing_at is None and r0 < rules.MARGINAL_BAND <= r:
+            increasing_at = t
+        end = t
+        t += timedelta(minutes=30)
+    cand.window_start = start
+    cand.window_end = max(end, start + timedelta(minutes=15)) if end > start else start + timedelta(minutes=15)
+    if increasing_at is not None:
+        cand.risks.append(
+            Risk(code="WIND_INCREASING", level="caution", title="Le vent forcit",
+                 detail=f"Le vent forcit à partir de {fmt_hm(increasing_at)} (proche des limites de ton niveau) : décoller tôt dans le créneau.")
+        )  # fmt: skip
 
 
 # =============================================================================================
@@ -1154,11 +1245,13 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
     ][:10]
     g = cand.route.glide
     plan_id = _plan_id(ctx, cand)
-    cand.window_start = cand.start
-    cand.window_end = _window_end(ctx, tl, cand)
-    latest = cand.latest_landing
-    if cand.flyability == "go" and cand.sunset:
-        latest = min(latest, cand.sunset - timedelta(minutes=rules.LANDING_BEFORE_SUNSET_MIN))
+    if cand.window_start is None:
+        cand.window_start = cand.start
+        cand.window_end = _window_end(ctx, tl, cand)
+    # dernier atterrissage pour ce verdict = min(fin du créneau + durée, plafond horaire, coucher du soleil)
+    latest = min(cand.latest_landing, cand.window_end + timedelta(minutes=cand.duration_min))
+    if cand.sunset:
+        latest = min(latest, cand.sunset)
     cand.latest_landing = max(latest, cand.landing_time)
     return FlightPlan(
         id=plan_id,
@@ -1215,7 +1308,7 @@ def evaluate_sites(
     for site in ctx.takeoffs:
         cands, reasons = evaluate_takeoff(ctx, site, filters)
         if cands:
-            cands.sort(key=lambda c: (-_verdict_rank(c.flyability), -c.score))
+            cands.sort(key=lambda c: _rank_key(c, filters))
             # au plus 2 plans par déco, de types différents si possible
             kept: list[Candidate] = []
             for c in cands:
@@ -1227,7 +1320,7 @@ def evaluate_sites(
             all_cands += kept
         else:
             rejected.append(RejectedSite(site=site, reasons=reasons or ["Aucun vol possible dans le créneau demandé."]))
-    all_cands.sort(key=lambda c: (-_verdict_rank(c.flyability), -c.score))
+    all_cands.sort(key=lambda c: _rank_key(c, filters))
     n = filters.max_results
     selected = all_cands[:n]
     # diversité d'orientation : au moins un plan d'une autre orientation si disponible
@@ -1247,6 +1340,12 @@ def evaluate_sites(
     if not plans:
         warnings.append("Aucun plan volable dans la zone pour ces critères : voir les raisons de rejet par site.")
     return plans, rejected, warnings, selected
+
+
+def _rank_key(c: Candidate, filters: PlanFilters) -> tuple:
+    """Tri (lot 6.2) : verdict, durée dans la plage demandée, score plafonné, score non plafonné."""
+    in_range = filters.duration_min_minutes <= c.duration_min <= filters.duration_max_minutes
+    return (-_verdict_rank(c.flyability), not in_range, -c.score, -c.raw_score)
 
 
 def _verdict_rank(v: str) -> int:

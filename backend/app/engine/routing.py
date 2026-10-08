@@ -323,8 +323,8 @@ def build_local_thermal(
             continue
         work_alt = min(max_alt, max(takeoff.elevation_m, p.elevation_m + 150.0))
         g, _ = best_landing_glide(ctx, p.lat, p.lon, work_alt, landings, level, wing, glide_wind)
-        if g is None or not g.margin_ok:
-            continue
+        if g is None or not g.margin_ok or g.ratio > rules.LOCAL_TRIGGER_MAX_GLIDE_RATIO:
+            continue  # lot 6.6 : un vol local reste confortablement dans le cône (r ≤ 0,80)
         coords = [(takeoff.lon, takeoff.lat, max_alt), (p.lon, p.lat, max_alt)]
         if route_conflicts(ctx, proj, coords, landing.elevation_m, max_alt):
             continue
@@ -438,10 +438,17 @@ class XcPlan:
     duration_min: float
     v_eff_kmh: float
     v_xc_kmh: float
+    limited: bool = False  # distance réduite par le cône de finesse / les espaces à éviter
+    target_km: float = 0.0
 
 
 def _xc_candidates(
-    ctx: DataContext, takeoff: Site, radius_km: float, wind_dir: float, min_elev: float
+    ctx: DataContext,
+    takeoff: Site,
+    radius_km: float,
+    wind_dir: float,
+    min_elev: float,
+    landings: list[Site] | None = None,
 ) -> list[ReliefPoint]:
     out: list[ReliefPoint] = []
     for p in ctx.relief:
@@ -466,6 +473,24 @@ def _xc_candidates(
                         name=f"Relief à {d:.0f} km au {dir_label(brg)}", lat=la, lon=lo, elevation_m=elev, faces=[]
                     )
                 )
+        # reliefs dans le cône des atterros de secours : permet des circuits longs qui restent couverts
+        for ldg in landings or []:
+            if haversine_km(takeoff.lat, takeoff.lon, ldg.lat, ldg.lon) > radius_km + 10:
+                continue
+            for brg in range(0, 360, 30):
+                for d in (4.0, 8.0, 12.0):
+                    la, lo = destination(ldg.lat, ldg.lon, float(brg), d)
+                    if haversine_km(takeoff.lat, takeoff.lon, la, lo) > radius_km:
+                        continue
+                    elev = ctx.terrain_at(la, lo)
+                    if elev is None or elev < min_elev:
+                        continue
+                    dd = haversine_km(takeoff.lat, takeoff.lon, la, lo)
+                    bb = bearing_deg(takeoff.lat, takeoff.lon, la, lo)
+                    out.append(
+                        ReliefPoint(name=f"Relief à {dd:.0f} km au {dir_label(bb)} (secteur {ldg.name})",
+                                    lat=la, lon=lo, elevation_m=elev, faces=[])
+                    )  # fmt: skip
     return out
 
 
@@ -520,16 +545,20 @@ def build_cross(
         d_target = min(max_dist, rules.XC_WINDOW_USAGE * v_eff * t_legs / 60.0)
         if d_target < 8.0:
             continue
-        for scale in (1.0, 0.8, 0.6, 0.45, 0.33):
+        radius = d_target / 2.0 + 3.0 if shape == "out_and_return" else d_target / 2.5 + 3.0
+        pool = _xc_candidates(ctx, takeoff, radius, upwind, min_elev, landings_pool)
+        for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.45, 0.33):
             d = d_target * scale
             if d < 8.0:
                 break
             plan = _search_shape(
                 ctx, proj, takeoff, landing, landings_pool, level, wing, layer_wind, shape, d, upwind,
-                usable, max_alt, min_elev, v_eff, t_climb, t_start,
+                usable, max_alt, pool, v_eff, t_climb, t_start,
             )  # fmt: skip
             if plan is None:
                 continue
+            plan.limited = scale < 1.0
+            plan.target_km = d_target
             # objectif : distance la plus proche de la cible, préférence aux formes « nobles »
             bonus = {"fai_triangle": 1.08, "triangle": 1.03, "out_and_return": 1.0}[shape]
             key = plan.route.distance_km * bonus
@@ -561,13 +590,13 @@ def _search_shape(
     upwind: float,
     usable: float,
     max_alt: float,
-    min_elev: float,
+    pool: list[ReliefPoint],
     v_eff: float,
     t_climb: float,
     t_start: datetime,
 ) -> XcPlan | None:
     radius = d / 2.0 + 3.0 if shape == "out_and_return" else d / 2.5 + 3.0
-    cands = _xc_candidates(ctx, takeoff, radius, upwind, min_elev)
+    cands = [p for p in pool if haversine_km(takeoff.lat, takeoff.lon, p.lat, p.lon) <= radius]
     if not cands:
         return None
     w_speed = layer_wind[0]
@@ -588,12 +617,13 @@ def _search_shape(
             score = -abs(dist - d) / d * 10 - dev / 30.0 + p.elevation_m / 1000.0
             routes.append((score, [p]))
     else:
-        cands = sorted(cands, key=lambda p: leg_ok(p))[:60]
-        for i, p1 in enumerate(cands):
+        firsts = sorted(cands, key=lambda p: leg_ok(p))[:60]
+        seconds = cands if len(cands) <= 150 else sorted(cands, key=lambda p: -p.elevation_m)[:150]
+        for i, p1 in enumerate(firsts):
             dev = leg_ok(p1)
             if w_speed >= 10 and dev > 60:
                 continue
-            for p2 in cands:
+            for p2 in seconds:
                 if p2 is p1:
                     continue
                 l1 = haversine_km(takeoff.lat, takeoff.lon, p1.lat, p1.lon)
@@ -609,11 +639,15 @@ def _search_shape(
                     continue
                 score = -abs(per - d) / d * 10 - dev / 30.0 + (p1.elevation_m + p2.elevation_m) / 2000.0
                 routes.append((score, [p1, p2]))
-            if len(routes) > 400 and i > 20:
+            if len(routes) > 3000 and i > 30:
                 break
     routes.sort(key=lambda r: -r[0])
     landings = [landing, *[x for x in landings_pool if x.id != landing.id]]
-    for _, tps in routes[:40]:
+    best: XcPlan | None = None
+    passing = 0
+    for _, tps in routes[:120]:
+        if passing >= 6:
+            break
         coords: list[Coord] = [(takeoff.lon, takeoff.lat, takeoff.elevation_m)]
         for p in tps:
             coords.append((p.lon, p.lat, max_alt))
@@ -651,8 +685,11 @@ def _search_shape(
             first_leg_bearing=bearing_deg(takeoff.lat, takeoff.lon, tps[0].lat, tps[0].lon),
             xc_subtype=shape,
         )
-        return XcPlan(route, duration, v_eff, 0.0)
-    return None
+        passing += 1
+        # parmi les circuits valides, on garde le plus long (sans dépasser la cible de plus de 15 %)
+        if best is None or dist > best.route.distance_km:
+            best = XcPlan(route, duration, v_eff, 0.0)
+    return best
 
 
 def _cone_check(
@@ -666,6 +703,8 @@ def _cone_check(
 ) -> tuple[GlideCheck, list[str], list[Site]] | None:
     """Vérifie tous les 500 m qu'un atterro identifié reste dans le cône ; renvoie le pire glide."""
     limit = usable - rules.SAFETY_ALT_BELOW_CEILING_M
+    # lot 6.11 : on contrôle depuis l'altitude de point bas (plafond utile − 300 m) avec r ≤ 0,90
+    # (pas de GLIDE_MARGIN caution) ; le glide publié = pire cas à cette altitude.
     worst: GlideCheck | None = None
     decisions: list[str] = []
     used: dict[str, Site] = {}
@@ -678,8 +717,8 @@ def _cone_check(
             f = i / n
             lat = a[1] + f * (b[1] - a[1])
             lon = a[0] + f * (b[0] - a[0])
-            g, alt_sec = best_landing_glide(ctx, lat, lon, usable, landings, level, wing, wind)
-            if g is None or alt_sec > limit:
+            g, alt_sec = best_landing_glide(ctx, lat, lon, limit, landings, level, wing, wind)
+            if g is None or alt_sec > limit or g.ratio > rules.GLIDE_CAUTION_RATIO:
                 return None
             if alt_sec > seg_worst_alt:
                 seg_worst_alt = alt_sec

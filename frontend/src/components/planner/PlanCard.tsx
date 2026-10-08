@@ -43,7 +43,7 @@ export function PlanCard({
         <FlyabilityBadge value={plan.flyability} />
         <span className="plan-card__level">{difficultyLabel(plan.difficulty)}</span>
         <span className="plan-card__score num" title="Score sur 100">
-          {plan.score}
+          {Math.round(plan.score)}
           <span className="faint">/100</span>
         </span>
       </div>

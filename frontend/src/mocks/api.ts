@@ -21,7 +21,7 @@ import { MOCK_SITES } from "./sites";
 import { mockSources } from "./sources";
 import { facingOf, gridAt, soundingAt, terrainAt, weatherAt } from "./weather";
 
-const GRID_LAYERS: GridLayer[] = ["wind", "thermal", "cloudbase", "ceiling", "cape", "precipitation"];
+const GRID_LAYERS: GridLayer[] = ["wind", "thermal", "cloudbase", "ceiling", "cape", "precipitation", "useful_height"];
 
 function parseBbox(raw: string | null): BBoxZone {
   const parts = (raw ?? "").split(",").map(Number);

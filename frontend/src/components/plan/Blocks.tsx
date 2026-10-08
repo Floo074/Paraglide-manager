@@ -75,7 +75,7 @@ export function AerologyBlock({ plan, children }: { plan: FlightPlan; children?:
         <div className="fact">
           <span className="fact__k">Surdéveloppement</span>
           <span className={`fact__v ${od.cls}`}>{od.label}</span>
-          <span className="fact__s">CAPE {wx.cape_j_kg} J/kg</span>
+          <span className="fact__s">CAPE {Math.round(wx.cape_j_kg)} J/kg</span>
         </div>
       </div>
       {th.convection_start && th.convection_end ? (
@@ -337,7 +337,7 @@ export function TechnicalBlock({ plan, now }: { plan: FlightPlan; now: Date }) {
   return (
     <details className="block block--details">
       <summary className="block__title">Détails techniques : score, sources, données</summary>
-      <h3 className="block__sub">Décomposition du score ({plan.score}/100)</h3>
+      <h3 className="block__sub">Décomposition du score ({Math.round(plan.score)}/100)</h3>
       <table className="table score-table">
         <thead>
           <tr>
