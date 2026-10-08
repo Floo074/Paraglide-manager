@@ -145,6 +145,8 @@ LANDING_WIND_ABS_MAX_KMH: Final = 28.0  # §3 #10
 LANDING_GUST_ABS_MAX_KMH: Final = 35.0
 LANDING_BREEZE_CAUTION_FRACTION: Final = 0.8  # brise > seuil du niveau − 20 % → caution
 VALLEY_BREEZE_HOURS_LEGAL: Final = (13, 17)
+VALLEY_BREEZE_RAMP_FACTOR: Final = 1.15  # lot 5.2 : rampe ×1,15 entre 12-13 h et 17-18 h légales
+VALLEY_BREEZE_RAMP_HOURS_LEGAL: Final = ((12, 13), (17, 18))
 BIG_VALLEY_MAX_FLOOR_M: Final = 800.0
 BIG_VALLEY_MIN_RELIEF_M: Final = 2000.0
 BIG_VALLEY_RADIUS_KM: Final = 10.0
@@ -225,6 +227,7 @@ GLIDE_LEE_PENALTY: Final = 0.9
 TERRAIN_CLEARANCE_M: Final = 50.0
 GLIDE_CHECK_STEP_KM: Final = 0.5
 SAFETY_ALT_BELOW_CEILING_M: Final = 300.0
+XC_WINDOW_USAGE: Final = 0.85  # backend : objectif de distance = 85 % de la fenêtre (marge, médiane ≠ record)
 XC_MIN_DURATION_MIN: Final = 60.0  # backend : en dessous, un cross n'a pas de sens
 XC_SPEED_HIGH_PERF_FACTOR: Final = 1.15
 XC_MIN_EFFECTIVE_SPEED_KMH: Final = 8.0

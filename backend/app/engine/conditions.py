@@ -200,8 +200,11 @@ def landing_wind(timeline: PointTimeline, t: datetime, big_valley: bool) -> Land
     factor = 1.0
     lh = legal_time(t).hour + legal_time(t).minute / 60.0
     h0, h1 = rules.VALLEY_BREEZE_HOURS_LEGAL
-    if big_valley and h0 <= lh < h1:
-        factor = rules.VALLEY_BREEZE_AFTERNOON_FACTOR
+    if big_valley:
+        if h0 <= lh < h1:
+            factor = rules.VALLEY_BREEZE_AFTERNOON_FACTOR
+        elif any(r0 <= lh < r1 for r0, r1 in rules.VALLEY_BREEZE_RAMP_HOURS_LEGAL):
+            factor = rules.VALLEY_BREEZE_RAMP_FACTOR
     return LandingWind(t, a.wind_speed_kmh * factor, a.wind_direction_deg, a.wind_gust_kmh * factor, factor, a)
 
 

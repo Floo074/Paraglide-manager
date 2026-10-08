@@ -21,6 +21,7 @@
 #   rejected_reason_contains  sous-chaîne (insensible à la casse) d'une raison de rejet
 #   summary_explains_duration true → summary mentionne pourquoi la durée est plus courte que demandé
 #   no_route_intersects_classes  aucune AirspaceWarning intersects_route=true de ces classes
+# Clé d'entrée facultative : alternate_landings (même format que landing) = atterros de secours pour le cône de finesse.
 
 sites:
   forclaz_takeoff: &forclaz_takeoff
@@ -51,6 +52,24 @@ sites:
     {name: "Déco technique (fictif)", lat: 45.500, lon: 6.500, elevation_m: 1600, orientations: [S], difficulty: advanced, flight_types: [local], status: open}
   technique_landing: &technique_landing
     {name: "Atterro technique (fictif)", lat: 45.473, lon: 6.500, elevation_m: 700, big_valley: false}
+  # Atterros de secours (positions approximatives, à ± 300 m) pour la règle « toujours un atterro dans le cône »
+  alt_haute_provence: &alt_haute_provence
+    - {name: "Moriez", lat: 43.963, lon: 6.462, elevation_m: 950, big_valley: false}
+    - {name: "Barrême", lat: 43.955, lon: 6.370, elevation_m: 720, big_valley: false}
+    - {name: "Castellane", lat: 43.847, lon: 6.513, elevation_m: 730, big_valley: false}
+    - {name: "Annot", lat: 43.965, lon: 6.668, elevation_m: 700, big_valley: false}
+    - {name: "Thorame-Haute gare", lat: 44.096, lon: 6.566, elevation_m: 1010, big_valley: false}
+    - {name: "Digne-les-Bains", lat: 44.092, lon: 6.236, elevation_m: 600, big_valley: true}
+    - {name: "Beauvezer", lat: 44.143, lon: 6.597, elevation_m: 1150, big_valley: false}
+  alt_annecy: &alt_annecy
+    - {name: "Talloires (Perroix)", lat: 45.8455, lon: 6.2135, elevation_m: 450, big_valley: true}
+    - {name: "Saint-Jorioz", lat: 45.8335, lon: 6.1515, elevation_m: 455, big_valley: true}
+    - {name: "Montmin village", lat: 45.8015, lon: 6.263, elevation_m: 1030, big_valley: false}
+    - {name: "Faverges", lat: 45.752, lon: 6.292, elevation_m: 510, big_valley: true}
+    - {name: "Thônes", lat: 45.884, lon: 6.322, elevation_m: 630, big_valley: false}
+  alt_chamonix: &alt_chamonix
+    - {name: "Les Houches", lat: 45.892, lon: 6.800, elevation_m: 1000, big_valley: true}
+    - {name: "Passy", lat: 45.9195, lon: 6.7055, elevation_m: 590, big_valley: true}
 
 weathers:
   w_s01: &w_s01
@@ -296,6 +315,7 @@ scenarios:
     filters: {difficulty: advanced, thermals: required, duration_min_minutes: 120, duration_max_minutes: 300, wing_glide_ratio: 9.0}
     takeoff: *planpraz_takeoff
     landing: *bouchet
+    alternate_landings: *alt_chamonix
     weather:
       takeoff_wind_kmh: 10
       takeoff_wind_dir: 180
@@ -409,6 +429,7 @@ scenarios:
     filters: {difficulty: expert, thermals: required, duration_min_minutes: 240, duration_max_minutes: 480, flight_types: [cross_country], wing_glide_ratio: 9.8}
     takeoff: *chalvet_takeoff
     landing: *st_andre
+    alternate_landings: *alt_haute_provence
     weather:
       takeoff_wind_kmh: 10
       takeoff_wind_dir: 180
@@ -898,6 +919,7 @@ scenarios:
     filters: {difficulty: expert, thermals: required, duration_min_minutes: 120, duration_max_minutes: 300, flight_types: [cross_country], wing_glide_ratio: 9.5}
     takeoff: *forclaz_takeoff
     landing: *doussard
+    alternate_landings: *alt_annecy
     weather: *w_s01
     airspaces:
       - {name: "CTR TEST Annecy (fictif)", airspace_class: D, type: CTR, floor_m: 0, ceiling_m: 1500, polygon: [[6.05, 45.88], [6.20, 45.88], [6.20, 45.98], [6.05, 45.98], [6.05, 45.88]]}

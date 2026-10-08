@@ -15,13 +15,19 @@ export interface PlanTimes {
   lateLanding: boolean;
 }
 
-type Extended = FlightPlan & { sunset?: string | null; window: FlightPlan["window"] & { latest_landing?: string | null } };
+/** Champs optionnels annoncés par le backend (window.latest_landing, sun.sunset ; repli : sunset à la racine). */
+type Extended = FlightPlan & {
+  sunset?: string | null;
+  sun?: { sunrise?: string | null; sunset?: string | null } | null;
+  window: FlightPlan["window"] & { latest_landing?: string | null };
+};
 
 export function planTimes(plan: FlightPlan): PlanTimes {
   const ext = plan as Extended;
   const start = new Date(plan.window.start);
   const end = new Date(plan.window.end);
-  const sunset = ext.sunset ? new Date(ext.sunset) : (sunTimes(plan.takeoff.lat, plan.takeoff.lon, start)?.sunset ?? null);
+  const sunsetIso = ext.sun?.sunset ?? ext.sunset ?? null;
+  const sunset = sunsetIso ? new Date(sunsetIso) : (sunTimes(plan.takeoff.lat, plan.takeoff.lon, start)?.sunset ?? null);
   let latest = ext.window.latest_landing ? new Date(ext.window.latest_landing) : new Date(end.getTime() + plan.est_duration_min * 60_000);
   if (!ext.window.latest_landing && sunset && latest > sunset) latest = sunset;
   const lateLanding = sunset !== null && latest.getTime() > sunset.getTime() - 30 * 60_000;

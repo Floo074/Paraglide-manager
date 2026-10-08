@@ -141,6 +141,7 @@ export const RISK_CODE_LABEL: Record<string, string> = {
   NATIONAL_PARK: "Parc national",
   SITE_CLOSED: "Site fermé",
   SITE_RESTRICTED: "Consignes site",
+  SITE_LEVEL: "Niveau du site",
   WIND_GRADIENT: "Gradient",
   WIND_SHEAR: "Cisaillement",
   STRONG_THERMALS: "Thermiques forts",

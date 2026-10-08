@@ -42,6 +42,9 @@ class Finding:
     info: bool = False
     blocks_go: bool = True  # une caution qui empêche le « go »
     band: bool = True  # bande marginale 80-100 % applicable
+    # critère de FAISABILITÉ (lot 5.1 : vent mini en soaring, plafond mini, vario mini) : sous le seuil,
+    # le type de vol n'est pas proposé (raison de rejet), mais ce n'est ni un danger ni une caution.
+    feasibility: bool = False
     level_titles: dict[str, str] = field(default_factory=dict)
 
     # --- évaluation par niveau ------------------------------------------------------------------
@@ -86,6 +89,8 @@ class Finding:
         return None if r is None else ratio_subscore(r)
 
     def risk_level(self, level: str) -> str | None:
+        if self.feasibility:
+            return None
         if self.fails(level):
             return "danger"
         if self.caution or self.in_band(level):
@@ -103,7 +108,7 @@ class Finding:
 
 def smallest_passing_level(findings: list[Finding]) -> str | None:
     for lvl in LEVELS:
-        if not any(f.fails(lvl) for f in findings):
+        if not any(f.fails(lvl) for f in findings if not f.feasibility):
             return lvl
     return None
 

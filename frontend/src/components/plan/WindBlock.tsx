@@ -42,9 +42,7 @@ export function WindBlock({ plan, level, now }: { plan: FlightPlan; level: Diffi
           </ul>
         </div>
         <div className="tile">
-          <div className="tile__k">
-            Atterro · arrivée {formatTime(land.time)}
-          </div>
+          <div className="tile__k">Atterro · à l'arrivée vers {formatTime(new Date(new Date(plan.window.start).getTime() + plan.est_duration_min * 60_000))}</div>
           <div className="tile__v">
             <WindText speed={land.wind_10m.speed_kmh} gust={land.wind_10m.gust_kmh} dir={land.wind_10m.direction_deg} limits={landingLimits(level, plan.flight_type)} />
           </div>

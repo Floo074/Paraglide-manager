@@ -38,6 +38,9 @@ export function VerdictBanner({ plan, demo }: { plan: FlightPlan; demo: boolean 
       ) : (
         <p className="verdict__ok small">Aucun point de vigilance majeur relevé par l'outil.</p>
       )}
+      {plan.flyability !== "no_go" ? (
+        <p className="verdict__onsite small">L'analyse sur place (balises, ciel, manche à air, autres pilotes) prime toujours.</p>
+      ) : null}
     </section>
   );
 }

@@ -55,6 +55,9 @@ export function PlanCard({
       <div className="plan-card__facts">
         <span>
           <Clock size={14} aria-hidden /> Déco <strong className="num">{formatTime(t.start)}–{formatTime(t.end)}</strong>
+          <span className={t.lateLanding ? "text-marginal" : "muted"}>
+            {" "}· posé avant <strong className="num">{formatTime(t.latestLanding)}</strong>
+          </span>
         </span>
         <span>
           <Navigation size={14} aria-hidden /> {typeLabel} · {formatDuration(plan.est_duration_min)} · {formatKm(plan.distance_km)}
@@ -67,8 +70,14 @@ export function PlanCard({
           <Mountain size={14} aria-hidden /> Plafond utile <strong>{formatAltitude(plan.thermals.ceiling_m)}</strong>
         </span>
         <span>
-          <TrendingUp size={14} aria-hidden /> Vario {formatVario(wx.thermal_strength_ms)}{" "}
-          <span className="faint">({THERMAL_USAGE_LABEL[plan.thermal_usage]})</span>
+          <TrendingUp size={14} aria-hidden />{" "}
+          {plan.thermal_usage === "none" ? (
+            "Air calme"
+          ) : (
+            <>
+              Vario {formatVario(wx.thermal_strength_ms)} <span className="faint">({THERMAL_USAGE_LABEL[plan.thermal_usage]})</span>
+            </>
+          )}
         </span>
         <span>
           <span className="muted">Atterro</span> {plan.landing.name}
