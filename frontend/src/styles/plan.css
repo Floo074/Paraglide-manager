@@ -666,8 +666,15 @@
   background: var(--marginal-soft);
 }
 .risk--info {
-  border-left-color: var(--info);
-  background: var(--bg);
+  border-left-color: var(--border-strong);
+  background: transparent;
+}
+.risk--info .risk__title {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.risk--info > svg {
+  color: var(--text-faint);
 }
 .risk__title {
   font-weight: 700;

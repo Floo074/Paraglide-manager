@@ -86,9 +86,32 @@
     border-radius: 6px;
     padding: 6px 8px;
     margin-bottom: 6px;
+    gap: 5px;
+    break-inside: auto;
+  }
+  .verdict,
+  .window-block,
+  .wind-tiles,
+  .emergency,
+  .emagram,
+  .route-sketch,
+  .table tr,
+  .briefing li,
+  .checklist li {
     break-inside: avoid;
     page-break-inside: avoid;
-    gap: 5px;
+  }
+  .block__title {
+    break-after: avoid;
+  }
+  /* la frise horaire suffit sur papier ; l'émagramme (SVG) reste */
+  .timeline-charts,
+  .sub-details:has(.timeline-charts),
+  .beacons-near {
+    display: none !important;
+  }
+  .emagram svg {
+    max-height: 120mm;
   }
   .verdict {
     border-left-width: 6px;

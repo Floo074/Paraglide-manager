@@ -37,3 +37,12 @@ describe("units", () => {
     expect(groundGlideRatio(8.5, 40)).toBe(0);
   });
 });
+
+import { niceTicks } from "../utils/ticks";
+describe("graduations", () => {
+  it("pas ronds", () => {
+    expect(niceTicks(0, 25)).toEqual([0, 10, 20, 30]);
+    expect(niceTicks(0, 2.2, 3)).toEqual([0, 1, 2, 3]);
+    expect(niceTicks(1050, 2550)).toEqual([1000, 1500, 2000, 2500, 3000]);
+  });
+});

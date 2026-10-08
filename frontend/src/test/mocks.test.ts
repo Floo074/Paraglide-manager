@@ -4,6 +4,8 @@ import { decodePlanId, mockPlanById, mockPlans } from "../mocks/planner";
 import { setMockNow } from "../mocks/weather";
 import { windVerdict, takeoffLimits } from "../config/thresholds";
 import type { PlanRequest } from "../api/types";
+import { haversineKm } from "../utils/geo";
+import { arrivalMargin } from "../mocks/rules";
 
 const now = new Date("2026-10-08T09:00:00Z"); // 11:00 heure de Paris
 setMockNow(now);
@@ -84,11 +86,23 @@ describe("invariants des plans de démo", () => {
           const maxAlt = Math.max(...p.route.coordinates.map((c) => c[2]));
           expect(maxAlt, p.title).toBeLessThanOrEqual(Math.max(p.thermals.ceiling_m, p.takeoff.elevation_m) + 10);
           expect(p.max_altitude_m).toBeLessThanOrEqual(Math.max(p.thermals.ceiling_m, p.takeoff.elevation_m) + 10);
-          const d = Math.hypot((p.takeoff.lat - p.landing.lat) * 111, (p.takeoff.lon - p.landing.lon) * 78) * 1000;
-          const plouf = d / (p.takeoff.elevation_m - p.landing.elevation_m - 100);
+          const drop = p.takeoff.elevation_m - p.landing.elevation_m;
+          const plouf = (haversineKm(p.takeoff, p.landing) * 1000) / (drop - arrivalMargin(difficulty, drop));
           expect(p.glide.required_ratio + 0.3, p.title).toBeGreaterThanOrEqual(Math.min(plouf, 99));
         }
       }
+    }
+  });
+});
+
+describe("finesse", () => {
+  it("le plan local de la Forclaz garde une marge de finesse correcte", () => {
+    const res = mockPlans(base, now);
+    const forclaz = res.plans.filter((p) => p.takeoff.id === "fixture:forclaz");
+    expect(forclaz.length).toBeGreaterThan(0);
+    for (const p of forclaz) {
+      expect(p.glide.margin_ok, p.title).toBe(true);
+      expect(p.glide.required_ratio).toBeLessThan(6);
     }
   });
 });

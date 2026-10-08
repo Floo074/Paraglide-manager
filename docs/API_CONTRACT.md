@@ -184,7 +184,7 @@ interface FlightPlan {
 ### `GET /api/airspaces?bbox=min_lon,min_lat,max_lon,max_lat`
 GeoJSON `FeatureCollection` ; `properties`: `{ name, airspace_class, type, floor_m, ceiling_m }`.
 
-### `GET /api/sensitive-areas?bbox=min_lon,min_lat,max_lon,max_lat`
+### `GET /api/sensitive-areas?bbox=min_lon,min_lat,max_lon,max_lat&time=ISO` (`time` optionnel, défaut maintenant : sert à `active_now`)
 Zones sensibles pour la faune (Biodiv'Sports, pratique « aérien / vol libre ») + cœurs de parcs nationaux.
 GeoJSON `FeatureCollection` ; `properties` :
 `{ id, name, species: string | null, kind: "species" | "regulatory" | "national_park_core", period_months: number[] /* 1..12, mois de sensibilité */, active_now: boolean, recommendation: string /* consigne en français */, min_height_agl_m: number | null /* hauteur de survol recommandée */, source: "biodivsports" | "fixture", url: string | null }`.
@@ -194,7 +194,9 @@ Les zones actives au temps cible et touchées par la route produisent un `Risk` 
 `{ "snapshot": WeatherSnapshot, "sounding": SoundingLevel[], "timeline": WeatherSnapshot[] }` (timeline horaire sur la journée).
 
 ### `GET /api/forecast/grid?bbox=min_lon,min_lat,max_lon,max_lat&time=ISO&layer=..&altitude_m=..`
-- `layer` ∈ `wind | thermal | cloudbase | ceiling | cape | precipitation`
+- `layer` ∈ `wind | thermal | cloudbase | ceiling | cape | precipitation | useful_height`
+  (`useful_height` = plafond utile − terrain, en m/sol : « où peut-on tenir en l'air » ; `cloudbase` : points
+  sans cumulus omis ; `legend` = min/max des valeurs présentes ; grille ≤ 20×20 en mock, ≤ 10×10 en live)
 - `altitude_m` (pour `wind`) ∈ `10 | 1000 | 1500 | 2000 | 2500 | 3000 | 4000` (défaut 10)
 - Grille ≤ 20×20 points.
 

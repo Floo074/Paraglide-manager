@@ -2,6 +2,7 @@ import { Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceArea, Reference
 import type { Difficulty, FlightPlan } from "../../api/types";
 import { takeoffLimits } from "../../config/thresholds";
 import { formatNumber, formatTime } from "../../utils/format";
+import { niceTicks } from "../../utils/ticks";
 
 interface Row {
   t: number;
@@ -63,7 +64,12 @@ export function TimelineCharts({ plan, level }: { plan: FlightPlan; level: Diffi
   const windowArea = <ReferenceArea x1={Math.max(ws, domain[0])} x2={Math.min(we, domain[1])} fill="var(--accent)" fillOpacity={0.1} ifOverflow="hidden" />;
   const targetLine = <ReferenceLine x={target} stroke="var(--text-muted)" strokeDasharray="3 3" />;
   const hasRain = rows.some((r) => r.rain > 0);
-  const maxWind = Math.max(...rows.map((r) => r.gust), lim.wind + 5);
+  const maxWind = Math.max(...rows.map((r) => r.gust), lim.wind + 3);
+  const windTicks = niceTicks(0, maxWind, 4);
+  const alts = rows.flatMap((r) => [r.ceiling, r.base ?? r.ceiling, plan.takeoff.elevation_m]);
+  const altTicks = niceTicks(Math.min(...alts) - 100, Math.max(...alts) + 100, 4);
+  const varioTicks = niceTicks(0, Math.max(1, ...rows.map((r) => r.vario)), 3);
+  const rainTicks = niceTicks(0, Math.max(1, ...rows.map((r) => r.rain)), 2);
 
   return (
     <div className="timeline-charts">
@@ -87,7 +93,7 @@ export function TimelineCharts({ plan, level }: { plan: FlightPlan; level: Diffi
             {grid}
             {windowArea}
             {xAxis}
-            <YAxis tick={AXIS} stroke="var(--border)" width={34} domain={[0, Math.ceil(maxWind / 5) * 5]} allowDecimals={false} />
+            <YAxis tick={AXIS} stroke="var(--border)" width={34} domain={[windTicks[0]!, windTicks.at(-1)!]} ticks={windTicks} />
             <ReferenceLine y={lim.wind} stroke="var(--nogo)" strokeDasharray="5 4" />
             {targetLine}
             <Tooltip content={<ChartTooltip unit="km/h" />} />
@@ -113,7 +119,7 @@ export function TimelineCharts({ plan, level }: { plan: FlightPlan; level: Diffi
             {grid}
             {windowArea}
             {xAxis}
-            <YAxis tick={AXIS} stroke="var(--border)" width={42} domain={["dataMin - 200", "dataMax + 200"]} tickFormatter={(v: number) => formatNumber(Math.round(v / 100) * 100)} />
+            <YAxis tick={AXIS} stroke="var(--border)" width={42} domain={[altTicks[0]!, altTicks.at(-1)!]} ticks={altTicks} tickFormatter={(v: number) => formatNumber(v)} />
             <ReferenceLine y={plan.takeoff.elevation_m} stroke="var(--text-faint)" strokeDasharray="6 4" label={{ value: "déco", position: "insideBottomLeft", fontSize: 10, fill: "var(--text-muted)" }} />
             {targetLine}
             <Tooltip content={<ChartTooltip unit="m" />} />
@@ -131,7 +137,7 @@ export function TimelineCharts({ plan, level }: { plan: FlightPlan; level: Diffi
             {grid}
             {windowArea}
             {xAxis}
-            <YAxis tick={AXIS} stroke="var(--border)" width={34} allowDecimals />
+            <YAxis tick={AXIS} stroke="var(--border)" width={34} domain={[0, varioTicks.at(-1)!]} ticks={varioTicks} tickFormatter={(v: number) => formatNumber(v, 1)} />
             {targetLine}
             <Tooltip content={<ChartTooltip unit="m/s" />} cursor={{ fill: "var(--bg-hover)" }} />
             <Bar dataKey="vario" name="Vario" fill="var(--series-1)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
@@ -148,7 +154,7 @@ export function TimelineCharts({ plan, level }: { plan: FlightPlan; level: Diffi
             {grid}
             {windowArea}
             {xAxis}
-            <YAxis tick={AXIS} stroke="var(--border)" width={34} domain={[0, (max: number) => Math.max(1, Math.ceil(max))]} />
+            <YAxis tick={AXIS} stroke="var(--border)" width={34} domain={[0, rainTicks.at(-1)!]} ticks={rainTicks} tickFormatter={(v: number) => formatNumber(v, 1)} />
             {targetLine}
             <Tooltip content={<ChartTooltip unit="mm/h" />} cursor={{ fill: "var(--bg-hover)" }} />
             <Bar dataKey="rain" name="Pluie" fill="var(--series-1)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />

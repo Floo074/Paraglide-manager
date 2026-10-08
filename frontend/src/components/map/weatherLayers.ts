@@ -17,7 +17,7 @@ export const WEATHER_LAYERS: { value: WeatherLayerChoice; label: string; unit: s
 
 /** Altitudes du sélecteur, niveaux de vol prioritaires d'abord (CDC §8.3). */
 export const WIND_ALTITUDE_OPTIONS: { value: number; label: string }[] = [
-  { value: 10, label: "Sol (10 m)" },
+  { value: 10, label: "Sol (modèle, 10 m)" },
   { value: 1500, label: "1 500 m" },
   { value: 2000, label: "2 000 m" },
   { value: 3000, label: "3 000 m" },

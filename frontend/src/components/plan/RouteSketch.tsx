@@ -6,9 +6,10 @@ import { kmPerDegLon, KM_PER_DEG_LAT } from "../../utils/geo";
 export function RouteSketch({ plan }: { plan: FlightPlan }) {
   const W = 640;
   const H = 300;
+  // cadrage sur la route et ses points (les atterros de secours lointains sont dessinés s'ils tombent dans le cadre)
   const pts = [
     ...plan.route.coordinates.map((c) => ({ lat: c[1], lon: c[0] })),
-    ...plan.waypoints.map((w) => ({ lat: w.lat, lon: w.lon })),
+    ...plan.waypoints.filter((w) => w.type !== "alternate_landing").map((w) => ({ lat: w.lat, lon: w.lon })),
   ];
   const lat0 = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
   const kx = kmPerDegLon(lat0);
@@ -16,7 +17,7 @@ export function RouteSketch({ plan }: { plan: FlightPlan }) {
   const ys = pts.map((p) => p.lat * KM_PER_DEG_LAT);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   const span = Math.max(maxX - minX, (maxY - minY) * (W / H), 1);
-  const scale = (W - 40) / span;
+  const scale = (W - 120) / span;
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
   const P = (lat: number, lon: number): [number, number] => [W / 2 + (lon * kx - cx) * scale, H / 2 - (lat * KM_PER_DEG_LAT - cy) * scale];
   const alts = plan.route.coordinates.map((c) => c[2]);
@@ -33,6 +34,7 @@ export function RouteSketch({ plan }: { plan: FlightPlan }) {
       })}
       {plan.waypoints.map((w, i) => {
         const [x, y] = P(w.lat, w.lon);
+        if (x < 0 || x > W || y < 0 || y > H) return null;
         return (
           <g key={i}>
             <circle cx={x} cy={y} r={5} fill={w.type === "landing" ? "#1d4ed8" : w.type === "takeoff" ? "#15803d" : w.type === "alternate_landing" ? "#64748b" : "#7c3aed"} stroke="#fff" strokeWidth={1.5} />

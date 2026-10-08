@@ -114,10 +114,12 @@ export function Emagram({ sounding, ceiling, cloudBase, takeoffAlt }: Props) {
         <path d={line(parcel)} fill="none" stroke="var(--marginal)" strokeWidth={1.5} strokeDasharray="5 4" />
         <path d={tdPath} fill="none" stroke="var(--series-1)" strokeWidth={2} />
         <path d={tPath} fill="none" stroke="var(--series-temp)" strokeWidth={2} />
-        {/* barbules */}
-        {shown.map((l, i) => (
-          <WindBarb key={i} x={M.left + pw + 34} y={y(l.altitude_m)} speedKmh={l.wind_speed_kmh} dirDeg={l.wind_direction_deg} size={20} color="var(--text)" />
-        ))}
+        {/* barbules (une sur deux si trop serrées) */}
+        {shown
+          .filter((l, i, arr) => i === 0 || y(arr[i - 1]!.altitude_m) - y(l.altitude_m) >= 16 || i % 2 === 0)
+          .map((l, i) => (
+            <WindBarb key={i} x={M.left + pw + 34} y={y(l.altitude_m)} speedKmh={l.wind_speed_kmh} dirDeg={l.wind_direction_deg} size={20} color="var(--text)" />
+          ))}
         <text x={M.left + pw + 34} y={M.top + ph + 16} textAnchor="middle" className="chart-tick">
           vent
         </text>

@@ -469,6 +469,8 @@ function buildRoute(variant: Variant, ctx: BuildCtx, c: Conditions, durationMin:
     const t2 = { ...destinationPoint(site, normalizeDeg(facing - 90), 2.2), name: "Rupture de pente" };
     const top1 = Math.min(ceiling - 100, site.elevation_m + 900);
     const top2 = Math.min(ceiling - 200, site.elevation_m + 700);
+    // premier thermique devant le déco : on ne part vers les déclencheurs qu'avec de la hauteur
+    rb.climb(Math.min(top1, site.elevation_m + 300));
     rb.glideTo(t1, glide).climb(top1);
     const a1 = rb.last.alt;
     rb.glideTo(t2, glide * 0.8).climb(top2);
@@ -760,15 +762,18 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     return { req: h > 0 ? d / h : 99, avail };
   };
   let worst = legRatio({ lat: site.lat, lon: site.lon, alt: site.elevation_m }, landing);
+  let allOk = worst.req <= worst.avail;
   for (const p of pts) {
-    const near = [landing, ...alternates].reduce((best, l) => (haversineKm(p, l) < haversineKm(p, best) ? l : best), landing);
-    if (haversineKm(p, near) < 0.3) continue;
-    const r = legRatio(p, near);
-    if (r.req / Math.max(0.1, r.avail) > worst.req / Math.max(0.1, worst.avail)) worst = r;
+    // CDC §5.4 : il suffit qu'UN atterro identifié soit dans le cône → meilleur atterro pour ce point
+    const options = [landing, ...alternates].filter((l) => haversineKm(p, l) >= 0.3).map((l) => legRatio(p, l));
+    if (options.length === 0) continue;
+    const r = options.reduce((best, o) => (o.req / Math.max(0.1, o.avail) < best.req / Math.max(0.1, best.avail) ? o : best));
+    if (r.req > r.avail) allOk = false;
+    if (r.req > worst.req) worst = r;
   }
   const required = worst.req;
   const available = worst.avail;
-  const glide = { required_ratio: Math.round(required * 10) / 10, available_ratio: Math.round(available * 10) / 10, margin_ok: required <= available };
+  const glide = { required_ratio: Math.round(required * 10) / 10, available_ratio: Math.round(available * 10) / 10, margin_ok: allOk };
 
   // créneau
   const roundMin = horizonToMinutes(horizon) >= 1440 ? 60 : 15;

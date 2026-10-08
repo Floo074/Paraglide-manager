@@ -88,7 +88,7 @@ export function GridLegend({ layer, grid }: { layer: GridLayer; grid: ForecastGr
     <div className="grid-legend">
       {layer === "wind" ? (
         <div className="grid-legend__big">
-          {grid?.altitude_m && grid.altitude_m > 10 ? `Vent à ${formatNumber(grid.altitude_m)} m` : "Vent au sol (10 m)"}
+          {grid?.altitude_m && grid.altitude_m > 10 ? `Vent à ${formatNumber(grid.altitude_m)} m (modèle)` : "Vent au sol (modèle, 10 m)"}
         </div>
       ) : null}
       <div className="grid-legend__title">

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-USER_AGENT = "ParaglideManager/0.1 (+https://github.com/; outil d'aide à la décision vol libre)"
+USER_AGENT = "ParaglideManager/0.1 (flight planning decision aid; contact: see repository)"
 
 
 class ProviderError(Exception):
