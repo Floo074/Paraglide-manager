@@ -23,8 +23,9 @@ export const RULES = {
   thermalMax: { beginner: 1.5, intermediate: 2.5, advanced: 3.5, expert: 5 } as PerLevel<number>,
   localCeilingMinAboveTakeoff: { beginner: 700, intermediate: 600, advanced: 400, expert: 300 } as PerLevel<number>,
   xcCeilingMinAboveTakeoff: { beginner: Infinity, intermediate: 1200, advanced: 1000, expert: 800 } as PerLevel<number>,
-  glideK: { beginner: 0.5, intermediate: 0.6, advanced: 0.65, expert: 0.7 } as PerLevel<number>,
-  arrivalMargin: { beginner: 200, intermediate: 150, advanced: 120, expert: 100 } as PerLevel<number>,
+  glideK: { beginner: 0.65, intermediate: 0.7, advanced: 0.72, expert: 0.75 } as PerLevel<number>, // CDC rév. 2
+  /** Marge d'arrivée (m), bornée à 25 % du dénivelé (CDC rév. 2). */
+  arrivalMargin: { beginner: 100, intermediate: 100, advanced: 100, expert: 80 } as PerLevel<number>,
   xcMaxDistanceKm: { beginner: 0, intermediate: 25, advanced: 80, expert: 250 } as PerLevel<number>,
   maxDurationMin: { beginner: 45, intermediate: 120, advanced: 300, expert: 540 } as PerLevel<number>,
   ridge: {
@@ -60,9 +61,15 @@ export const RULES = {
     data_confidence: 5,
     site_fit: 5,
   },
-  verdict: { goMinScore: 65, goMinSafety: 50, goMinConfidence: 0.5, nogoMaxScore: 45 },
+  /** go si confidence ≥ goMinConfidenceRatio × horizonBaseConfidence[horizon] (CDC rév. 2). */
+  verdict: { goMinScore: 65, goMinSafety: 50, goMinConfidenceRatio: 0.75, nogoMaxScore: 45 },
   horizonBaseConfidence: { "30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4 } as Record<Horizon, number>,
 };
+
+/** Marge d'arrivée effective : bornée à 25 % du dénivelé disponible. */
+export function arrivalMargin(level: Difficulty, dropM: number): number {
+  return Math.min(RULES.arrivalMargin[level], Math.max(0, 0.25 * dropM));
+}
 
 /** Sous-score : 100 jusqu'à 50 % du seuil, 40 à 80 %, 0 au seuil (interpolation linéaire). */
 export function thresholdSubscore(value: number, threshold: number): number {

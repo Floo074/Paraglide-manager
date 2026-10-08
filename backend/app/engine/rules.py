@@ -44,8 +44,8 @@ SHEAR_MAX_KMH_PER_300M: Final = by_level(8, 12, 15, 20)
 LOCAL_CEILING_MIN_ABOVE_TAKEOFF_M: Final = by_level(700, 600, 400, 300)
 XC_CEILING_MIN_ABOVE_TAKEOFF_M: Final = by_level(None, 1200, 1000, 800)
 XC_CEILING_MIN_ABOVE_RELIEF_M: Final = by_level(None, 500, 400, 300)
-GLIDE_K: Final = by_level(0.50, 0.60, 0.65, 0.70)
-LANDING_ARRIVAL_MARGIN_M: Final = by_level(200, 150, 120, 100)
+GLIDE_K: Final = by_level(0.65, 0.70, 0.72, 0.75)  # révision 2 (lot expert 2.1)
+LANDING_ARRIVAL_MARGIN_M: Final = by_level(100, 100, 100, 80)  # révision 2 (lot expert 2.1)
 XC_MAX_DISTANCE_KM: Final = by_level(0, 25, 80, 250)
 MAX_DURATION_MIN: Final = by_level(45, 120, 300, 540)
 TRANSITION_ARRIVAL_ABOVE_TERRAIN_M: Final = {"intermediate": 500, "advanced": 400, "expert": 300}
@@ -79,7 +79,13 @@ VENTURI_FACTOR_COL: Final = 1.5
 ROTOR_LEE_FACTOR: Final = {"moderate": 5, "strong": 10}  # × hauteur du relief
 VALLEY_BREEZE_AFTERNOON_FACTOR: Final = 1.3
 MARGINAL_BAND: Final = 0.8  # 80-100 % du seuil
-VERDICT: Final = {"go_min_score": 65, "go_min_safety_subscore": 50, "go_min_confidence": 0.5, "nogo_max_score": 45}
+VERDICT: Final = {
+    "go_min_score": 65,
+    "go_min_safety_subscore": 50,
+    # révision 2 (lot 2.11) : go si confiance ≥ 0,75 × HORIZON_BASE_CONFIDENCE[horizon]
+    "go_min_confidence_ratio": 0.75,
+    "nogo_max_score": 45,
+}
 WEIGHTS: Final = {
     "takeoff_wind": 25,
     "wind_aloft": 15,
@@ -116,7 +122,7 @@ LEVEL_LABEL_FR: Final = {
 # --- §0 / §2.1 vent au déco ---------------------------------------------------------------------
 SECTOR_HALF_WIDTH_DEG: Final = 11.25  # écart = angle au centre du secteur − 11,25°, borné à 0
 TAILWIND_ANGLE_DEG: Final = 90.0  # écart > 90° = vent arrière
-GUST_FACTOR_MIN_MEAN_KMH: Final = 10.0  # facteur de rafale évalué si moyenne ≥ 10 km/h
+GUST_FACTOR_MIN_MEAN_KMH: Final = 15.0  # lot 2.2 : facteur de rafale = simple caution, si moyenne ≥ 15 km/h
 TAKEOFF_WIND_IDEAL_KMH: Final = (5.0, 15.0)  # plage « 100 » du sous-score takeoff_wind (§9.2)
 GUST_SPREAD_IDEAL_KMH: Final = 5.0
 TAKEOFF_GUST_EXTRA_MAX_KMH: Final = 25.0  # rafale au déco bornée à vent_déco + 25 (lot expert 1.4)
@@ -211,6 +217,10 @@ RIDGE_SOARING_HEIGHT_M: Final = 120.0
 # --- §2.3 / §5 finesse et routage --------------------------------------------------------------
 AIR_SPEED_TRIM_HIGH_PERF_KMH: Final = 39.0
 HIGH_PERF_GLIDE_RATIO: Final = 9.5
+LANDING_ARRIVAL_MARGIN_MAX_FRACTION: Final = 0.25  # lot 2.1 : marge eff. = min(marge, 0,25 × dénivelé)
+GLIDE_RATIO_SUBSCORE: Final = ((0.75, 100.0), (0.90, 60.0), (0.95, 40.0), (1.0, 0.0))  # r = required/available
+GLIDE_CAUTION_RATIO: Final = 0.90  # GLIDE_MARGIN caution au-delà ; danger (no-go) si r > 1
+TOP_LANDING_MAX_DROP_M: Final = 50.0  # lot 2.4c : atterro ≥ alt déco − 50 m = top landing
 GLIDE_LEE_PENALTY: Final = 0.9
 TERRAIN_CLEARANCE_M: Final = 50.0
 GLIDE_CHECK_STEP_KM: Final = 0.5
@@ -242,6 +252,15 @@ ALTERNATE_LANDING_SEARCH_KM: Final = 15.0
 ASSOCIATED_LANDING_MAX_KM: Final = 8.0  # backend : association déco ↔ atterro si la source ne la donne pas
 ASSOCIATED_LANDING_MIN_DROP_M: Final = 150.0
 
+# --- Lot expert 2 : fenêtres temporelles des no-go convectifs, créneau, coucher ---------------
+THUNDERSTORM_CHECK_AFTER_LANDING_H: Final = 1.0  # CAPE/LI évalués sur [déco, atterrissage + 1 h]
+CONVECTIVE_PRECIP_CHECK_AFTER_LANDING_H: Final = 2.0  # précipitations sur [déco, atterrissage + 2 h]
+OVERDEV_MODERATE_WINDOW_AFTER_LANDING_H: Final = 2.0  # moderate → marginal si surdév ∈ [déco, atterro + 2 h]
+WINDOW_START_BEFORE_TARGET_MIN: Final = 30.0  # créneau : début ∈ [cible − 30 min, cible + 3 h]
+WINDOW_START_AFTER_TARGET_H: Final = 3.0
+SUNSET_NOGO_AFTER: Final = True  # atterrissage après le coucher → no-go ; < 30 min avant → caution
+BEACON_GUST_HORIZONS: Final = ("30m", "1h")  # rafale retenue = max(rafale balise 10 min, rafale fusionnée)
+
 # --- §6 durées -----------------------------------------------------------------------------------
 PLOUF_EXTRA_MIN: Final = 3.0
 RESTITUTION_DURATION_FACTOR: Final = 1.75  # × 1,5 à 2
@@ -252,8 +271,9 @@ CEILING_MARGIN_BELOW_AIRSPACE_M: Final = 100.0
 AIRSPACE_CAUTION_LATERAL_KM: Final = 1.0
 AIRSPACE_CAUTION_VERTICAL_M: Final = 100.0
 AIRSPACE_REPORT_RADIUS_KM: Final = 10.0
-AIRSPACE_FORBIDDEN_CLASSES: Final = ("A", "B", "C", "D", "P")  # interdits sans clairance
-AIRSPACE_FORBIDDEN_TYPES: Final = ("CTR", "TMA", "CTA", "P", "PROHIBITED")
+AIRSPACE_FORBIDDEN_CLASSES: Final = ("A", "B", "C", "D")  # lot 2.15 : interdits sans clairance (par CLASSE)
+AIRSPACE_FORBIDDEN_TYPES: Final = ("P", "PROHIBITED")  # zones interdites quel que soit la classe
+AIRSPACE_INFO_TYPES: Final = ("SIV", "FIS", "FIR", "UIR", "ACC")  # information seulement
 AIRSPACE_ACTIVATION_TYPES: Final = ("R", "ZRT", "D", "Q", "TRA", "TSA", "RESTRICTED", "DANGER")
 PARK_MIN_HEIGHT_AGL_M: Final = 1000.0  # cœurs de parcs nationaux
 SENSITIVE_AREA_DEFAULT_HEIGHT_AGL_M: Final = 300.0  # zone faune sans hauteur renseignée
@@ -277,7 +297,7 @@ DISPERSION_DIR_FACTOR: Final = 0.7
 BEACON_COHERENT_FACTOR: Final = 1.1
 BEACON_CONTRADICTORY_FACTOR: Final = 0.8
 CONFIDENCE_MAX: Final = 0.95
-MOCK_CONFIDENCE_CAP: Final = 0.3  # données synthétiques → confiance ≤ 0,3 → jamais « go »
+MOCK_CONFIDENCE_CAP: Final = 0.3  # lot 2.12 : confiance AFFICHÉE plafonnée en mock ; verdict sur la valeur brute
 SINGLE_SOURCE_NOGO_CONFIDENCE: Final = 0.6
 
 # --- §9 score -----------------------------------------------------------------------------------

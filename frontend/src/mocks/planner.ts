@@ -32,7 +32,7 @@ import { angleDiff, compassToDeg, compassFr, degToCardinalFr, groundGlideRatio, 
 import { validateZone, zoneContains } from "../utils/zone";
 import { MOCK_AIRSPACES } from "./airspaces";
 import { mockBeacons } from "./beacons";
-import { RULES, thresholdSubscore } from "./rules";
+import { RULES, arrivalMargin, thresholdSubscore } from "./rules";
 import { mockSensitiveAreas } from "./sensitiveAreas";
 import { CROSS_TURNPOINTS, MOCK_SITES, MOCK_SITES_BY_ID, THERMAL_TRIGGERS } from "./sites";
 import { facingOf, hash01, scenarioFor, soundingAt, terrainAt, weatherAt } from "./weather";
@@ -186,7 +186,7 @@ function thermalAnalysis(site: Site, time: Date): ThermalAnalysis {
     convection_end: end?.toISOString() ?? null,
     peak_time: peak?.toISOString() ?? null,
     peak_strength_ms: Math.round(peakStrength * 10) / 10,
-    ceiling_m: Math.round(cur.thermal_ceiling_m / 10) * 10,
+    ceiling_m: Math.round(usefulCeiling(cur) / 10) * 10, // plafond UTILE (≤ base − 300 m)
     cumulus,
     overdevelopment_risk: risk,
     comment: parts.join(" "),
@@ -436,7 +436,7 @@ function buildRoute(variant: Variant, ctx: BuildCtx, c: Conditions, durationMin:
   const decision: string[] = [];
   const ptu = approachPoint(landing, c.landingWx.wind_10m.direction_deg);
   const landingAlt = landing.elevation_m;
-  const margin = RULES.arrivalMargin[level];
+  const margin = arrivalMargin(level, site.elevation_m - landing.elevation_m);
 
   if (variant === "plouf") {
     rb.glideTo(ptu, glide, { endAlt: landingAlt + 250 });
@@ -657,13 +657,14 @@ function scoreItems(ctx: BuildCtx, c: Conditions, cand: Candidate, est: number, 
 
 const SAFETY = new Set(["takeoff_wind", "wind_aloft", "landing", "convective_stability"]);
 
-function verdict(items: ScoreItem[], confidence: number, risks: Risk[]): { score: number; flyability: FlightPlan["flyability"] } {
+function verdict(items: ScoreItem[], confidence: number, horizon: Horizon, risks: Risk[]): { score: number; flyability: FlightPlan["flyability"] } {
   const total = items.reduce((s, i) => s + i.score * i.weight, 0) / items.reduce((s, i) => s + i.weight, 0);
   const minSafety = Math.min(...items.filter((i) => SAFETY.has(i.criterion)).map((i) => i.score));
   const score = Math.round(Math.min(total, 40 + minSafety));
   const V = RULES.verdict;
   if (risks.some((r) => r.level === "danger") || score < V.nogoMaxScore) return { score, flyability: "no_go" };
-  if (score >= V.goMinScore && minSafety >= V.goMinSafety && confidence >= V.goMinConfidence && !risks.some((r) => r.level === "caution" && r.code !== "MOCK_DATA"))
+  const confOk = confidence >= V.goMinConfidenceRatio * RULES.horizonBaseConfidence[horizon];
+  if (score >= V.goMinScore && minSafety >= V.goMinSafety && confOk && !risks.some((r) => r.level === "caution" && r.code !== "MOCK_DATA"))
     return { score, flyability: "go" };
   return { score, flyability: "marginal" };
 }
@@ -739,7 +740,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   const tailComp = -landingWind.speed_kmh * Math.cos(((legBearing - landingWind.direction_deg) * Math.PI) / 180);
   const finesseAir = filters.wing_glide_ratio * RULES.glideK[level];
   const available = Math.max(0, (finesseAir * (RULES.airSpeedKmh + tailComp)) / RULES.airSpeedKmh);
-  const heightAvail = finalFrom.alt - (landing.elevation_m + RULES.arrivalMargin[level]);
+  const heightAvail = finalFrom.alt - (landing.elevation_m + arrivalMargin(level, site.elevation_m - landing.elevation_m));
   const required = heightAvail > 0 ? (haversineKm(finalFrom, landing) * 1000) / heightAvail : 99;
   const glide = { required_ratio: Math.round(required * 10) / 10, available_ratio: Math.round(available * 10) / 10, margin_ok: required <= available };
 
@@ -756,7 +757,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   // risques
   const checks = checkLevel(level, site, c, new Date(target.getTime() + est * MIN));
   const risks: Risk[] = [];
-  risks.push({ code: "MOCK_DATA", level: "caution", title: "Données de démonstration", detail: "Plan calculé sur une météo synthétique et des sites approximatifs : NE PAS utiliser pour voler." });
+  risks.push({ code: "MOCK_DATA", level: "caution", title: "Démo hors-ligne : données synthétiques", detail: "Plan calculé sur une météo synthétique et des sites approximatifs : NE PAS utiliser pour voler." });
   for (const m of [...checks.marginal, ...cand.extraMarginal]) risks.push({ code: m.code, level: "caution", title: m.text, detail: "Dans la zone 80-100 % du seuil de ton niveau : rester vigilant, prévoir un plan B." });
   const airspaces = airspaceWarnings(pts);
   for (const a of airspaces) {
@@ -777,7 +778,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
 
   const confidence = confidenceFor(horizon, c.wx);
   const items = scoreItems(ctx, c, cand, est, glide.required_ratio, glide.available_ratio, confidence, level);
-  const { score, flyability } = verdict(items, confidence, risks);
+  const { score, flyability } = verdict(items, confidence, horizon, risks);
 
   // météo
   const timeline: WeatherSnapshot[] = [];
@@ -935,7 +936,7 @@ export function mockPlans(req: PlanRequest, now: Date = new Date()): PlanRespons
 
   const takeoffs = MOCK_SITES.filter((s) => (s.kind === "takeoff" || s.kind === "both") && zoneContains(req.zone, s));
   const warnings: string[] = [
-    "Mode démonstration : météo synthétique, sites, balises et espaces aériens approximatifs. Ne pas utiliser pour voler.",
+    "Démo hors-ligne : données synthétiques (météo, sites, balises, espaces aériens approximatifs). Ne pas utiliser pour voler.",
   ];
   if (horizonToMinutes(req.horizon) >= 1440) warnings.push("Horizon long : tendance seulement, créneaux arrondis à l'heure. À reconfirmer la veille et le matin.");
   if (takeoffs.length === 0)

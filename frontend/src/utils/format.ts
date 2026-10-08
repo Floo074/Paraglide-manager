@@ -2,6 +2,9 @@
 
 const LOCALE = "fr-FR";
 
+/** Fuseau d'affichage : heure légale française (les sites sont en France). */
+export const DISPLAY_TZ = "Europe/Paris";
+
 function nf(maxFrac: number, minFrac = 0): Intl.NumberFormat {
   return new Intl.NumberFormat(LOCALE, { maximumFractionDigits: maxFrac, minimumFractionDigits: minFrac });
 }
@@ -47,14 +50,14 @@ export function formatPercent(ratio01: number): string {
   return `${Math.round(ratio01 * 100)} %`;
 }
 
-function timeParts(date: Date, timeZone?: string): Intl.DateTimeFormatOptions {
-  return { hour: "2-digit", minute: "2-digit", hour12: false, ...(timeZone ? { timeZone } : {}) } satisfies Intl.DateTimeFormatOptions;
+function timeParts(timeZone?: string): Intl.DateTimeFormatOptions {
+  return { hour: "2-digit", minute: "2-digit", hour12: false, ...(timeZone ? { timeZone } : {}) };
 }
 
 /** "14:00" (heure locale du navigateur, ou du fuseau demandé). */
-export function formatTime(iso: string | Date, timeZone?: string): string {
+export function formatTime(iso: string | Date, timeZone: string = DISPLAY_TZ): string {
   const d = typeof iso === "string" ? new Date(iso) : iso;
-  return new Intl.DateTimeFormat(LOCALE, timeParts(d, timeZone)).format(d);
+  return new Intl.DateTimeFormat(LOCALE, timeParts(timeZone)).format(d);
 }
 
 /** Clé jour "AAAA-MM-JJ" dans le fuseau demandé (pour comparer des jours calendaires). */
@@ -67,7 +70,7 @@ function dayKey(d: Date, timeZone?: string): string {
 /**
  * Date relative lisible : "aujourd'hui 14:00", "demain 09:00", "sam. 10 oct. 14:00".
  */
-export function formatDayTime(iso: string | Date, now: Date = new Date(), timeZone?: string): string {
+export function formatDayTime(iso: string | Date, now: Date = new Date(), timeZone: string = DISPLAY_TZ): string {
   const d = typeof iso === "string" ? new Date(iso) : iso;
   const time = formatTime(d, timeZone);
   const k = dayKey(d, timeZone);
@@ -83,7 +86,7 @@ export function formatDayTime(iso: string | Date, now: Date = new Date(), timeZo
 }
 
 /** Créneau "13:00 – 15:30". */
-export function formatWindow(start: string, end: string, timeZone?: string): string {
+export function formatWindow(start: string, end: string, timeZone: string = DISPLAY_TZ): string {
   return `${formatTime(start, timeZone)} – ${formatTime(end, timeZone)}`;
 }
 

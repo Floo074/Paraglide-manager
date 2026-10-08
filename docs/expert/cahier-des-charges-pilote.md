@@ -4,6 +4,7 @@
 > Destinataires : backend (`engine/rules.py`, scoring, routage, briefing) et frontend (carte, fiche plan).
 > Unités = celles du contrat d'API : km/h, m AMSL (sauf `_agl`), m/s, degrés « d'où vient le vent ».
 > Tous les seuils ci-dessous sont des **valeurs par défaut réglables** : ils doivent vivre dans `rules.py`, nulle part ailleurs.
+> **Révision 2 (phase 2)** : finesse de calcul et marges recalibrées, facteur de rafale non bloquant, rotation mesurée au-dessus de la brise de pente, fenêtres orage, coucher, confiance relative à l'horizon. Validé par les scénarios chiffrés de `scenarios-validation.md`.
 
 ---
 
@@ -85,7 +86,7 @@ Conséquences pour l'outil :
 | **Vent moyen max au déco** | 15 km/h (idéal 5-12) | 20 km/h | 25 km/h | 30 km/h |
 | **Rafales max au déco** | 20 km/h | 25 km/h | 30 km/h | 35 km/h |
 | **Écart rafale − moyenne max** | 8 km/h | 10 km/h | 12 km/h | 15 km/h |
-| **Facteur de rafale max** (rafale/moyenne, si moyenne ≥ 10) | 1,4 | 1,5 | 1,6 | 1,7 |
+| **Facteur de rafale max** (rafale/moyenne, si moyenne ≥ 15) — *caution seulement, jamais no-go* | 1,4 | 1,5 | 1,6 | 1,7 |
 | **Vent de travers max** (écart angulaire) | 30° | 45° | 60° | 75° |
 | ↳ composante de travers max (`v·sin(écart)`) | 6 km/h | 10 km/h | 13 km/h | 16 km/h |
 | **Vent arrière** | Interdit (seul vent nul < 5 km/h accepté) | Interdit (vent nul < 5 km/h seulement) | ≤ 5 km/h, déco pentu uniquement | ≤ 8 km/h, déco pentu uniquement |
@@ -95,12 +96,12 @@ Conséquences pour l'outil :
 | **Vent max à l'atterro (brise incluse)** | 15 km/h, rafales 20 | 20 km/h, rafales 25 | 25 km/h, rafales 30 | 28 km/h, rafales 35 |
 | **Vario thermique moyen max** (`thermal_strength_ms`) | 1,5 m/s | 2,5 m/s | 3,5 m/s | 5,0 m/s (au-delà : caution) |
 | **Gradient de vent** déco → déco+1000 m (Δ vitesse) | ≤ 10 km/h | ≤ 15 km/h | ≤ 20 km/h | ≤ 25 km/h |
-| **Rotation du vent** déco → plafond (si vents ≥ 10 km/h) | ≤ 45° | ≤ 60° | ≤ 90° | ≤ 120° |
+| **Rotation du vent** déco + 300 m → plafond utile (brise de pente exclue ; si les deux vents ≥ 10 km/h) | ≤ 45° | ≤ 60° | ≤ 90° | ≤ 120° |
 | **Cisaillement local** (Δ vitesse sur 300 m, typiquement à l'inversion) | ≤ 8 km/h | ≤ 12 km/h | ≤ 15 km/h | ≤ 20 km/h |
 | **Plafond utile mini au-dessus du déco — vol local thermique** | +700 m (et vario ≤ 1,5) | +600 m | +400 m | +300 m |
 | **Plafond utile mini — cross** | — (pas de cross) | déco +1200 m ET relief max de la route +500 m | déco +1000 m ET relief max +400 m | déco +800 m ET relief max +300 m |
-| **Coefficient finesse de calcul** `k` (finesse_calcul = polaire × k) | 0,50 (→ 4,3 pour 8,5) | 0,60 (→ 5,1) | 0,65 (→ 5,5) | 0,70 (→ 6,0) |
-| **Marge d'arrivée au-dessus de l'atterro** (entrée dans l'approche) | 200 m | 150 m | 120 m | 100 m |
+| **Coefficient finesse de calcul** `k` (finesse_calcul = polaire × k) | 0,65 (→ 5,5 pour 8,5) | 0,70 (→ 6,0) | 0,72 (→ 6,1) | 0,75 (→ 6,4) |
+| **Marge d'arrivée au-dessus de l'atterro** (entrée dans l'approche ; bornée à 25 % du dénivelé déco→atterro) | 100 m | 100 m | 100 m | 80 m |
 | **Distance max de cross raisonnable** | 0 (interdit) | 25 km (retour possible à un atterro connu) | 80 km | 250 km (illimité en distance libre plaine) |
 | **Durée max de vol** | 45 min (élève : 15-30 min) | 2 h | 5 h | 9 h (fenêtre convective) |
 | **Types de vol autorisés** | local (plouf, thermique doux), soaring doux (vent 15-20 sur site école) | local, soaring, petit cross | tous | tous |
@@ -127,7 +128,10 @@ hauteur_dispo = altitude_point − (alt_atterro + marge_arrivée(niveau))
 required_ratio = distance_horizontale_m / hauteur_dispo
 margin_ok = required_ratio ≤ finesse_calcul_sol  ET  le profil de terrain ne coupe pas la ligne de plané (dégagement ≥ 50 m)
 ```
-- Exemple : polaire 8,5, intermediate → 5,1 ; vent de face 15 km/h → 5,1 × 22/37 = **3,0**. C'est réaliste : face à une brise de 15 km/h, on « ne va nulle part ».
+- Exemple : polaire 8,5, intermediate → 6,0 ; vent de face 15 km/h → 6,0 × 22/37 = **3,6**. C'est réaliste : face à une brise de 15 km/h, on « ne va nulle part ».
+- Contrôle : Forclaz → Doussard (3,4 km, 800 m de dénivelé, marge 100 m) demande 4,9 → passe à tous les niveaux par vent calme, ce qui est conforme à la réalité (plouf d'école).
+- Sous-score finesse sur `r = required / available` : r ≤ 0,75 → 100 ; 0,90 → 60 ; 0,95 → 40 ; 1,0 → 0. `GLIDE_MARGIN` caution si r > 0,90, danger si r > 1.
+- **Soaring avec top landing** (alt. atterro ≥ alt. déco − 50 m) : pas de contrôle de finesse (`required_ratio = 0`, `margin_ok = true`) ; briefing : « en cas de baisse du vent, posez-vous en bas de la pente côté au vent ».
 - Ajouter **−10 %** sur la finesse de calcul si la ligne de plané passe sous le vent d'un relief ou dans une vallée en brise descendante.
 
 ---
@@ -137,8 +141,8 @@ margin_ok = required_ratio ≤ finesse_calcul_sol  ET  le profil de terrain ne c
 | # | Critère | Règle chiffrée (no-go) | Marginal (caution) |
 |---|---|---|---|
 | 1 | **Pluie** | `precipitation_mm_h ≥ 0,2` sur le créneau ±1 h au déco OU sur la route ; ou pluie ≥ 1 mm dans les 3 h précédant le déco (aile mouillée → risque de parachutale, sol froid) | 0,05-0,2 mm/h ; averses possibles dans la zone |
-| 2 | **Orage** | `CAPE ≥ 800 J/kg ET LI ≤ −2` ; ou `CAPE ≥ 1500` quel que soit LI ; ou précipitations convectives prévues < 30 km dans les 2 h après l'atterrissage prévu | `CAPE 300-800 ET LI ≤ 0` → fin de créneau avancée à 14h solaire |
-| 3 | **Surdéveloppement** | `overdevelopment_risk = "high"` ET créneau du vol après l'heure de surdév estimée | `moderate` → fin du créneau = heure surdév − 1 h |
+| 2 | **Orage** | Sur **[déco, atterrissage + 1 h]** : `CAPE ≥ 800 J/kg ET LI ≤ −2`, ou `CAPE ≥ 1500` quel que soit LI ; sur **[déco, atterrissage + 2 h]** : précipitations convectives prévues < 30 km | `CAPE 300-800 ET LI ≤ 0` dans la fenêtre → marginal, fin de créneau = surdév − 1 h |
+| 3 | **Surdéveloppement** | `overdevelopment_risk = "high"` ET créneau du vol après l'heure de surdév estimée | Risque du **jour** `high` → tout plan au mieux marginal (≤ 90 min, pas de cross sauf expert) ; `moderate` → marginal si l'heure de surdév tombe dans [déco, atterrissage + 2 h] ; fin du créneau = surdév − 1 h |
 | 4 | **Foehn** | Vent ≥ 40 km/h à 700 hPa (~3000 m) perpendiculaire à la crête principale (Alpes du Nord : secteur S-SW ; Alpes du Sud / Briançonnais : N-NW) ; ou Δ pression ≥ 4 hPa entre versants (ex. Turin−Genève) ; ou lenticulaires / mur de foehn | Vent 25-40 km/h à 700 hPa dans ces secteurs ; air anormalement sec et chaud en vallée sous le vent (T +4 °C vs prévision, HR < 40 %) |
 | 5 | **Vent régional** (mistral, tramontane, bise) | Mistral/bise ≥ 30 km/h au sol en vallée du Rhône / bassin genevois → no-go dans la zone d'influence | 20-30 km/h |
 | 6 | **Base des nuages / visibilité** | `cloud_base_m < alt_déco + 200` ; nuages bas ≥ 80 % avec base < déco + 300 ; brouillard/stratus sur l'atterro ; visibilité < 5 km ; `T − Td < 1,5 °C` au déco | base < déco + 500 (pas de thermique exploitable) |
@@ -146,7 +150,7 @@ margin_ok = required_ratio ≤ finesse_calcul_sol  ET  le profil de terrain ne c
 | 8 | **Vent météo opposé (dévent)** | Vent au niveau des crêtes ≥ 15 km/h venant d'un secteur à plus de 120° de l'axe du déco (le déco est sous le vent) — **même si la balise du déco indique une brise favorable** | 10-15 km/h opposé ; vent météo de travers ≥ 20 km/h |
 | 9 | **Vent au déco hors limites** | Vent moyen > 30 km/h ou rafales > 35 km/h (tous niveaux) ; écart rafale-moyenne > 15 km/h | cf. tableau §2 par niveau |
 | 10 | **Atterrissage** | Vent à l'atterro > 28 km/h ou rafales > 35 km/h à l'heure d'arrivée ; aucun atterro accessible avec la finesse de calcul | brise > seuil du niveau − 20 % |
-| 11 | **Jour aéronautique** | Atterrissage estimé après le coucher du soleil (le vol libre se pratique de jour) | atterrissage < 30 min avant coucher |
+| 11 | **Jour aéronautique** | Atterrissage estimé après le coucher du soleil (le vol libre se pratique de jour) | atterrissage entre coucher − 30 min et coucher → marginal (`SUNSET`) |
 | 12 | **Réglementaire** | Site `status = "closed"` ; route traversant un espace aérien interdit (P, R/ZRT actif, classe A/C/D sans clairance, CTR/TMA sous plancher) ; cœur de parc national / réserve avec survol interdit ; zone de quiétude rapaces en période active | espace aérien à moins de 1 km latéral / 100 m vertical de la route ; site `restricted` |
 | 13 | **Front / dégradation** | Pression en baisse ≥ 3 hPa / 3 h ; arrivée de précipitations < 2 h après la fin du vol | voile d'altostratus qui épaissit (couverture moyenne/haute ≥ 80 % → thermiques coupés) |
 | 14 | **Neige / gel** | Déco enneigé non signalé praticable ; T < −10 °C ressenti au plafond pour beginner | isotherme 0 °C < plafond (onglée, givre sur instruments) |
@@ -460,7 +464,7 @@ Règles :
 |---|---|---|---|
 | `takeoff_wind` (moyen, rafales, écart, travers) | 25 | vent de face 5-15 km/h, écart rafale ≤ 5 | au seuil du niveau |
 | `wind_aloft` (vent aux niveaux atteints, gradient, cisaillement) | 15 | < 50 % du seuil | au seuil |
-| `landing` (vent/brise à l'heure d'arrivée, marge de finesse, atterros de secours) | 15 | brise < 50 % du seuil, `required ≤ 0,7 × available` | au seuil / marge nulle |
+| `landing` (vent/brise à l'heure d'arrivée, marge de finesse, atterros de secours) | 15 | brise < 50 % du seuil, `required ≤ 0,75 × available` | au seuil / marge nulle (courbe finesse §2.3) |
 | `thermal_match` (vario, plafond utile, créneau vs préférence) | 15 | cf. 9.3 | |
 | `duration_match` | 10 | durée estimée dans [min, max] demandés | écart > 50 % |
 | `convective_stability` (CAPE/LI, surdév, nuages, fin de créneau) | 10 | CAPE < 100, risque low | au seuil no-go |
@@ -480,10 +484,13 @@ Vent nul au déco : sous-score `takeoff_wind` = 80 (décollage plus technique, f
 
 ### 9.4 Verdict et difficulté
 
-- **go** : aucun no-go, score ≥ 65, tous les critères de sécurité (`takeoff_wind`, `wind_aloft`, `landing`, `convective_stability`) ≥ 50, confiance ≥ 0,5.
-- **marginal** : aucun no-go, mais score 45-65, ou un critère de sécurité dans la zone 80-100 % du seuil, ou confiance < 0,5. **Toujours dire pourquoi** (risque `caution` correspondant).
+- **go** : aucun no-go, score ≥ 65, tous les critères de sécurité (`takeoff_wind`, `wind_aloft`, `landing`, `convective_stability`) ≥ 50, `confidence ≥ 0,75 × confiance de base de l'horizon` (c'est-à-dire dispersion × cohérence balises ≥ 0,75), et aucun Risk `caution` « bloquant » (`TAILWIND`, `SUNSET`, `OVERDEVELOPMENT`, `CROSSWIND`, `VALLEY_BREEZE` en bande 80-100 %, `SENSITIVE_AREA`, `LOW_CONFIDENCE`, `GLIDE_MARGIN`).
+- **marginal** : aucun no-go, mais score 45-65, ou un critère de sécurité dans la zone 80-100 % du seuil, ou un Risk caution bloquant, ou une confiance insuffisante. **Toujours dire pourquoi** (risque `caution` correspondant).
+- **Mode mock** : confiance affichée plafonnée à 0,3, mais le verdict utilise le ratio non plafonné ; Risk `MOCK_DATA` (caution, non bloquant) et warning explicite.
+- **Durée** : on ne rejette jamais un site pour la durée seule ; `duration_match` pénalise et `summary` explique.
+- **Créneau** : `window.start ∈ [cible − 30 min, cible + 3 h]`.
 - **no_go** : un no-go absolu, un seuil du niveau dépassé, ou score < 45.
-- **`difficulty` du plan** = max(difficulté du site, plus petit niveau dont tous les seuils §2 passent, niveau mini du type de vol : cross ≥ intermediate, distance libre ≥ expert, triangle FAI ≥ advanced). Si `difficulty` > niveau demandé → plan rejeté (raison : « conditions trop fortes pour ton niveau, OK pour brevet confirmé »).
+- **`difficulty` du plan** = max(difficulté du site, plus petit niveau dont tous les seuils §2 passent, niveau mini du type de vol : cross ≥ intermediate, distance libre ≥ expert, triangle FAI ≥ advanced). Si `difficulty` > niveau demandé → plan rejeté (raison : « conditions trop fortes pour ton niveau, OK pour brevet confirmé » ; code `SITE_LEVEL` si c'est le site lui-même).
 - **Diversité** : dans les 5 premiers plans, au plus 2 par décollage, et au moins un plan d'orientation différente si disponible.
 
 ---
@@ -523,7 +530,7 @@ levels: [beginner, intermediate, advanced, expert]
 takeoff_wind_max_kmh:        {beginner: 15, intermediate: 20, advanced: 25, expert: 30}
 takeoff_gust_max_kmh:        {beginner: 20, intermediate: 25, advanced: 30, expert: 35}
 gust_spread_max_kmh:         {beginner: 8,  intermediate: 10, advanced: 12, expert: 15}
-gust_factor_max:             {beginner: 1.4, intermediate: 1.5, advanced: 1.6, expert: 1.7}
+gust_factor_max:             {beginner: 1.4, intermediate: 1.5, advanced: 1.6, expert: 1.7}   # caution seulement, si moyenne >= 15
 crosswind_angle_max_deg:     {beginner: 30, intermediate: 45, advanced: 60, expert: 75}
 crosswind_component_max_kmh: {beginner: 6,  intermediate: 10, advanced: 13, expert: 16}
 tailwind_max_kmh:            {beginner: 0,  intermediate: 0,  advanced: 5,  expert: 8}
@@ -541,8 +548,9 @@ shear_max_kmh_per_300m:      {beginner: 8,  intermediate: 12, advanced: 15, expe
 local_ceiling_min_above_takeoff_m: {beginner: 700, intermediate: 600, advanced: 400, expert: 300}
 xc_ceiling_min_above_takeoff_m:    {beginner: null, intermediate: 1200, advanced: 1000, expert: 800}
 xc_ceiling_min_above_relief_m:     {beginner: null, intermediate: 500, advanced: 400, expert: 300}
-glide_k:                     {beginner: 0.50, intermediate: 0.60, advanced: 0.65, expert: 0.70}
-landing_arrival_margin_m:    {beginner: 200, intermediate: 150, advanced: 120, expert: 100}
+glide_k:                     {beginner: 0.65, intermediate: 0.70, advanced: 0.72, expert: 0.75}
+landing_arrival_margin_m:    {beginner: 100, intermediate: 100, advanced: 100, expert: 80}   # bornée à 25 % du dénivelé
+glide_subscore_curve:        {0.75: 100, 0.90: 60, 0.95: 40, 1.0: 0}                        # r = required / available
 xc_max_distance_km:          {beginner: 0, intermediate: 25, advanced: 80, expert: 250}
 max_duration_min:            {beginner: 45, intermediate: 120, advanced: 300, expert: 540}
 transition_arrival_above_terrain_m: {intermediate: 500, advanced: 400, expert: 300}
@@ -571,7 +579,7 @@ venturi_factor_col: 1.5
 rotor_lee_factor: {moderate: 5, strong: 10}  # × hauteur du relief
 valley_breeze_afternoon_factor: 1.3
 marginal_band: 0.8                           # 80-100 % du seuil
-verdict: {go_min_score: 65, go_min_safety_subscore: 50, go_min_confidence: 0.5, nogo_max_score: 45}
+verdict: {go_min_score: 65, go_min_safety_subscore: 50, go_min_confidence_ratio: 0.75, nogo_max_score: 45}   # ratio = confidence / base(horizon)
 weights: {takeoff_wind: 25, wind_aloft: 15, landing: 15, thermal_match: 15, duration_match: 10, convective_stability: 10, data_confidence: 5, site_fit: 5}
 horizon_beacon_weight: {"30m": 0.7, "1h": 0.5, "2h": 0.3, "8h": 0.1, "12h": 0, "24h": 0, "48h": 0}
 horizon_base_confidence: {"30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4}
@@ -592,7 +600,7 @@ goal_radius_m: 300
 3. **Le faux calme tue** : vent ≥ 15 km/h au niveau de la crête venant de l'arrière du déco = no-go, même si la balise du déco affiche une brise favorable.
 4. **L'atterro se juge à l'heure d'arrivée**, avec la brise de vallée (×1,3 sur AROME entre 13h et 17h dans les grandes vallées) et une finesse de calcul sol = polaire × k(niveau) × (V_air + vent arrière)/V_air.
 5. **Toujours un atterro identifié dans le cône de finesse**, vérifié tous les 500 m de route avec le profil de terrain ; publier l'altitude de sécurité = points de décision.
-6. **Fenêtre thermique en heure solaire** selon saison (§4.1) et orientation de face (§4.2) ; créneau fermé par `min(convection_end, surdév − 1 h, coucher − 30 min)`.
+6. **Fenêtre thermique en heure solaire** selon saison (§4.1) et orientation de face (§4.2) ; dernier atterrissage pour un GO = `min(convection_end + 30 min, surdév − 1 h, coucher − 30 min)` ; atterrissage après le coucher = no-go.
 7. **Routes de cross** : face au vent d'abord, points sur faces ensoleillées à l'ETA, transitions au plus étroit, jamais sous le vent / en venturi ; `V_eff = V_xc − W²/V_xc` en circuit fermé.
 8. **Espaces aériens en 3D** convertis en AMSL, plafond FL115 (~3500 m), R/ZRT au statut inconnu = caution ; parcs nationaux, réserves et zones rapaces = zones à éviter.
 9. **Pondération balises/modèles décroissante avec l'horizon** (0,7 à 30 min → 0 à 12 h) et confiance = base(horizon) × dispersion inter-modèles × cohérence balises ; mode mock affiché en clair.
