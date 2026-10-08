@@ -101,6 +101,32 @@ Validé tel quel : architecture des `Finding` évalués par niveau (seuil strict
 
 - Lot 1 : tout accepté. Précision technique acceptée : le sol « lissé » du modèle = moyenne du MNT sur 2,5 km de rayon autour du déco ; le vent au déco est interpolé entre ce point 10 m et les niveaux de pression. Rafales = `gust_10m × v_déco / v_10m`, bornées à `v_déco + 25` (× 1,35 si le modèle ne fournit pas de rafales). ScoreItem `airspace` informatif (poids 0) : **accepté** côté expert (les espaces aériens restent un filtre dur).
 - Lot 2 : tout accepté, en cours d'implémentation.
+- Lots 3 et 4 : acceptés. Fixtures corrigées : Plaine-Joux avec un atterro à ~2,8 km ; atterros du Puy de Dôme rapprochés ; Gourdon passé en advanced ; Doussard déplacé hors de la RNN du Bout du Lac (que la vraie couche Biodiv'Sports contient). Textes des parcs conformes à la consigne 2.16. `window.latest_landing` et `sun` ajoutés au contrat. Règles d'import PGE a à g en place. `od_time = min(...)`, `gust_max`, `WEAK_THERMALS` : faits. 4.2 confirmé : Open-Meteo est interrogé avec `elevation=<altitude du site>`, déco et atterro séparément.
+- **Désaccord S09, tranché** : avec un seul atterro, la règle du cône de finesse limite un circuit à ~70 km, soit environ 2 h 30 : le scénario était irréaliste. Décision de l'expert : option (a), ajout d'`alternate_landings` réels dans S09 (7 atterros de Haute-Provence), S25 (5 atterros autour d'Annecy) et S05 (Les Houches, Passy). Principe retenu : en live, le cône s'appuie sur tous les atterros officiels de la zone.
+- Premier passage des scénarios dans le moteur : **24/32 conformes**. Propositions du backend acceptées par l'expert :
+  1. `VERDICT.go_min_safety_subscore` 50 → **40** (la courbe vaut 50 à 75 % du seuil, ce qui rendait marginaux des critères à 75-80 %, incohérent avec la bande 80 %). CDC mis à jour.
+  2. Vent arrière : au-delà de 90° d'écart, c'est la **vitesse totale** qui se compare au seuil (la composante au secteur le plus proche donnait 4,2 km/h pour un plein E sur Forclaz). CDC mis à jour ; ma règle 5.3 est corrigée.
+  3. Le créneau n'est décalé que si le vol est infaisable à l'heure cible (ou pour la règle « élève hors pic ») ; un no-go météo reste un no-go (S08 et S13 sortaient marginaux 2 à 3 h plus tard).
+  4. Contrôle du relief sous la ligne de plané seulement avec le MNT réel ; en mock, un warning « profil de terrain non vérifié » est demandé.
+  - Les raisons de rejet listent aussi les cautions explicatives (S20 : `BEACON_MISMATCH`).
+
+### Lot 6 : premier passage des 32 scénarios dans le moteur réel, jugés comme au briefing (envoyé)
+
+Exécution par l'expert de `run_scenario` sur `scenarios-validation.yaml` : **32/32 conformes** sur le verdict et les codes de risque obligatoires. Relecture détaillée des plans :
+
+| # | Constat → demande | Statut |
+|---|---|---|
+| 6.1 | **Bug** : la convection et l'heure de surdév sont calculées sur ±16 h autour de la cible, donc sur la veille (S06 annonce un « surdéveloppement vers 21h00 »). Il faut limiter au jour local (lever → coucher). | envoyé |
+| 6.2 | Classement : le plouf de 13 min passe devant un local thermique qui respecte la durée demandée, à score égal à cause du plafond de sécurité (S08b, S17b, S22). Tri attendu : verdict, puis durée dans la plage, puis score plafonné, puis score non plafonné. | envoyé |
+| 6.3 | Texte : le plouf affiche « pas de thermique exploitable » alors qu'une variante thermique existe ; reformuler en « plan B ». | envoyé |
+| 6.4 | `thermal_match` en `required` calculé sur le ratio STRONG_THERMALS (S09 : 60) au lieu de la courbe de préférence du §9.3 | envoyé |
+| 6.5 | Cross sous-dimensionné : S09 fait 115 km en 3 h 54 sur 8 h de convection, avec un motif « fin des thermiques » erroné. Dimensionner sur le budget de temps, dans la limite du cône des atterros. | envoyé |
+| 6.6 | Local thermique trop loin du cône (S22 : r = 0,93). Déclencheurs locaux limités à r ≤ 0,80. | envoyé |
+| 6.7 | Créneau : vérifier vent au déco et à l'atterro sur toute la fenêtre, couper avant le no-go, `WIND_INCREASING` si le vent forcit ; `weather.landing.time = window.start + durée` | envoyé |
+| 6.8 | Risques en doublon (S16b : 5 cautions pour un seul fait) : un Risk par code ; en soaring, pas de STRONG_WIND_ALOFT ni de LANDING_WIND redondants | envoyé |
+| 6.9 | Durée réaliste du local thermique selon le vario et le plafond (≤ 60 / 120 / 45 min) | envoyé |
+| 6.10 | Couche `useful_height` dans `/api/forecast/grid` | envoyé |
+| 6.11 | `glide.required_ratio` = pire cas (déco à son altitude, et chaque point bas de la route) | envoyé (confirmation demandée) |
 
 ## Lots envoyés au frontend
 
@@ -130,7 +156,21 @@ Réponse du frontend : F1 accepté en totalité. Trois choix soumis :
 | F2.3 | Libellé du code `SITE_LEVEL` | envoyé |
 | F2.4 | PlanCard : « posé avant », et « air calme » au lieu de « 0,0 m/s » | envoyé |
 | F2.5 | Verdict : rappel « l'analyse sur place prime » pour GO et MARGINAL | envoyé |
-| F2.6 | Ordre des blocs de la page plan (à vérifier une fois la page assemblée) | en attente |
+| F2.6 | Ordre des blocs de la page plan (à vérifier une fois la page assemblée) | **corrigé** (vérifié sur les captures `docs/screenshots/plan-detail-*.png`) |
+
+Réponse du frontend : F1 et F2 appliqués, page `PlanDetailPage.tsx` assemblée dans l'ordre demandé. Sur mobile, le premier écran montre verdict + créneau + début du vent.
+
+### Lot F3 : relecture des captures de la fiche plan (envoyé)
+
+| # | Demande | Statut |
+|---|---|---|
+| F3.1 | Afficher `weather.landing.time` (et non un recalcul) : validé | validé |
+| F3.2 | Mock : finesse requise Forclaz→Doussard affichée 1,6 au lieu de ~5,0 ; appliquer la règle du pire cas | envoyé |
+| F3.3 | Mock : profil d'altitude au-dessus du plafond utile (2100 m pour 1990 m) | envoyé |
+| F3.4 | Itinéraire : colonne « alt. de sécurité » si elle est fournie | envoyé |
+| F3.5 | Risques « info » visuellement plus discrets | envoyé |
+| F3.6 | Légende de la carte du plan : « Vent au sol (modèle, 10 m) », pour ne pas la confondre avec le vent retenu au déco | envoyé |
+| F3.7 | Couche « hauteur utile » quand le backend l'exposera | en attente du backend (6.10) |
 
 ## Désaccords remontés au coordinateur
 

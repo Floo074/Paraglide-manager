@@ -13,7 +13,8 @@ import { FitTo, InvalidateOnResize } from "../map/FitTo";
 import { LayersMenu, ZoomButtons } from "../map/MapControls";
 import { MapShell } from "../map/MapShell";
 import { GlideRangeLayer, RouteLayer, WaypointMarkers } from "../map/PlanLayers";
-import { GridLegend, WEATHER_LAYERS, WIND_ALTITUDE_OPTIONS, WeatherGridLayer, type WeatherLayerChoice } from "../map/WeatherGrid";
+import { GridLegend, WeatherGridLayer } from "../map/WeatherGrid";
+import { WEATHER_LAYERS, WIND_ALTITUDE_OPTIONS, type WeatherLayerChoice } from "../map/weatherLayers";
 import { ALTITUDE_STOPS, interpolateStops } from "../../utils/colors";
 import { formatNumber } from "../../utils/format";
 
@@ -33,7 +34,7 @@ export function PlanMap({ plan, level, now }: { plan: FlightPlan; level: Difficu
   const [map, setMap] = useState<L.Map | null>(null);
   const [baseLayer, setBaseLayer] = usePersistentState<BaseLayerId>("pm.baseLayer", DEFAULT_BASE_LAYER, isBase);
   const [ov, setOv] = usePersistentState<Overlays>("pm.overlays.plan", DEFAULTS, isOverlays);
-  const [weather, setWeather] = useState<WeatherLayerChoice>("wind");
+  const [weather, setWeather] = useState<WeatherLayerChoice>("none");
   const [windAlt, setWindAlt] = useState(10);
   const [grid, setGrid] = useState<ForecastGridResponse | null>(null);
   const [gridLoading, setGridLoading] = useState(false);

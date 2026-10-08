@@ -18,7 +18,8 @@ export function RouteLayer({ plan, dim = false, highlight = false, onClick }: { 
   const weight = highlight ? 6 : dim ? 3 : 5;
   return (
     <>
-      <Polyline positions={latlngs} pathOptions={{ color: "#0b1220", weight: weight + 3, opacity: dim ? 0.25 : 0.55, lineCap: "round", lineJoin: "round" }} eventHandlers={onClick ? { click: onClick } : undefined} />
+      <Polyline positions={latlngs} pathOptions={{ color: "#ffffff", weight: weight + 5, opacity: dim ? 0.35 : 0.9, lineCap: "round", lineJoin: "round" }} eventHandlers={onClick ? { click: onClick } : undefined} />
+      <Polyline positions={latlngs} pathOptions={{ color: "#0b1220", weight: weight + 2, opacity: dim ? 0.3 : 0.7, lineCap: "round", lineJoin: "round" }} interactive={false} />
       {coords.slice(1).map((c, i) => {
         const a = coords[i]!;
         const alt = (a[2] + c[2]) / 2;

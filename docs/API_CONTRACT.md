@@ -93,6 +93,10 @@ interface WeatherSnapshot {
     beacon_ids: string[]; wind_speed_bias_kmh: number; wind_direction_bias_deg: number;
   } | null;
 }
+// Dans un FlightPlan, wind_10m = vent RETENU au site : au déco (weather.takeoff et weather.timeline[*]),
+// vent interpolé à l'altitude réelle du déco, nowcast inclus, rafales mises à l'échelle ; à l'atterro
+// (weather.landing), vent à l'heure d'arrivée, facteur de brise de vallée inclus. Le 10 m brut du modèle
+// reste dans GET /api/forecast/point (usage carte).
 
 interface ThermalAnalysis {
   convection_start: string | null;
@@ -135,7 +139,9 @@ interface FlightPlan {
   title: string;                     // "Col de la Forclaz → Doussard · local thermique 1h30"
   summary: string;                   // 1-2 phrases
   target_time: string;
-  window: { start: string; end: string };   // créneau de décollage recommandé
+  window: { start: string; end: string; latest_landing?: string };   // créneau de décollage recommandé ;
+                                     // latest_landing (optionnel) = dernier atterrissage compatible avec ce verdict
+  sun?: { sunrise: string | null; sunset: string | null };          // (optionnel) lever/coucher au déco, ISO UTC
   takeoff: Site;
   landing: Site;
   alternate_landings: Site[];
@@ -237,4 +243,4 @@ Erreurs : `422` si requête invalide (zone > 150 km de rayon / bbox > 3° de cô
 
 ### `GET /api/plans/{id}` → `FlightPlan` (cache mémoire, TTL 6h ; 404 sinon)
 ### `GET /api/plans/{id}/gpx` → `application/gpx+xml` (GPX 1.1 : `wpt` déco/balises/atterros, `rte` route, `metadata` avec briefing résumé)
-### `GET /api/plans/{id}/xctsk` → `application/json` (format tâche XCTrack v1 : déco en `TAKEOFF`, balises, atterro en `GOAL`)
+### `GET /api/plans/{id}/xctsk` → `application/json` (format tâche XCTrack v1 : déco en `TAKEOFF`, balises, atterro = dernière balise, typée `ESS` et décrite par l'objet `goal` — XCTrack n'a pas de type de balise « GOAL »)

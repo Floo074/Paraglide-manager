@@ -61,7 +61,8 @@ def wind_angle(speed: float, direction: float, orientations: list[str]) -> WindA
     cross = speed * math.sin(math.radians(min(ecart, 90.0))) if cat == "cross" else 0.0
     if cat == "tail":
         cross = speed * abs(math.sin(math.radians(raw)))
-    tail = speed * max(0.0, -math.cos(math.radians(raw))) if cat == "tail" else 0.0
+    # vent arrière : on compare la VITESSE du vent au seuil (S18, plus prudent que la composante)
+    tail = speed if cat == "tail" else 0.0
     return WindAngle(ecart, raw, calm, cat, cross, tail)
 
 

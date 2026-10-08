@@ -5,7 +5,8 @@ import { THERMAL_USAGE_LABEL, difficultyLabel, flightTypeLabel } from "../../con
 import { takeoffLimits } from "../../config/thresholds";
 import { formatAltitude, formatDuration, formatKm, formatTime, formatVario } from "../../utils/format";
 import { planTimes } from "../../utils/planTimes";
-import { RiskLine, sortRisks } from "../common/RiskLine";
+import { RiskLine } from "../common/RiskLine";
+import { sortRisks } from "../../utils/risks";
 import { WindText } from "../common/WindText";
 import { FlyabilityBadge } from "../ui/Badges";
 

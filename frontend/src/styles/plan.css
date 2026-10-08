@@ -1,1 +1,875 @@
-/* plan */
+/* ───────────── Fiche plan de vol ───────────── */
+.plan-page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 10px 12px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plan-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-head__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: -4px 0 -6px;
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.plan-head__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.plan-head__title {
+  font-size: 1.04rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.plan-head__rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+.plan-head__sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.plan-head__actions {
+  display: flex;
+  gap: 2px;
+}
+
+.plan-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plan-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .plan-page {
+    padding: 14px 20px 48px;
+  }
+  .plan-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+    grid-template-areas:
+      "top map"
+      "rest map";
+    align-items: start;
+    gap: 14px 18px;
+  }
+  .plan-col--top {
+    grid-area: top;
+  }
+  .plan-col--rest {
+    grid-area: rest;
+  }
+  .plan-col--map {
+    grid-area: map;
+    position: sticky;
+    top: calc(var(--header-h) + 12px);
+  }
+  .plan-head__title {
+    font-size: 1.3rem;
+  }
+}
+
+.block {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.block__title {
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.block__sub {
+  font-size: 0.86rem;
+  margin-top: 4px;
+}
+.block--details > summary {
+  cursor: pointer;
+  list-style: revert;
+  font-weight: 700;
+}
+.block--details[open] > summary {
+  margin-bottom: 4px;
+}
+.sub-details {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.sub-details > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+.sub-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+/* 1. Verdict */
+.verdict {
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left-width: 6px;
+  background: var(--bg-elev);
+}
+.verdict--go {
+  border-left-color: var(--go);
+  background: linear-gradient(90deg, var(--go-soft), var(--bg-elev) 60%);
+}
+.verdict--marginal {
+  border-left-color: var(--marginal);
+  background: linear-gradient(90deg, var(--marginal-soft), var(--bg-elev) 60%);
+}
+.verdict--no_go {
+  border-left-color: var(--nogo);
+  background: linear-gradient(90deg, var(--nogo-soft), var(--bg-elev) 60%);
+}
+.verdict__row {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+}
+.verdict__row > div {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.verdict__k {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  font-weight: 700;
+}
+.verdict__level strong {
+  font-size: 0.95rem;
+}
+.verdict__conf strong {
+  font-size: 1.05rem;
+}
+.verdict__score {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+.verdict__why {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  font-size: 0.86rem;
+}
+.verdict__ok {
+  margin-top: 8px;
+  color: var(--text-muted);
+}
+.verdict__onsite {
+  margin-top: 6px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* 2. Créneau + frise */
+.window-block {
+  gap: 8px;
+}
+.window-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: 0.96rem;
+}
+.window-line svg {
+  vertical-align: -2px;
+}
+.window-line .sep {
+  color: var(--text-faint);
+}
+.strip-wrap {
+  overflow-x: auto;
+  margin: 0 -4px;
+}
+.strip {
+  width: 100%;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  border-collapse: separate;
+  border-spacing: 2px 0;
+}
+.strip th,
+.strip td {
+  text-align: center;
+  padding: 3px 2px;
+  white-space: nowrap;
+}
+.strip tbody th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-faint);
+  padding-right: 6px;
+  font-size: 0.72rem;
+}
+.strip thead th {
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.strip .in-window {
+  background: var(--accent-soft);
+}
+.strip thead th.in-window {
+  border-radius: 6px 6px 0 0;
+  color: var(--accent);
+}
+.strip tbody tr:last-child .in-window {
+  border-radius: 0 0 6px 6px;
+}
+.strip-key {
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+.strip .is-target {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.strip td {
+  font-weight: 700;
+}
+.strip td.wv--ok,
+.strip td.wv--near,
+.strip td.wv--over {
+  font-weight: 800;
+}
+.strip__dir {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.strip__arrow {
+  display: inline-block;
+  font-weight: 800;
+  margin-right: 1px;
+}
+.strip__gust {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+/* 3. Vent */
+.wind-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "deco land"
+    "alt alt";
+  gap: 8px;
+}
+.tile--deco {
+  grid-area: deco;
+}
+.tile--land {
+  grid-area: land;
+}
+.tile--alt {
+  grid-area: alt;
+}
+.tile--alt .tile__list {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+.tile--alt .tile__list li {
+  flex-direction: column;
+  gap: 0;
+}
+@media (min-width: 1024px) {
+  .wind-tiles {
+    grid-template-columns: 1fr 1fr 1.2fr;
+    grid-template-areas: "deco alt land";
+  }
+  .tile--alt .tile__list {
+    flex-direction: column;
+  }
+  .tile--alt .tile__list li {
+    flex-direction: row;
+    justify-content: space-between;
+  }
+}
+.tile {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.tile__k {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  font-weight: 700;
+}
+.tile__v {
+  font-size: 1rem;
+}
+.tile__sub {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+}
+.tile__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+.tile__list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.tile__alt {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.beacons-near summary {
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+.beacons-near ul {
+  list-style: none;
+  margin-top: 6px;
+}
+.beacons-near li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.86rem;
+  flex-wrap: wrap;
+}
+.beacons-near li.is-stale {
+  opacity: 0.65;
+}
+
+/* 4. Briefing */
+.briefing {
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 0.92rem;
+}
+.briefing li::marker {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* 5. Carte du vol */
+.block--map {
+  padding: 12px 12px 10px;
+}
+.plan-map {
+  height: 58vh;
+  min-height: 320px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+@media (min-width: 1024px) {
+  .plan-map {
+    height: calc(100vh - var(--header-h) - 230px);
+    min-height: 420px;
+  }
+}
+.wx-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.wx-controls .select {
+  min-width: 0;
+}
+.block--map .grid-legend {
+  width: auto;
+  max-width: none;
+  box-shadow: none;
+}
+
+/* 6. Aérologie */
+.facts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+.fact {
+  display: flex;
+  flex-direction: column;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.fact__k {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  font-weight: 700;
+}
+.fact__v {
+  font-weight: 800;
+  font-size: 1rem;
+}
+.fact__s {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+}
+.dayline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dayline__bar {
+  position: relative;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+.dayline__conv,
+.dayline__win {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 6px;
+}
+.dayline__conv,
+.dayline__conv-sw {
+  background: color-mix(in srgb, var(--marginal) 45%, transparent);
+}
+.dayline__win,
+.dayline__win-sw {
+  background: var(--accent);
+}
+.dayline__win {
+  top: 5px;
+  bottom: 5px;
+}
+.dayline__peak {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--marginal);
+}
+.dayline__ticks {
+  position: relative;
+  height: 14px;
+  font-size: 0.68rem;
+  color: var(--text-faint);
+}
+.dayline__ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+/* graphiques */
+.timeline-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mini-chart {
+  margin: 0;
+}
+.mini-chart__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+.mini-chart__title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  align-items: center;
+}
+.chart-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sw {
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.sw--line {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+.sw--dash {
+  width: 14px;
+  height: 0;
+  border-top: 2px dashed;
+}
+.sw--box {
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+}
+.chart-readout {
+  color: var(--text);
+}
+.chart-tooltip {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 0.78rem;
+  box-shadow: var(--shadow);
+}
+.chart-tooltip__t {
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+.chart-tooltip__row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.chart-tooltip__row i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.emagram {
+  margin: 0;
+}
+.emagram svg {
+  width: 100%;
+  height: auto;
+  touch-action: pan-y;
+}
+.chart-tick {
+  font-size: 11px;
+  fill: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.chart-axis {
+  font-size: 11px;
+  fill: var(--text-faint);
+  font-weight: 600;
+}
+.chart-note {
+  font-size: 11px;
+  fill: var(--text-muted);
+}
+.chart-note--strong {
+  fill: var(--go);
+  font-weight: 700;
+}
+.recharts-cartesian-axis-tick-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 7. Risques */
+.risk-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.risk {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+}
+.risk > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.risk--danger {
+  border-left-color: var(--nogo);
+  background: var(--nogo-soft);
+}
+.risk--caution {
+  border-left-color: var(--marginal);
+  background: var(--marginal-soft);
+}
+.risk--info {
+  border-left-color: var(--info);
+  background: var(--bg);
+}
+.risk__title {
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+.risk__title .code-chip {
+  margin-left: 4px;
+}
+.risk__detail {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.risk-line.risk--danger,
+.risk-line.risk--caution,
+.risk-line.risk--info {
+  background: none;
+}
+
+/* 8. Atterrissage */
+.landing-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.landing-main__name {
+  font-weight: 800;
+  font-size: 1rem;
+}
+.glide {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.glide__bar {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  overflow: visible;
+}
+.glide__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+}
+.glide__limit {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--text);
+}
+
+/* 10. Checklist, urgence */
+.checklist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.check-item:hover {
+  background: var(--bg-hover);
+}
+.check-item input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.check-item__box {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 2px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  background: var(--bg);
+}
+.check-item input:focus-visible + .check-item__box {
+  box-shadow: var(--focus);
+}
+.check-item--done .check-item__box {
+  background: var(--go);
+  border-color: var(--go);
+  color: #fff;
+}
+.check-item--done > span:last-child {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-faint);
+}
+.emergency {
+  border-color: color-mix(in srgb, var(--nogo) 40%, var(--border));
+}
+.emergency__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.emergency__radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.92rem;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wp-table td:first-child {
+  min-width: 160px;
+}
+.wp-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: 0;
+}
+.wp-dot--takeoff {
+  background: #15803d;
+}
+.wp-dot--turnpoint {
+  background: #7c3aed;
+}
+.wp-dot--thermal_trigger {
+  background: #ea580c;
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+.wp-dot--landing {
+  background: #1d4ed8;
+  border-radius: 3px;
+}
+.wp-dot--alternate_landing {
+  background: #64748b;
+  border-radius: 3px;
+}
+.score-table td {
+  vertical-align: middle;
+}
+.score-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+}
+.route-sketch {
+  width: 100%;
+  height: auto;
+}
+
+/* mobile : verdict, créneau et vent dans le premier écran */
+@media (max-width: 640px) {
+  .plan-page,
+  .plan-grid,
+  .plan-col {
+    gap: 8px;
+  }
+  .plan-page {
+    padding-top: 6px;
+  }
+  .block {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .verdict__row {
+    gap: 6px 14px;
+  }
+  .verdict__why {
+    margin-top: 6px;
+  }
+  .demo-tag--block {
+    margin-top: 6px;
+    font-size: 0.7rem;
+  }
+  .window-line {
+    font-size: 0.9rem;
+  }
+  .strip {
+    font-size: 0.74rem;
+  }
+  .hide-sm {
+    display: none;
+  }
+}

@@ -21,13 +21,13 @@ export function WindBlock({ plan, level, now }: { plan: FlightPlan; level: Diffi
         Vent
       </h2>
       <div className="wind-tiles">
-        <div className="tile">
+        <div className="tile tile--deco">
           <div className="tile__k">Déco · {formatTime(wx.time)}</div>
           <div className="tile__v">
             <WindText speed={wx.wind_10m.speed_kmh} gust={wx.wind_10m.gust_kmh} dir={wx.wind_10m.direction_deg} limits={takeoffLimits(level, plan.flight_type)} />
           </div>
         </div>
-        <div className="tile">
+        <div className="tile tile--alt">
           <div className="tile__k">En altitude</div>
           <ul className="tile__list">
             {[1500, 2000, 3000].map((a) => {
@@ -41,8 +41,8 @@ export function WindBlock({ plan, level, now }: { plan: FlightPlan; level: Diffi
             })}
           </ul>
         </div>
-        <div className="tile">
-          <div className="tile__k">Atterro · à l'arrivée vers {formatTime(new Date(new Date(plan.window.start).getTime() + plan.est_duration_min * 60_000))}</div>
+        <div className="tile tile--land">
+          <div className="tile__k">Atterro · arrivée {formatTime(land.time)}</div>
           <div className="tile__v">
             <WindText speed={land.wind_10m.speed_kmh} gust={land.wind_10m.gust_kmh} dir={land.wind_10m.direction_deg} limits={landingLimits(level, plan.flight_type)} />
           </div>

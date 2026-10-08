@@ -1,1 +1,262 @@
-/* layout */
+/* ───────────── Coquille de l'application ───────────── */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 100dvh;
+}
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -40px;
+  z-index: 3000;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.skip-link:focus {
+  top: 8px;
+}
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 1200;
+  height: var(--header-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-right: auto;
+  min-width: 0;
+}
+.app-header__brand:hover {
+  color: var(--text);
+}
+.app-header__name {
+  font-size: 1.02rem;
+  white-space: nowrap;
+}
+.app-header__name2 {
+  color: var(--accent);
+}
+.app-header__nav {
+  display: flex;
+  gap: 2px;
+}
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 500;
+}
+.nav-link:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.nav-link.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+@media (max-width: 520px) {
+  .app-header__name2 {
+    display: none;
+  }
+  .nav-link {
+    padding: 7px 8px;
+    flex-direction: column;
+    gap: 0;
+    font-size: 0.66rem;
+  }
+}
+@media (max-width: 359px) {
+  .nav-link span {
+    display: none;
+  }
+}
+
+.demo-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 0.84rem;
+  background: var(--demo-soft);
+  color: var(--demo);
+  border-bottom: 1px solid color-mix(in srgb, var(--demo) 30%, transparent);
+  z-index: 1100;
+}
+.demo-banner--soft {
+  background: var(--marginal-soft);
+  color: var(--marginal);
+}
+@media (max-width: 520px) {
+  .demo-banner__detail {
+    display: none;
+  }
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+/* ───────────── Pages de contenu ───────────── */
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 16px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.page--narrow {
+  max-width: 820px;
+}
+.page--center {
+  min-height: 50vh;
+  align-items: center;
+  justify-content: center;
+}
+.page__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.prose p + p {
+  margin-top: 8px;
+}
+.prose ol,
+.prose ul {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ───────────── Page de planification ───────────── */
+.planner {
+  --sheet-h: 0px;
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+.planner__map {
+  position: absolute;
+  inset: 0;
+}
+.planner__panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  height: var(--sheet-h);
+  transition: height 0.25s ease;
+  overflow: hidden;
+}
+.planner--sheet-peek {
+  --sheet-h: 172px;
+}
+.planner--sheet-half {
+  --sheet-h: 56%;
+}
+.planner--sheet-full {
+  --sheet-h: calc(100% - 6px);
+}
+.planner .leaflet-bottom {
+  bottom: var(--sheet-h);
+  transition: bottom 0.25s ease;
+}
+.planner .map-overlay--legend {
+  bottom: calc(var(--sheet-h) + 28px);
+}
+.sheet-handle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.sheet-handle__bar {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.planner__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 16px 16px;
+}
+.planner__cta {
+  flex: 0 0 auto;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@media (min-width: 960px) {
+  .planner {
+    grid-template-columns: 420px minmax(0, 1fr);
+    grid-template-areas: "panel map";
+  }
+  .planner__map {
+    position: relative;
+    grid-area: map;
+    inset: auto;
+  }
+  .planner__panel {
+    position: relative;
+    grid-area: panel;
+    height: auto;
+    border-radius: 0;
+    box-shadow: none;
+    border-right: 1px solid var(--border);
+    z-index: 1;
+  }
+  .planner .leaflet-bottom {
+    bottom: 0;
+  }
+  .planner .map-overlay--legend {
+    bottom: 30px;
+  }
+}

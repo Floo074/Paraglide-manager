@@ -15,7 +15,7 @@ import type {
   WeatherSnapshot,
   WindLevel,
 } from "../api/types";
-import { solarElevationDeg, solarHour } from "../utils/sun";
+import { solarElevationDeg, solarHour, sunTimes } from "../utils/sun";
 import { compassToDeg, normalizeDeg, standardPressureHpa } from "../utils/units";
 import { haversineKm } from "../utils/geo";
 import { MOCK_SITES, CROSS_TURNPOINTS } from "./sites";
@@ -49,9 +49,9 @@ export const SCENARIOS: Scenario[] = [
     ],
     tMin: 7,
     tMax: 19,
-    spreadMin: 3,
-    spreadMax: 13,
-    blhMax: 1750,
+    spreadMin: 4,
+    spreadMax: 17,
+    blhMax: 2000,
     thermalMax: 2.4,
     capeMax: 140,
     rainFromSolarHour: null,
@@ -71,9 +71,9 @@ export const SCENARIOS: Scenario[] = [
     ],
     tMin: 9,
     tMax: 16,
-    spreadMin: 2,
-    spreadMax: 9,
-    blhMax: 1300,
+    spreadMin: 3,
+    spreadMax: 11,
+    blhMax: 1400,
     thermalMax: 1.7,
     capeMax: 60,
     rainFromSolarHour: null,
@@ -93,9 +93,9 @@ export const SCENARIOS: Scenario[] = [
     ],
     tMin: 11,
     tMax: 22,
-    spreadMin: 2,
-    spreadMax: 9,
-    blhMax: 1900,
+    spreadMin: 3,
+    spreadMax: 12,
+    blhMax: 2000,
     thermalMax: 2.8,
     capeMax: 1500,
     rainFromSolarHour: 14.5,
@@ -207,15 +207,27 @@ function addWinds(...winds: { speed: number; dir: number }[]): { speed: number; 
   return { speed, dir };
 }
 
-/** Facteur d'activité thermique 0..1 (soleil avec ~1 h 30 de retard). */
+/**
+ * Facteur d'activité thermique 0..1 en heure solaire, selon la durée du jour :
+ * début ≈ lever + 37 % du jour, fin ≈ coucher − 23 % du jour, pic aux 45 % de la fenêtre
+ * (octobre en Alpes du Nord : ~10h30 → 15h00 solaire, soit 12h00 → 16h30 légale, cf. CDC §4.1).
+ * L'amplitude suit la hauteur du soleil à midi (saison).
+ */
 export function thermalFactor(lat: number, lon: number, time: Date): number {
-  const lag = new Date(time.getTime() - 90 * 60_000);
-  const elev = solarElevationDeg(lat, lon, lag);
+  const st = sunTimes(lat, lon, time);
+  if (!st) return 0;
+  const rise = solarHour(lon, st.sunrise);
+  const set = solarHour(lon, st.sunset);
+  const day = set - rise;
+  const start = rise + 0.37 * day;
+  const end = set - 0.23 * day;
+  const peak = start + 0.45 * (end - start);
   const hs = solarHour(lon, time);
+  if (hs <= start || hs >= end) return 0;
+  const shape = hs < peak ? Math.sin((Math.PI / 2) * ((hs - start) / (peak - start))) : Math.cos((Math.PI / 2) * ((hs - peak) / (end - peak)));
   const noon = new Date(time.getTime() + (12 - hs) * 3_600_000);
-  const maxElev = Math.max(15, solarElevationDeg(lat, lon, noon));
-  if (elev < 10) return 0;
-  return clamp(Math.pow(Math.sin((elev * Math.PI) / 180) / Math.sin((maxElev * Math.PI) / 180), 1.4), 0, 1);
+  const amp = clamp(Math.sin((solarElevationDeg(lat, lon, noon) * Math.PI) / 180) / Math.sin((65 * Math.PI) / 180), 0.45, 1);
+  return clamp(shape * (0.55 + 0.45 * amp), 0, 1);
 }
 
 function diurnal(hs: number): number {
@@ -261,15 +273,15 @@ export function weatherAt(lat: number, lon: number, elevation: number, time: Dat
 
   // Vent au sol : synoptique réduit + brise de pente (anabatique le jour, catabatique la nuit)
   const syn = synopticWind(sc, floor, elevation, n);
-  const winds: { speed: number; dir: number }[] = [{ speed: syn.speed * (opts.isLanding ? 0.55 : 0.75), dir: syn.dir }];
+  const winds: { speed: number; dir: number }[] = [{ speed: syn.speed * (opts.isLanding ? 0.55 : 0.65), dir: syn.dir }];
   if (opts.facingDeg !== undefined && opts.facingDeg !== null && !opts.isLanding) {
-    if (sunElev > 0) winds.push({ speed: 9 * g + 1.5, dir: opts.facingDeg });
+    if (sunElev > 0) winds.push({ speed: 6.5 * g + 1.5, dir: opts.facingDeg });
     else winds.push({ speed: 4, dir: normalizeDeg(opts.facingDeg + 180) });
   }
   if (opts.isLanding) winds.push({ speed: 7 * g, dir: sc.levels[0]!.dir });
   const w10 = addWinds(...winds);
   const stormy = sc.rainFromSolarHour !== null && hs >= sc.rainFromSolarHour - 1 && hs <= 20;
-  const gust = w10.speed * (1.2 + 0.45 * g) + 3 + (stormy ? 18 : 0);
+  const gust = w10.speed * (1.15 + 0.2 * g) + 2 + (stormy ? 16 : 0);
 
   const winds_aloft: WindLevel[] = ALOFT_LEVELS.filter((a) => a > floor + 50).map((alt) => {
     const w = synopticWind(sc, floor, alt, hash01(alt, n));

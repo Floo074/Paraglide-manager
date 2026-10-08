@@ -110,7 +110,8 @@ interface Conditions {
 function computeConditions(site: Site, landing: Site, time: Date, durationMin: number): Conditions {
   const facing = facingOf(site.orientations);
   const wx = weatherAt(site.lat, site.lon, site.elevation_m, time, { facingDeg: facing, key: site.id });
-  const arrival = new Date(time.getTime() + durationMin * MIN);
+  // arrivée = début du créneau (cible − 30 min) + durée de vol
+  const arrival = new Date(Math.round((time.getTime() - 30 * MIN) / (15 * MIN)) * 15 * MIN + durationMin * MIN);
   const landingWx = weatherAt(landing.lat, landing.lon, landing.elevation_m, arrival, { isLanding: true, key: landing.id });
   const speed = wx.wind_10m.speed_kmh;
   const dir = wx.wind_10m.direction_deg;
@@ -578,13 +579,23 @@ function sensitiveRisks(route: P3[], at: Date): Risk[] {
   for (const f of mockSensitiveAreas(at)) {
     if (!f.properties.active_now) continue;
     const ring = f.geometry.type === "Polygon" ? f.geometry.coordinates[0]! : f.geometry.coordinates[0]![0]!;
-    const near = route.some((p) => pointInRing(p, ring) || haversineKm(p, { lon: ring[0]![0]!, lat: ring[0]![1]! }) < 0.6);
-    if (!near) continue;
+    const minH = f.properties.min_height_agl_m ?? 0;
+    const insideLow = route.some((p) => pointInRing(p, ring) && p.alt - terrainAt(p.lat, p.lon) < minH);
+    const inside = insideLow || route.some((p) => pointInRing(p, ring));
+    let minD = Infinity;
+    for (const p of route)
+      for (let i = 1; i < ring.length; i++)
+        minD = Math.min(minD, distancePointToSegmentKm(p, { lon: ring[i - 1]![0]!, lat: ring[i - 1]![1]! }, { lon: ring[i]![0]!, lat: ring[i]![1]! }));
+    if (!inside && minD > 0.3) continue;
     const park = f.properties.kind === "national_park_core";
     risks.push({
       code: park ? "NATIONAL_PARK" : "SENSITIVE_AREA",
-      level: park ? "danger" : "caution",
-      title: `Zone sensible : ${f.properties.name}`,
+      level: insideLow ? (park ? "danger" : "caution") : "info",
+      title: insideLow
+        ? `Zone sensible traversée trop bas : ${f.properties.name}`
+        : inside
+          ? `Survol de zone sensible : ${f.properties.name} (rester à plus de ${minH} m/sol)`
+          : `Zone sensible à ${Math.round(minD * 1000)} m : ${f.properties.name}`,
       detail: `${f.properties.species ? f.properties.species + " — " : ""}${f.properties.recommendation}`,
     });
   }
@@ -617,7 +628,7 @@ function confidenceFor(horizon: Horizon, wx: WeatherSnapshot): number {
   return Math.round(c * 100) / 100;
 }
 
-function scoreItems(ctx: BuildCtx, c: Conditions, cand: Candidate, est: number, glideReq: number, glideAvail: number, confidence: number, level: Difficulty): ScoreItem[] {
+function scoreItems(ctx: BuildCtx, c: Conditions, _cand: Candidate, est: number, glideReq: number, glideAvail: number, confidence: number, level: Difficulty): ScoreItem[] {
   const strength = c.wx.thermal_strength_ms;
   const takeoffScore = c.calm
     ? 80
@@ -752,7 +763,8 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   if (cand.thermal_usage !== "none" && c.thermals.convection_end) limits.push(new Date(c.thermals.convection_end).getTime() + 30 * MIN - est * MIN);
   let end = roundTo(new Date(Math.min(...limits)), roundMin);
   if (end.getTime() < start.getTime() + 15 * MIN) end = new Date(start.getTime() + 15 * MIN);
-  const landBefore = c.sunset ? new Date(c.sunset.getTime() - 30 * MIN) : null;
+  // règle expert : posé avant = min(fin du créneau + durée, coucher du soleil)
+  const landBefore = new Date(Math.min(end.getTime() + est * MIN, c.sunset ? c.sunset.getTime() : Infinity));
 
   // risques
   const checks = checkLevel(level, site, c, new Date(target.getTime() + est * MIN));
@@ -794,7 +806,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
 
   const durationTxt = formatDuration(est);
   const title = `${site.name} → ${landing.name} · ${VARIANT_TITLE[cand.variant]} ${durationTxt}`;
-  const flyTxt = flyability === "go" ? "GO" : flyability === "marginal" ? "MARGINAL" : "NO-GO";
+  const flyTxt = flyability === "go" ? "GO" : flyability === "marginal" ? "LIMITE" : "NO-GO";
   const sc = scenarioFor(target);
   const aloft = (a: number) => aloftAt(c.wx, a);
   const fmtAloft = (a: number) => {
@@ -814,7 +826,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
 
   const briefing = [
     `⚠ DÉMONSTRATION — ${flyTxt} pour ${difficultyLabel(planLevel).toLowerCase()} (difficulté estimée), confiance ${Math.round(confidence * 100)} %. Données synthétiques : ne pas utiliser pour voler.`,
-    `Créneau : décoller entre ${fmtT(start)} et ${fmtT(end)}${landBefore ? `, être posé avant ${fmtT(landBefore)} (coucher du soleil ${fmtT(c.sunset!)})` : ""}.`,
+    `Créneau : décoller entre ${fmtT(start)} et ${fmtT(end)}, être posé avant ${fmtT(landBefore)}${c.sunset ? ` (coucher du soleil ${fmtT(c.sunset)})` : ""}.`,
     `Situation : ${sc.label.toLowerCase()}.`,
     `Vent au déco : ${degToCardinalFr(c.dir)} ${Math.round(c.speed)} km/h (rafales ${Math.round(c.gust)}) ; ${[fmtAloft(1500), fmtAloft(2000), fmtAloft(3000)].filter(Boolean).join(", ")} ; à l'atterro ${degToCardinalFr(landingWind.direction_deg)} ${landingWind.speed_kmh} km/h à l'arrivée.`,
     conv.convection_start

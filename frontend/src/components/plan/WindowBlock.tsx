@@ -101,7 +101,9 @@ export function WindowBlock({ plan, level }: { plan: FlightPlan; level: Difficul
           </tbody>
         </table>
       </div>
-      <p className="tiny faint">Vent moyen/rafales en km/h (couleur : seuils de ton niveau), vario en m/s, CAPE en J/kg, pluie en mm/h. Colonnes surlignées : créneau de décollage.</p>
+      <p className="tiny faint">
+        <span className="hide-sm">Vent moy./raf. (couleur : seuils de ton niveau) · </span>km/h · m/s · J/kg · mm/h · <span className="strip-key">surligné</span> = créneau
+      </p>
     </section>
   );
 }

@@ -81,7 +81,9 @@ VALLEY_BREEZE_AFTERNOON_FACTOR: Final = 1.3
 MARGINAL_BAND: Final = 0.8  # 80-100 % du seuil
 VERDICT: Final = {
     "go_min_score": 65,
-    "go_min_safety_subscore": 50,
+    # validé expert : 40 = valeur de la courbe à 80 % du seuil,
+    # cohérent avec la bande marginale 80-100 % (50 rendait marginal un critère à 75-80 %).
+    "go_min_safety_subscore": 40,
     # révision 2 (lot 2.11) : go si confiance ≥ 0,75 × HORIZON_BASE_CONFIDENCE[horizon]
     "go_min_confidence_ratio": 0.75,
     "nogo_max_score": 45,

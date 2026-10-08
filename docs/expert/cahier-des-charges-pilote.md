@@ -89,7 +89,7 @@ Conséquences pour l'outil :
 | **Facteur de rafale max** (rafale/moyenne, si moyenne ≥ 15) — *caution seulement, jamais no-go* | 1,4 | 1,5 | 1,6 | 1,7 |
 | **Vent de travers max** (écart angulaire) | 30° | 45° | 60° | 75° |
 | ↳ composante de travers max (`v·sin(écart)`) | 6 km/h | 10 km/h | 13 km/h | 16 km/h |
-| **Vent arrière** | Interdit (seul vent nul < 5 km/h accepté) | Interdit (vent nul < 5 km/h seulement) | ≤ 5 km/h, déco pentu uniquement | ≤ 8 km/h, déco pentu uniquement |
+| **Vent arrière** (écart > 90° : c'est la **vitesse totale** du vent qui est comparée au seuil ; tout vent arrière ≥ 5 km/h ⇒ au mieux marginal) | Interdit (seul vent nul < 5 km/h accepté) | Interdit (vent nul < 5 km/h seulement) | ≤ 5 km/h, déco pentu uniquement | ≤ 8 km/h, déco pentu uniquement |
 | **Vent max à 1500 m** | 15 km/h | 20 km/h | 25 km/h | 30 km/h |
 | **Vent max à 2000 m** | 20 km/h | 25 km/h | 30 km/h | 35 km/h |
 | **Vent max à 3000 m** | 25 km/h (rarement atteint) | 30 km/h | 35 km/h | 40 km/h |
@@ -484,7 +484,7 @@ Vent nul au déco : sous-score `takeoff_wind` = 80 (décollage plus technique, f
 
 ### 9.4 Verdict et difficulté
 
-- **go** : aucun no-go, score ≥ 65, tous les critères de sécurité (`takeoff_wind`, `wind_aloft`, `landing`, `convective_stability`) ≥ 50, `confidence ≥ 0,75 × confiance de base de l'horizon` (c'est-à-dire dispersion × cohérence balises ≥ 0,75), et aucun Risk `caution` « bloquant » (`TAILWIND`, `SUNSET`, `OVERDEVELOPMENT`, `CROSSWIND`, `VALLEY_BREEZE` en bande 80-100 %, `SENSITIVE_AREA`, `LOW_CONFIDENCE`, `GLIDE_MARGIN`).
+- **go** : aucun no-go, score ≥ 65, tous les critères de sécurité (`takeoff_wind`, `wind_aloft`, `landing`, `convective_stability`) ≥ 40 (= valeur de la courbe à 80 % du seuil, cohérent avec la bande marginale), `confidence ≥ 0,75 × confiance de base de l'horizon` (c'est-à-dire dispersion × cohérence balises ≥ 0,75), et aucun Risk `caution` « bloquant » (`TAILWIND`, `SUNSET`, `OVERDEVELOPMENT`, `CROSSWIND`, `VALLEY_BREEZE` en bande 80-100 %, `SENSITIVE_AREA`, `LOW_CONFIDENCE`, `GLIDE_MARGIN`).
 - **marginal** : aucun no-go, mais score 45-65, ou un critère de sécurité dans la zone 80-100 % du seuil, ou un Risk caution bloquant, ou une confiance insuffisante. **Toujours dire pourquoi** (risque `caution` correspondant).
 - **Mode mock** : confiance affichée plafonnée à 0,3, mais le verdict utilise le ratio non plafonné ; Risk `MOCK_DATA` (caution, non bloquant) et warning explicite.
 - **Durée** : on ne rejette jamais un site pour la durée seule ; `duration_match` pénalise et `summary` explique.
@@ -579,7 +579,7 @@ venturi_factor_col: 1.5
 rotor_lee_factor: {moderate: 5, strong: 10}  # × hauteur du relief
 valley_breeze_afternoon_factor: 1.3
 marginal_band: 0.8                           # 80-100 % du seuil
-verdict: {go_min_score: 65, go_min_safety_subscore: 50, go_min_confidence_ratio: 0.75, nogo_max_score: 45}   # ratio = confidence / base(horizon)
+verdict: {go_min_score: 65, go_min_safety_subscore: 40, go_min_confidence_ratio: 0.75, nogo_max_score: 45}   # ratio = confidence / base(horizon)
 weights: {takeoff_wind: 25, wind_aloft: 15, landing: 15, thermal_match: 15, duration_match: 10, convective_stability: 10, data_confidence: 5, site_fit: 5}
 horizon_beacon_weight: {"30m": 0.7, "1h": 0.5, "2h": 0.3, "8h": 0.1, "12h": 0, "24h": 0, "48h": 0}
 horizon_base_confidence: {"30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4}

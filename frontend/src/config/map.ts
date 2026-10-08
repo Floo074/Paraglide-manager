@@ -14,8 +14,8 @@ export const BASE_LAYERS: BaseLayerDef[] = [
   {
     id: "topo",
     name: "Relief (OpenTopoMap)",
-    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-    subdomains: "abc",
+    // hôte sans sous-domaine : HTTP/2, pas besoin de répartir sur a/b/c
+    url: "https://tile.opentopomap.org/{z}/{x}/{y}.png",
     attribution:
       'Données : &copy; <a href="https://www.openstreetmap.org/copyright">contributeurs OpenStreetMap</a>, SRTM | ' +
       'Style : &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',

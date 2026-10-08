@@ -9,6 +9,7 @@ un statut absolu (no-go §3, caution, info). À partir de la liste des constats 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.engine import rules
@@ -45,6 +46,14 @@ class Finding:
     # critère de FAISABILITÉ (lot 5.1 : vent mini en soaring, plafond mini, vario mini) : sous le seuil,
     # le type de vol n'est pas proposé (raison de rejet), mais ce n'est ni un danger ni une caution.
     feasibility: bool = False
+    # constat « doux » : au-delà du seuil → simple caution (jamais no-go), ex. facteur de rafale (lot 2.2)
+    soft: bool = False
+    # ratios valeur/seuil précalculés par niveau (seuil variable avec l'altitude, finesse…)
+    ratios: dict[str, float] | None = None
+    # bande de caution personnalisée (ex. finesse : r > 0,90) ; défaut MARGINAL_BAND
+    band_start: float | None = None
+    # courbe de sous-score spécifique (ex. finesse : r ≤ 0,75 → 100 ; 0,90 → 60 ; 0,95 → 40 ; 1 → 0)
+    curve: Callable[[float], float] | None = None
     level_titles: dict[str, str] = field(default_factory=dict)
 
     # --- évaluation par niveau ------------------------------------------------------------------
@@ -56,6 +65,10 @@ class Finding:
     def fails(self, level: str) -> bool:
         if self.absolute_nogo:
             return True
+        if self.soft:
+            return False
+        if self.ratios is not None:
+            return self.ratios.get(level, 9.9) > 1.0
         if self.limits is None or self.value is None:
             return False
         lim = self.limit(level)
@@ -64,6 +77,8 @@ class Finding:
         return self.value > lim if self.kind == "max" else self.value < lim
 
     def ratio(self, level: str) -> float | None:
+        if self.ratios is not None:
+            return self.ratios.get(level)
         lim = self.limit(level)
         if self.value is None or lim is None:
             return None
@@ -73,20 +88,27 @@ class Finding:
         return lim / self.value if self.value > 0 else 9.9
 
     def in_band(self, level: str) -> bool:
-        if not self.band or self.limits is None:
+        if not self.band or (self.limits is None and self.ratios is None):
             return False
         r = self.ratio(level)
-        return r is not None and rules.MARGINAL_BAND <= r <= 1.0
+        start = self.band_start if self.band_start is not None else rules.MARGINAL_BAND
+        if self.soft:
+            return r is not None and r > 1.0
+        return r is not None and start <= r <= 1.0
 
     def subscore(self, level: str) -> float | None:
         if self.absolute_nogo:
             return 0.0
-        if self.limits is None:
+        if self.soft or self.feasibility:
+            return None
+        if self.limits is None and self.ratios is None:
             return None
         if self.fails(level):
             return 0.0
         r = self.ratio(level)
-        return None if r is None else ratio_subscore(r)
+        if r is None:
+            return None
+        return self.curve(r) if self.curve is not None else ratio_subscore(r)
 
     def risk_level(self, level: str) -> str | None:
         if self.feasibility:

@@ -26,7 +26,7 @@ import { VerdictBanner } from "../components/plan/VerdictBanner";
 import { WindBlock } from "../components/plan/WindBlock";
 import { WindowBlock } from "../components/plan/WindowBlock";
 import { ErrorBox, Spinner } from "../components/ui/Spinner";
-import { toast } from "../components/ui/toast";
+import { toast } from "../components/ui/toastBus";
 import { THERMAL_USAGE_LABEL, flightTypeLabel } from "../config/labels";
 import { useApiMode } from "../hooks/useApiMode";
 import { useAsync } from "../hooks/useAsync";
@@ -129,9 +129,19 @@ export function PlanDetailPage() {
   return (
     <div className="plan-page">
       <header className="plan-head">
-        <Link to="/" className="back-link no-print">
-          <ArrowLeft size={16} aria-hidden /> Plans
-        </Link>
+        <div className="plan-head__bar no-print">
+          <Link to="/" className="back-link">
+            <ArrowLeft size={16} aria-hidden /> Plans
+          </Link>
+          <div className="plan-head__actions">
+            <button type="button" className="icon-btn" onClick={share} title="Partager le lien" aria-label="Partager le lien">
+              <Share2 size={18} />
+            </button>
+            <button type="button" className="icon-btn" onClick={() => window.print()} title="Imprimer la feuille de vol" aria-label="Imprimer la feuille de vol">
+              <Printer size={18} />
+            </button>
+          </div>
+        </div>
         <div className="plan-head__main">
           <h1 className="plan-head__title">
             <span className="plan-head__rank" aria-label={`Rang ${plan.rank}`}>
@@ -143,14 +153,6 @@ export function PlanDetailPage() {
             {typeLabel} ({THERMAL_USAGE_LABEL[plan.thermal_usage]}) · {formatDuration(plan.est_duration_min)} · {formatKm(plan.distance_km)} · cible{" "}
             {formatDayTime(plan.target_time, now)} <span className="faint">(heure locale)</span>
           </p>
-        </div>
-        <div className="plan-head__actions no-print">
-          <button type="button" className="icon-btn" onClick={share} title="Partager le lien" aria-label="Partager le lien">
-            <Share2 size={18} />
-          </button>
-          <button type="button" className="icon-btn" onClick={() => window.print()} title="Imprimer la feuille de vol" aria-label="Imprimer la feuille de vol">
-            <Printer size={18} />
-          </button>
         </div>
       </header>
 

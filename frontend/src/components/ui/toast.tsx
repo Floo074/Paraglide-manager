@@ -1,11 +1,5 @@
 import { useEffect, useState } from "react";
-
-const EVENT = "pm:toast";
-
-/** Affiche un message éphémère (aria-live). */
-export function toast(message: string): void {
-  window.dispatchEvent(new CustomEvent<string>(EVENT, { detail: message }));
-}
+import { TOAST_EVENT as EVENT } from "./toastBus";
 
 export function ToastHost() {
   const [msg, setMsg] = useState<string | null>(null);

@@ -11,7 +11,7 @@ function nf(maxFrac: number, minFrac = 0): Intl.NumberFormat {
 
 /** Nombre au format français : espace insécable fine pour les milliers, virgule décimale. */
 export function formatNumber(value: number, maxFrac = 0, minFrac = 0): string {
-  return nf(maxFrac, minFrac).format(value).replace(/ /g, " ");
+  return nf(maxFrac, minFrac).format(value).replace(/\u202f/g, "\u00a0");
 }
 
 /** 75 → "1 h 15", 60 → "1 h", 20 → "20 min", 125 → "2 h 05". */
@@ -30,24 +30,24 @@ export function formatDurationRange(min: number, max: number): string {
 
 export function formatAltitude(m: number | null | undefined): string {
   if (m === null || m === undefined || Number.isNaN(m)) return "—";
-  return `${formatNumber(Math.round(m))} m`;
+  return `${formatNumber(Math.round(m))}\u00a0m`;
 }
 
 export function formatKm(km: number): string {
-  return `${formatNumber(km, km < 10 ? 1 : 0)} km`;
+  return `${formatNumber(km, km < 10 ? 1 : 0)}\u00a0km`;
 }
 
 export function formatSpeed(kmh: number | null | undefined): string {
   if (kmh === null || kmh === undefined) return "—";
-  return `${formatNumber(Math.round(kmh))} km/h`;
+  return `${formatNumber(Math.round(kmh))}\u00a0km/h`;
 }
 
 export function formatVario(ms: number): string {
-  return `${formatNumber(ms, 1, 1)} m/s`;
+  return `${formatNumber(ms, 1, 1)}\u00a0m/s`;
 }
 
 export function formatPercent(ratio01: number): string {
-  return `${Math.round(ratio01 * 100)} %`;
+  return `${Math.round(ratio01 * 100)}\u00a0%`;
 }
 
 function timeParts(timeZone?: string): Intl.DateTimeFormatOptions {

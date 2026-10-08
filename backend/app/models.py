@@ -243,6 +243,12 @@ class PlanWeather(_Model):
 class TimeWindow(_Model):
     start: str
     end: str
+    latest_landing: str | None = None
+
+
+class SunTimes(_Model):
+    sunrise: str | None
+    sunset: str | None
 
 
 class RouteGeometry(_Model):
@@ -274,6 +280,7 @@ class FlightPlan(_Model):
     summary: str
     target_time: str
     window: TimeWindow
+    sun: SunTimes | None = None
     takeoff: Site
     landing: Site
     alternate_landings: list[Site]

@@ -8,11 +8,12 @@ import { waypointTypeLabel } from "../../utils/exports";
 import { formatAge, formatAltitude, formatDuration, formatNumber, formatTime, formatVario } from "../../utils/format";
 import { haversineKm } from "../../utils/geo";
 import { loadJson, saveJson } from "../../utils/storage";
-import { RiskIcon, sortRisks } from "../common/RiskLine";
+import { RiskIcon } from "../common/RiskLine";
+import { sortRisks } from "../../utils/risks";
 import { WindText } from "../common/WindText";
 import { ScoreBar } from "../ui/ScoreGauge";
-import { toast } from "../ui/toast";
-import { fl } from "../map/AreaLayers";
+import { toast } from "../ui/toastBus";
+import { fl } from "../map/mapHelpers";
 
 /** Bloc 4 : briefing tel que reçu (ordre conservé, non tronqué). */
 export function BriefingBlock({ plan }: { plan: FlightPlan }) {

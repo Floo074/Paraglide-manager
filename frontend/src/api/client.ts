@@ -23,6 +23,7 @@ import type {
   SourcesResponse,
 } from "./types";
 import { bboxParam } from "../utils/zone";
+import { buildGpx, buildXctsk } from "../utils/exports";
 
 export const API_BASE = "/api";
 export const FORCE_MOCKS = (import.meta.env.VITE_USE_MOCKS ?? "").toLowerCase() === "true";
@@ -190,7 +191,6 @@ export const getPlan = (id: string, signal?: AbortSignal) =>
 /** Contenu d'un export (GPX ou XCTrack) en texte, depuis le backend ou généré localement en démo. */
 export async function getPlanExport(plan: FlightPlan, kind: "gpx" | "xctsk"): Promise<string> {
   if (isDemoMode() || isDemoPlanId(plan.id)) {
-    const { buildGpx, buildXctsk } = await import("../utils/exports");
     return kind === "gpx" ? buildGpx(plan) : JSON.stringify(buildXctsk(plan), null, 2);
   }
   const path = (kind === "gpx" ? plan.links.gpx : plan.links.xctsk).replace(/^\/api/, "");

@@ -3,43 +3,14 @@ import { Marker, Rectangle, Tooltip } from "react-leaflet";
 import L from "leaflet";
 import { getForecastGrid } from "../../api/client";
 import type { BBoxZone, ForecastGridResponse, GridLayer } from "../../api/types";
-import { WIND_GRID_ALTITUDES } from "../../api/types";
 import { useAsync } from "../../hooks/useAsync";
-import {
-  CAPE_STOPS,
-  HEIGHT_STOPS,
-  PRECIP_STOPS,
-  THERMAL_STOPS,
-  WIND_STOPS,
-  interpolateStops,
-  type ColorStop,
-} from "../../utils/colors";
+import { WIND_STOPS, interpolateStops } from "../../utils/colors";
+import { WEATHER_LAYERS } from "./weatherLayers";
 import { formatNumber, formatTime } from "../../utils/format";
 import { degToCardinalFr } from "../../utils/units";
 import { bboxParam } from "../../utils/zone";
-import { useMapZoom } from "./Clustered";
+import { useMapZoom } from "./useMapZoom";
 import { windArrowIcon } from "./icons";
-
-export type WeatherLayerChoice = GridLayer | "none";
-
-export const WEATHER_LAYERS: { value: WeatherLayerChoice; label: string; unit: string; stops: ColorStop[] | null; hint: string }[] = [
-  { value: "none", label: "Aucune", unit: "", stops: null, hint: "" },
-  { value: "wind", label: "Vent", unit: "km/h", stops: WIND_STOPS, hint: "Flèche = sens du vent (vers où il souffle)" },
-  { value: "ceiling", label: "Plafond thermique", unit: "m", stops: HEIGHT_STOPS, hint: "Plafond AMSL" },
-  { value: "cloudbase", label: "Base des nuages", unit: "m", stops: HEIGHT_STOPS, hint: "Base des cumulus AMSL (vide = thermiques bleus)" },
-  { value: "thermal", label: "Vario (thermiques)", unit: "m/s", stops: THERMAL_STOPS, hint: "Vario moyen estimé" },
-  { value: "cape", label: "CAPE (orages)", unit: "J/kg", stops: CAPE_STOPS, hint: "Énergie convective : > 800 J/kg = risque orageux" },
-  { value: "precipitation", label: "Pluie", unit: "mm/h", stops: PRECIP_STOPS, hint: "Précipitations" },
-];
-
-/** Altitudes du sélecteur, niveaux de vol prioritaires d'abord (CDC §8.3). */
-export const WIND_ALTITUDE_OPTIONS: { value: number; label: string }[] = [
-  { value: 10, label: "Sol (10 m)" },
-  { value: 1500, label: "1 500 m" },
-  { value: 2000, label: "2 000 m" },
-  { value: 3000, label: "3 000 m" },
-  ...WIND_GRID_ALTITUDES.filter((a) => ![10, 1500, 2000, 3000].includes(a)).map((a) => ({ value: a, label: `${formatNumber(a)} m` })),
-];
 
 const canvas = L.canvas({ padding: 0.3 });
 
@@ -72,7 +43,7 @@ export function WeatherGridLayer({
             <Marker
               key={i}
               position={[p.lat, p.lon]}
-              icon={windArrowIcon(p.value, p.direction_deg, interpolateStops(WIND_STOPS, p.value), zoom >= 11)}
+              icon={windArrowIcon(p.value, p.direction_deg, interpolateStops(WIND_STOPS, p.value), zoom >= 13)}
               interactive
               keyboard={false}
               zIndexOffset={-100}

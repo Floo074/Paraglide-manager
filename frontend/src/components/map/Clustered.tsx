@@ -1,14 +1,7 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { Marker, useMap, useMapEvents } from "react-leaflet";
+import { useMemo, type ReactNode } from "react";
+import { Marker, useMap } from "react-leaflet";
+import { useMapZoom } from "./useMapZoom";
 import { clusterIcon } from "./icons";
-
-/** Zoom courant de la carte (mis à jour en fin de zoom). */
-export function useMapZoom(): number {
-  const map = useMap();
-  const [zoom, setZoom] = useState(map.getZoom());
-  useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
-  return zoom;
-}
 
 /**
  * Regroupement simple par grille de pixels : au-delà de `maxClusterZoom`, tous les marqueurs

@@ -13,12 +13,13 @@ import { LayersMenu, ZoomButtons } from "../components/map/MapControls";
 import { MapShell } from "../components/map/MapShell";
 import { RouteLayer } from "../components/map/PlanLayers";
 import { SiteMarkers } from "../components/map/SiteMarkers";
-import { GridLegend, WEATHER_LAYERS, WIND_ALTITUDE_OPTIONS, WeatherGridLayer, type WeatherLayerChoice } from "../components/map/WeatherGrid";
+import { GridLegend, WeatherGridLayer } from "../components/map/WeatherGrid";
+import { WEATHER_LAYERS, WIND_ALTITUDE_OPTIONS, type WeatherLayerChoice } from "../components/map/weatherLayers";
 import { ZoneEditor, type DrawMode } from "../components/map/ZoneEditor";
 import { CriteriaPanel } from "../components/planner/CriteriaPanel";
 import { DEFAULT_CRITERIA, buildPlanRequest, isCriteria, type Criteria } from "../components/planner/criteria";
 import { ResultsPanel } from "../components/planner/ResultsPanel";
-import { toast } from "../components/ui/toast";
+import { toast } from "../components/ui/toastBus";
 import { KK7, type BaseLayerId, DEFAULT_BASE_LAYER, BASE_LAYERS } from "../config/map";
 import { DEFAULT_ZONE, GEOLOCATION_RADIUS_KM } from "../config/zones";
 import { useAsync } from "../hooks/useAsync";
@@ -184,6 +185,9 @@ export function PlannerPage() {
   ];
   const plans = results?.response.plans ?? [];
   const sheetClass = isDesktop ? "" : ` planner--sheet-${sheet}`;
+  // hauteur masquée par le panneau mobile (pour cadrer la zone dans la partie visible)
+  const mapHeight = map?.getContainer().clientHeight ?? window.innerHeight - 90;
+  const sheetInset = sheet === "peek" ? 172 : Math.round(mapHeight * 0.56);
   const onGridLoaded = useCallback((g: ForecastGridResponse | null) => setGrid(g), []);
 
   const searchButton = (
@@ -265,7 +269,7 @@ export function PlannerPage() {
           }
         >
           <InvalidateOnResize />
-          <FitTo bounds={fitBounds} fitKey={zoneKey} padding={isDesktop ? 40 : 20} maxZoom={12} />
+          <FitTo bounds={fitBounds} fitKey={zoneKey} padding={isDesktop ? 40 : 16} maxZoom={12} bottomInset={isDesktop ? 0 : sheetInset} />
           {weather !== "none" ? <WeatherGridLayer bbox={padBBox(zoneToBBox(zone), 1.15)} time={targetIso} layer={weather as GridLayer} altitude={windAlt} onLoaded={onGridLoaded} /> : null}
           {overlays.airspaces && airspaces.data ? <AirspacesLayer features={airspaces.data.features} /> : null}
           {overlays.sensitive && sensitive.data ? <SensitiveAreasLayer features={sensitive.data.features} /> : null}

@@ -106,6 +106,7 @@ class DataContext:
     relief: list[ReliefPoint] = field(default_factory=list)
     site_meta: dict[str, SiteMeta] = field(default_factory=dict)
     terrain: Callable[[float, float], float] | None = None
+    terrain_is_real: bool = False  # MNT réel (Open-Meteo) : contrôle du relief sous la ligne de plané
     mock: bool = False  # données synthétiques → confiance affichée plafonnée + MOCK_DATA
     exact_inputs: bool = False  # scénario de test : données = source exacte
     warnings: list[str] = field(default_factory=list)

@@ -1,7 +1,8 @@
 import { FlaskConical } from "lucide-react";
 import type { FlightPlan } from "../../api/types";
 import { difficultyLabel, difficultyShort } from "../../config/labels";
-import { RiskLine, sortRisks } from "../common/RiskLine";
+import { RiskLine } from "../common/RiskLine";
+import { sortRisks } from "../../utils/risks";
 import { FlyabilityBadge } from "../ui/Badges";
 
 /** Bloc 1 : verdict, niveau requis, confiance, puis le « pourquoi » (risques danger/caution). */
@@ -18,10 +19,6 @@ export function VerdictBanner({ plan, demo }: { plan: FlightPlan; demo: boolean 
         <div className="verdict__conf">
           <span className="verdict__k">Confiance</span>
           <strong className="num">{Math.round(plan.confidence * 100)} %</strong>
-        </div>
-        <div className="verdict__score" title="Score sur 100 (détail en bas de page)">
-          <span className="verdict__k">Score</span>
-          <span className="num">{plan.score}/100</span>
         </div>
       </div>
       {demo ? (
