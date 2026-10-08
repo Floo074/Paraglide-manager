@@ -167,7 +167,7 @@ interface FlightPlan {
 
 ### `GET /api/sources`
 État de chaque fournisseur de données.
-`{ "sources": { name: string; kind: "forecast"|"sites"|"beacons"|"airspaces"|"elevation"; mode: "live"|"mock"|"disabled"; healthy: boolean; requires_api_key: boolean; api_key_configured: boolean; message: string | null; url: string | null }[] }`
+`{ "sources": { name: string; kind: "forecast"|"sites"|"beacons"|"airspaces"|"elevation"|"sensitive_areas"; mode: "live"|"mock"|"disabled"; healthy: boolean; requires_api_key: boolean; api_key_configured: boolean; message: string | null; url: string | null }[] }`
 
 ### `GET /api/sites?bbox=min_lon,min_lat,max_lon,max_lat`
 `{ "sites": Site[] }` — fusion dédoublonnée FFVL + ParaglidingEarth + SpotAir (dédoublonnage < 300 m et nom proche).
@@ -177,6 +177,12 @@ interface FlightPlan {
 
 ### `GET /api/airspaces?bbox=min_lon,min_lat,max_lon,max_lat`
 GeoJSON `FeatureCollection` ; `properties`: `{ name, airspace_class, type, floor_m, ceiling_m }`.
+
+### `GET /api/sensitive-areas?bbox=min_lon,min_lat,max_lon,max_lat`
+Zones sensibles pour la faune (Biodiv'Sports, pratique « aérien / vol libre ») + cœurs de parcs nationaux.
+GeoJSON `FeatureCollection` ; `properties` :
+`{ id, name, species: string | null, kind: "species" | "regulatory" | "national_park_core", period_months: number[] /* 1..12, mois de sensibilité */, active_now: boolean, recommendation: string /* consigne en français */, min_height_agl_m: number | null /* hauteur de survol recommandée */, source: "biodivsports" | "fixture", url: string | null }`.
+Les zones actives au temps cible et touchées par la route produisent un `Risk` (code `SENSITIVE_AREA`) dans le plan de vol.
 
 ### `GET /api/forecast/point?lat=..&lon=..&time=ISO`
 `{ "snapshot": WeatherSnapshot, "sounding": SoundingLevel[], "timeline": WeatherSnapshot[] }` (timeline horaire sur la journée).
