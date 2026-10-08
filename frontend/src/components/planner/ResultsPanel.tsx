@@ -1,6 +1,7 @@
 import { AlertTriangle, CloudOff, FlaskConical, HelpCircle } from "lucide-react";
 import type { Difficulty, Horizon, PlanResponse } from "../../api/types";
 import { splitReasonCode } from "../../api/errors";
+import { isDemoMode } from "../../api/client";
 import { RISK_CODE_LABEL } from "../../config/labels";
 import { HORIZONS } from "../../utils/horizon";
 import { formatDayTime } from "../../utils/format";
@@ -25,7 +26,7 @@ export function ResultsPanel({
   onTryHorizon: (h: Horizon) => void;
   now: Date;
 }) {
-  const demo = response.data_mode === "mock";
+  const demo = response.data_mode === "mock" ? (isDemoMode() || response.request_id.startsWith("demo-") ? "offline" : "server") : null;
   const empty = response.plans.length === 0;
   const others = HORIZONS.filter((h) => h.value !== response.horizon);
   return (
@@ -45,7 +46,8 @@ export function ResultsPanel({
         <div className="alert alert--demo" role="note">
           <FlaskConical size={16} aria-hidden />
           <span>
-            <strong>Démo hors-ligne : données synthétiques.</strong> Les plans ci-dessous ne reflètent pas la météo réelle.
+            <strong>{demo === "offline" ? "Démo hors-ligne" : "Serveur en mode démo"} : données synthétiques.</strong> Les plans ci-dessous ne reflètent pas la
+            météo réelle.
           </span>
         </div>
       ) : null}
@@ -55,7 +57,7 @@ export function ResultsPanel({
         </div>
       ) : null}
       {response.warnings
-        .filter((w) => !(demo && w.startsWith("Démo hors-ligne")))
+        .filter((w) => !(demo === "offline" && w.startsWith("Démo hors-ligne")))
         .map((w, i) => (
           <div key={i} className="alert alert--caution">
             <AlertTriangle size={16} aria-hidden />

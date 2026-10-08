@@ -101,7 +101,8 @@ export function PlanDetailPage() {
     );
   }
 
-  const demo = isDemoPlanId(plan.id) || plan.sources.some((s) => s.mode === "mock") || mode === "demo-forced" || mode === "demo-fallback";
+  const offline = isDemoPlanId(plan.id) || mode === "demo-forced" || mode === "demo-fallback";
+  const demo = offline || plan.sources.some((s) => s.mode === "mock");
   const level = pilotLevel(plan);
   const typeLabel = plan.flight_type === "local" && plan.thermal_usage === "none" ? "Plouf" : flightTypeLabel(plan.flight_type);
 
@@ -158,7 +159,7 @@ export function PlanDetailPage() {
 
       <div className="plan-grid">
         <div className="plan-col plan-col--top">
-          <VerdictBanner plan={plan} demo={demo} />
+          <VerdictBanner plan={plan} demo={demo} offline={offline} />
           <WindowBlock plan={plan} level={level} />
           <WindBlock plan={plan} level={level} now={now} />
           <BriefingBlock plan={plan} />

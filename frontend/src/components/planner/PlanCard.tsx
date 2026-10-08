@@ -20,7 +20,7 @@ export function PlanCard({
 }: {
   plan: FlightPlan;
   level: Difficulty;
-  demo: boolean;
+  demo: "offline" | "server" | null;
   active: boolean;
   onHover: (id: string | null) => void;
 }) {
@@ -47,7 +47,7 @@ export function PlanCard({
           <span className="faint">/100</span>
         </span>
       </div>
-      {demo ? <div className="demo-tag">Démo hors-ligne : données synthétiques</div> : null}
+      {demo ? <div className="demo-tag">{demo === "offline" ? "Démo hors-ligne" : "Serveur en mode démo"} : données synthétiques</div> : null}
       <h3 className="plan-card__title">
         <Link to={`/plan/${encodeURIComponent(plan.id)}`} className="stretched">
           {plan.title}

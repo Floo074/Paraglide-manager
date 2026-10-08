@@ -6,7 +6,7 @@ import { sortRisks } from "../../utils/risks";
 import { FlyabilityBadge } from "../ui/Badges";
 
 /** Bloc 1 : verdict, niveau requis, confiance, puis le « pourquoi » (risques danger/caution). */
-export function VerdictBanner({ plan, demo }: { plan: FlightPlan; demo: boolean }) {
+export function VerdictBanner({ plan, demo, offline }: { plan: FlightPlan; demo: boolean; offline: boolean }) {
   const why = sortRisks(plan.risks.filter((r) => (r.level === "danger" || r.level === "caution") && r.code !== "MOCK_DATA"));
   return (
     <section className={`verdict verdict--${plan.flyability}`} aria-label="Verdict">
@@ -23,7 +23,7 @@ export function VerdictBanner({ plan, demo }: { plan: FlightPlan; demo: boolean 
       </div>
       {demo ? (
         <div className="demo-tag demo-tag--block">
-          <FlaskConical size={14} aria-hidden /> Démo hors-ligne : données synthétiques — ne pas utiliser pour voler
+          <FlaskConical size={14} aria-hidden /> {offline ? "Démo hors-ligne" : "Serveur en mode démo"} : données synthétiques — ne pas utiliser pour voler
         </div>
       ) : null}
       {why.length ? (
