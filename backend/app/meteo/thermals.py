@@ -113,7 +113,7 @@ def cloud_base_espy(t_c: float, td_c: float, ground_m: float) -> float:
 def sensible_heat_flux(shortwave_w_m2: float, rh_pct: float, recent_rain: bool = False) -> float:
     """Flux de chaleur sensible H (W/m²) estimé depuis le rayonnement solaire incident."""
     lo, hi = rules.SENSIBLE_HEAT_FRACTION_RANGE
-    frac = max(lo, min(hi, 0.55 - 0.004 * rh_pct))
+    frac = max(lo, min(hi, 0.62 - 0.004 * rh_pct))
     if recent_rain:
         frac = lo
     return max(0.0, shortwave_w_m2 * (1.0 - rules.SENSIBLE_HEAT_ALBEDO) * frac)
@@ -232,7 +232,8 @@ def analyze_hour(
         usable = min(usable, cloud_base - rules.CLOUD_CLEARANCE_VERTICAL_M)
     usable = max(ground_m, usable)
 
-    zi = max(0.0, thermal_ceiling - ground_m)
+    # épaisseur de la couche mélangée = sommet sec (les cumulus se forment dans sa partie haute)
+    zi = max(0.0, dry_top - ground_m)
     rh2 = rh_from_dew_point(t2, td2)
     h_flux = sensible_heat_flux(sw, rh2, recent_rain=precip >= 0.2)
     theta = (t2 + T0K) * (1000.0 / profile.pressure(ground_m)) ** 0.2857

@@ -1,0 +1,977 @@
+# Scénarios de validation métier, format app.engine.scenario.run_scenario(spec)
+# Auteur : expert pilote (référent métier). Ce fichier fait foi pour les attentes (bloc `expect`).
+# Heures en UTC. Heure légale = UTC+2 (CEST) jusqu'au 25/10/2026, puis UTC+1 (CET).
+# Règles de lecture des attentes : voir docs/expert/scenarios-validation.md §5.
+#
+# Clés `expect` (toutes facultatives sauf flyability) :
+#   flyability            go | marginal | no_go (no_go = aucun plan go/marginal pour ce déco, raisons dans rejected)
+#   risk_codes            codes qui DOIVENT apparaître (plan.risks du meilleur plan, ou raisons du rejet « [CODE] … »)
+#   risk_codes_forbidden  codes qui ne doivent apparaître dans AUCUN plan go/marginal
+#   difficulty_min / difficulty_max   bornes sur plan.difficulty
+#   flight_type           type du meilleur plan
+#   flight_types_forbidden  aucun plan de ces types
+#   thermal_usage_in      valeurs admises pour plan.thermal_usage
+#   min_duration_min / max_duration_min   bornes sur est_duration_min du meilleur plan
+#   max_altitude_m_max    plan.max_altitude_m ≤ valeur, pour tous les plans
+#   landing_before_utc    window.start + est_duration_min ≤ cette heure (même jour), pour tous les plans
+#   landing_before_sunset true → atterrissage estimé ≤ coucher du soleil, pour tous les plans
+#   confidence_max        plan.confidence ≤ valeur
+#   distance_km_min / distance_km_max   bornes sur distance_km du meilleur plan
+#   first_leg_upwind_of_deg   cap du 1er segment à ± 60° de cette direction (cross)
+#   rejected_reason_contains  sous-chaîne (insensible à la casse) d'une raison de rejet
+#   summary_explains_duration true → summary mentionne pourquoi la durée est plus courte que demandé
+#   no_route_intersects_classes  aucune AirspaceWarning intersects_route=true de ces classes
+
+sites:
+  forclaz_takeoff: &forclaz_takeoff
+    {name: "Col de la Forclaz", lat: 45.812, lon: 6.245, elevation_m: 1250, orientations: [W, WNW, NW], difficulty: beginner, flight_types: [local, cross_country], status: open}
+  doussard: &doussard
+    {name: "Doussard", lat: 45.786, lon: 6.222, elevation_m: 450, big_valley: true}
+  planfait_takeoff: &planfait_takeoff
+    {name: "Planfait", lat: 45.853, lon: 6.235, elevation_m: 1180, orientations: [SW, WSW, W], difficulty: intermediate, flight_types: [local], status: open}
+  talloires: &talloires
+    {name: "Talloires (Perroix)", lat: 45.845, lon: 6.212, elevation_m: 450, big_valley: true}
+  planpraz_takeoff: &planpraz_takeoff
+    {name: "Planpraz", lat: 45.937, lon: 6.858, elevation_m: 2000, orientations: [SE, SSE, S, SSW, SW], difficulty: intermediate, flight_types: [local, cross_country], status: open}
+  bouchet: &bouchet
+    {name: "Bois du Bouchet", lat: 45.932, lon: 6.882, elevation_m: 1030, big_valley: true}
+  st_hilaire_takeoff: &st_hilaire_takeoff
+    {name: "Saint-Hilaire du Touvet (Sud)", lat: 45.305, lon: 5.888, elevation_m: 980, orientations: [E, ESE, SE], difficulty: beginner, flight_types: [local, cross_country], status: open}
+  lumbin: &lumbin
+    {name: "Lumbin", lat: 45.300, lon: 5.910, elevation_m: 240, big_valley: true}
+  chalvet_takeoff: &chalvet_takeoff
+    {name: "Chalvet (Saint-André-les-Alpes)", lat: 43.975, lon: 6.488, elevation_m: 1550, orientations: [S, SSW, SW, WSW, W], difficulty: intermediate, flight_types: [local, cross_country], status: open}
+  st_andre: &st_andre
+    {name: "Saint-André-les-Alpes", lat: 43.966, lon: 6.505, elevation_m: 900, big_valley: false}
+  pyla_takeoff: &pyla_takeoff
+    {name: "Dune du Pyla", lat: 44.589, lon: -1.213, elevation_m: 100, orientations: [W, WNW], difficulty: beginner, flight_types: [ridge_soaring], status: open}
+  pyla_top: &pyla_top
+    {name: "Dune du Pyla — top landing", lat: 44.5895, lon: -1.2125, elevation_m: 100, big_valley: false}
+  technique_takeoff: &technique_takeoff
+    {name: "Déco technique (fictif)", lat: 45.500, lon: 6.500, elevation_m: 1600, orientations: [S], difficulty: advanced, flight_types: [local], status: open}
+  technique_landing: &technique_landing
+    {name: "Atterro technique (fictif)", lat: 45.473, lon: 6.500, elevation_m: 700, big_valley: false}
+
+weathers:
+  w_s01: &w_s01
+    takeoff_wind_kmh: 12
+    takeoff_wind_dir: 290
+    takeoff_gust_kmh: 17
+    landing_wind_kmh: 12          # brise du lac (N) ; ×1,3 entre 13 et 17 h légales → 15,6
+    landing_wind_dir: 0
+    landing_gust_kmh: 15
+    winds_aloft: {1550: [10, 280], 2000: [15, 270], 2500: [18, 260], 3000: [20, 250]}
+    thermal_ceiling_m: 2800
+    cloud_base_m: 3000
+    thermal_strength_ms: 1.8
+    cape_j_kg: 150
+    lifted_index: 3
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 30
+    cloud_cover_low_pct: 10
+    temperature_c: 22
+    dew_point_c: 10
+    convection: {start: "09:00", end: "16:30"}
+  w_s07: &w_s07
+    takeoff_wind_kmh: 8
+    takeoff_wind_dir: 135
+    takeoff_gust_kmh: 14
+    landing_wind_kmh: 10
+    landing_wind_dir: 45
+    landing_gust_kmh: 15
+    winds_aloft: {1280: [10, 140], 1500: [12, 150], 2000: [15, 160], 3000: [20, 170]}
+    thermal_ceiling_m: 2400
+    cloud_base_m: 2600
+    thermal_strength_ms: 1.8
+    cape_j_kg: 100
+    lifted_index: 4
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 25
+    cloud_cover_low_pct: 10
+    temperature_c: 15
+    dew_point_c: 5
+    convection: {start: "08:30", end: "16:00"}
+  w_s08: &w_s08
+    takeoff_wind_kmh: 12
+    takeoff_wind_dir: 135
+    takeoff_gust_kmh: 18
+    landing_wind_kmh: 18          # brise du Grésivaudan ; ×1,3 → 23,4 (rafales 27,3)
+    landing_wind_dir: 45
+    landing_gust_kmh: 21
+    winds_aloft: {1280: [12, 140], 1500: [12, 150], 2000: [15, 160], 3000: [20, 170]}
+    thermal_ceiling_m: 2500
+    cloud_base_m: 2700
+    thermal_strength_ms: 1.8
+    cape_j_kg: 100
+    lifted_index: 4
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 30
+    cloud_cover_low_pct: 10
+    temperature_c: 20
+    dew_point_c: 6
+    convection: {start: "08:30", end: "16:00"}
+  w_s15: &w_s15
+    takeoff_wind_kmh: 16
+    takeoff_wind_dir: 290
+    takeoff_gust_kmh: 19
+    landing_wind_kmh: 16
+    landing_wind_dir: 290
+    landing_gust_kmh: 19
+    winds_aloft: {400: [17, 290], 1500: [20, 290], 2000: [22, 290]}
+    thermal_ceiling_m: 400
+    cloud_base_m: null
+    thermal_strength_ms: 0.3
+    cape_j_kg: 0
+    lifted_index: 8
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 10
+    cloud_cover_low_pct: 0
+    temperature_c: 24
+    dew_point_c: 16
+    convection: {start: "11:00", end: "15:00"}
+  w_s16: &w_s16
+    takeoff_wind_kmh: 26
+    takeoff_wind_dir: 270
+    takeoff_gust_kmh: 30
+    landing_wind_kmh: 26
+    landing_wind_dir: 270
+    landing_gust_kmh: 30
+    winds_aloft: {400: [27, 270], 1500: [30, 270], 2000: [32, 270]}
+    thermal_ceiling_m: 400
+    cloud_base_m: null
+    thermal_strength_ms: 0.3
+    cape_j_kg: 0
+    lifted_index: 8
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 10
+    cloud_cover_low_pct: 0
+    temperature_c: 22
+    dew_point_c: 14
+    convection: {start: "11:00", end: "15:00"}
+  w_s17: &w_s17
+    takeoff_wind_kmh: 12
+    takeoff_wind_dir: 337.5       # NNW : écart au secteur W = 67,5 − 11,25 = 56,25°
+    takeoff_gust_kmh: 16
+    landing_wind_kmh: 8
+    landing_wind_dir: 0
+    landing_gust_kmh: 12
+    winds_aloft: {1480: [12, 340], 2000: [15, 340], 3000: [18, 330]}
+    thermal_ceiling_m: 2200
+    cloud_base_m: 2500
+    thermal_strength_ms: 1.5
+    cape_j_kg: 50
+    lifted_index: 4
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 30
+    cloud_cover_low_pct: 10
+    temperature_c: 16
+    dew_point_c: 6
+    convection: {start: "10:00", end: "15:00"}
+  w_s18: &w_s18
+    takeoff_wind_kmh: 6
+    takeoff_wind_dir: 90          # E : plein arrière pour un déco W
+    takeoff_gust_kmh: 9
+    landing_wind_kmh: 5
+    landing_wind_dir: 45
+    landing_gust_kmh: 8
+    winds_aloft: {1550: [8, 90], 2000: [10, 90], 3000: [12, 80]}   # < 10 km/h à la crête : pas de LEE_SIDE
+    thermal_ceiling_m: 2200
+    cloud_base_m: 2500
+    thermal_strength_ms: 1.5
+    cape_j_kg: 50
+    lifted_index: 4
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 20
+    cloud_cover_low_pct: 5
+    temperature_c: 15
+    dew_point_c: 5
+    convection: {start: "09:30", end: "15:00"}
+
+scenarios:
+  - id: S01
+    title: "Forclaz, belle journée thermique, brise du lac"
+    reference_time: "2026-07-14T12:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 60, duration_max_minutes: 120, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather: *w_s01
+    expect:
+      flyability: go
+      flight_type: local
+      min_duration_min: 60
+      max_duration_min: 120
+      difficulty_min: intermediate
+      difficulty_max: intermediate
+      risk_codes: [VALLEY_BREEZE]
+      risk_codes_forbidden: [RAIN, THUNDERSTORM, LEE_SIDE, TAILWIND, GLIDE_MARGIN]
+
+  - id: S02
+    title: "Forclaz, fin d'après-midi calme, élève"
+    reference_time: "2026-07-15T09:30:00Z"
+    horizon: "8h"                 # cible 17:30Z = 19:30 légale ; coucher ≈ 19:15Z
+    filters: {difficulty: beginner, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 45}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      <<: *w_s01
+      takeoff_wind_kmh: 8
+      takeoff_gust_kmh: 11
+      landing_wind_kmh: 6
+      landing_gust_kmh: 9
+      winds_aloft: {1550: [6, 280], 2000: [10, 270], 3000: [15, 260]}
+      thermal_ceiling_m: 1700
+      cloud_base_m: null
+      thermal_strength_ms: 0.6
+      cape_j_kg: 50
+      lifted_index: 4
+    expect:
+      flyability: go
+      flight_type: local
+      thermal_usage_in: [none, optional]
+      min_duration_min: 11
+      max_duration_min: 20
+      difficulty_max: beginner
+      landing_before_sunset: true
+      risk_codes_forbidden: [STRONG_THERMALS, LEE_SIDE]
+      flight_types_forbidden: [cross_country]
+
+  - id: S03
+    title: "Forclaz 14 h, thermiques trop forts pour un élève"
+    reference_time: "2026-07-14T12:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: beginner, thermals: allowed, duration_min_minutes: 15, duration_max_minutes: 45}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      <<: *w_s01
+      convection: {start: "07:00", end: "16:30"}   # pas de créneau « début de convection doux » dans [cible − 30 min, cible + 3 h]
+    expect:
+      flyability: no_go
+      risk_codes: [STRONG_THERMALS]
+
+  - id: S04
+    title: "Forclaz, faux calme : déco sous le vent d'un flux d'ESE"
+    reference_time: "2026-10-07T23:00:00Z"
+    horizon: "12h"                # cible 11:00Z
+    filters: {difficulty: expert, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 120}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      takeoff_wind_kmh: 3
+      takeoff_wind_dir: 200
+      takeoff_gust_kmh: 8
+      landing_wind_kmh: 8
+      landing_wind_dir: 90
+      landing_gust_kmh: 14
+      winds_aloft: {1550: [20, 112], 2000: [22, 110], 3000: [25, 120]}
+      thermal_ceiling_m: 2000
+      cloud_base_m: null
+      thermal_strength_ms: 1.2
+      cape_j_kg: 50
+      lifted_index: 5
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 10
+      cloud_cover_low_pct: 0
+      temperature_c: 14
+      dew_point_c: 2
+      convection: {start: "10:00", end: "14:30"}
+    expect:
+      flyability: no_go
+      risk_codes: [LEE_SIDE]
+      rejected_reason_contains: "dévent"
+
+  - id: S05
+    title: "Planpraz, cross, plafond au-dessus du FL115, surdéveloppement modéré à 16 h légale"
+    reference_time: "2026-07-19T10:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: advanced, thermals: required, duration_min_minutes: 120, duration_max_minutes: 300, wing_glide_ratio: 9.0}
+    takeoff: *planpraz_takeoff
+    landing: *bouchet
+    weather:
+      takeoff_wind_kmh: 10
+      takeoff_wind_dir: 180
+      takeoff_gust_kmh: 16
+      landing_wind_kmh: 10
+      landing_wind_dir: 45
+      landing_gust_kmh: 16
+      winds_aloft: {2300: [10, 220], 3000: [22, 270], 4000: [25, 270]}
+      thermal_ceiling_m: 3900
+      cloud_base_m: 4100
+      thermal_strength_ms: 2.6
+      cape_j_kg: 150
+      lifted_index: 1
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 30
+      cloud_cover_low_pct: 0
+      temperature_c: 16
+      dew_point_c: 2
+      convection: {start: "09:00", end: "16:30"}
+      hourly:
+        "14": {cape_j_kg: 400, lifted_index: -1}
+        "15": {cape_j_kg: 450, lifted_index: -1}
+        "16": {cape_j_kg: 400, lifted_index: -1}
+    expect:
+      flyability: marginal
+      min_duration_min: 120
+      max_duration_min: 180
+      landing_before_utc: "13:00"     # surdév (14Z) − 1 h
+      max_altitude_m_max: 3405        # FL115 − 100 m
+      risk_codes: [OVERDEVELOPMENT, ALTITUDE_LIMIT]
+      risk_codes_forbidden: [RAIN]
+
+  - id: S06
+    title: "Planpraz, journée orageuse"
+    reference_time: "2026-07-20T11:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 240}
+    takeoff: *planpraz_takeoff
+    landing: *bouchet
+    weather:
+      takeoff_wind_kmh: 8
+      takeoff_wind_dir: 200
+      takeoff_gust_kmh: 15
+      landing_wind_kmh: 10
+      landing_wind_dir: 45
+      landing_gust_kmh: 18
+      winds_aloft: {2300: [8, 220], 3000: [18, 230]}
+      thermal_ceiling_m: 3800
+      cloud_base_m: 2900
+      thermal_strength_ms: 3.5
+      cape_j_kg: 1200
+      lifted_index: -4
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 50
+      cloud_cover_low_pct: 10
+      temperature_c: 20
+      dew_point_c: 11
+      convection: {start: "08:30", end: "16:00"}
+      hourly:
+        "14": {precipitation_mm_h: 1.5, cape_j_kg: 1500, lifted_index: -5}
+    expect:
+      flyability: no_go
+      risk_codes: [THUNDERSTORM]
+
+  - id: S07
+    title: "Saint-Hilaire, matinée thermique moyenne"
+    reference_time: "2026-05-15T09:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *st_hilaire_takeoff
+    landing: *lumbin
+    weather: *w_s07
+    expect:
+      flyability: go
+      flight_type: local
+      min_duration_min: 30
+      max_duration_min: 90
+      risk_codes_forbidden: [LANDING_WIND, THUNDERSTORM, LEE_SIDE]
+
+  - id: S08
+    title: "Saint-Hilaire 15 h 30, brise du Grésivaudan trop forte pour un brevet de pilote"
+    reference_time: "2026-05-15T13:30:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 60, flight_types: [local]}
+    takeoff: *st_hilaire_takeoff
+    landing: *lumbin
+    weather: *w_s08
+    expect:
+      flyability: no_go
+      risk_codes: [LANDING_WIND]
+
+  - id: S08b
+    title: "Idem S08, brevet confirmé"
+    reference_time: "2026-05-15T13:30:00Z"
+    horizon: "24h"
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 60, flight_types: [local]}
+    takeoff: *st_hilaire_takeoff
+    landing: *lumbin
+    weather: *w_s08
+    expect:
+      flyability: marginal
+      flight_type: local
+      risk_codes: [VALLEY_BREEZE]
+
+  - id: S09
+    title: "Chalvet, grand cross expert, NW faible"
+    reference_time: "2026-06-12T09:30:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: required, duration_min_minutes: 240, duration_max_minutes: 480, flight_types: [cross_country], wing_glide_ratio: 9.8}
+    takeoff: *chalvet_takeoff
+    landing: *st_andre
+    weather:
+      takeoff_wind_kmh: 10
+      takeoff_wind_dir: 180
+      takeoff_gust_kmh: 16
+      landing_wind_kmh: 8
+      landing_wind_dir: 160
+      landing_gust_kmh: 14
+      winds_aloft: {1850: [8, 200], 2000: [12, 300], 3000: [20, 315]}
+      thermal_ceiling_m: 3300
+      cloud_base_m: 3500
+      thermal_strength_ms: 3.5
+      cape_j_kg: 200
+      lifted_index: 2
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 30
+      cloud_cover_low_pct: 0
+      temperature_c: 20
+      dew_point_c: 4
+      convection: {start: "08:30", end: "17:00"}
+    expect:
+      flyability: go
+      flight_type: cross_country
+      min_duration_min: 240
+      max_duration_min: 420
+      distance_km_min: 60
+      distance_km_max: 220
+      first_leg_upwind_of_deg: 315
+      max_altitude_m_max: 3300        # plafond utile 3200 (+100 de tolérance)
+      risk_codes_forbidden: [RAIN, THUNDERSTORM, LEE_SIDE]
+
+  - id: S10
+    title: "Chalvet, mistral : vent fort en altitude"
+    reference_time: "2026-04-09T10:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 240}
+    takeoff: *chalvet_takeoff
+    landing: *st_andre
+    weather:
+      takeoff_wind_kmh: 15
+      takeoff_wind_dir: 330
+      takeoff_gust_kmh: 30
+      landing_wind_kmh: 20
+      landing_wind_dir: 330
+      landing_gust_kmh: 35
+      winds_aloft: {1850: [30, 0], 2000: [38, 330], 3000: [52, 315]}
+      thermal_ceiling_m: 2600
+      cloud_base_m: null
+      thermal_strength_ms: 2.5
+      cape_j_kg: 50
+      lifted_index: 6
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 5
+      cloud_cover_low_pct: 0
+      temperature_c: 10
+      dew_point_c: -5
+      convection: {start: "09:00", end: "15:00"}
+    expect:
+      flyability: no_go
+      risk_codes: [STRONG_WIND_ALOFT]
+
+  - id: S11
+    title: "Planpraz, foehn de sud"
+    reference_time: "2026-10-11T11:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 240}
+    takeoff: *planpraz_takeoff
+    landing: *bouchet
+    weather:
+      takeoff_wind_kmh: 20
+      takeoff_wind_dir: 190
+      takeoff_gust_kmh: 38
+      landing_wind_kmh: 18
+      landing_wind_dir: 200
+      landing_gust_kmh: 35
+      winds_aloft: {2300: [30, 200], 3000: [55, 205]}
+      thermal_ceiling_m: 2600
+      cloud_base_m: null
+      thermal_strength_ms: 1.5
+      cape_j_kg: 0
+      lifted_index: 8
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 40
+      cloud_cover_low_pct: 0
+      temperature_c: 16
+      dew_point_c: -4
+      convection: {start: "10:00", end: "14:00"}
+    expect:
+      flyability: no_go
+      risk_codes: [FOEHN, STRONG_WIND_ALOFT, TAKEOFF_GUSTS]
+
+  - id: S12
+    title: "Forclaz, pluie et base basse"
+    reference_time: "2026-09-05T00:00:00Z"
+    horizon: "12h"
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 120}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      takeoff_wind_kmh: 8
+      takeoff_wind_dir: 270
+      takeoff_gust_kmh: 14
+      landing_wind_kmh: 8
+      landing_wind_dir: 0
+      landing_gust_kmh: 12
+      winds_aloft: {1550: [10, 260], 2000: [15, 250], 3000: [20, 240]}
+      thermal_ceiling_m: 1600
+      cloud_base_m: 1400
+      thermal_strength_ms: 0.5
+      cape_j_kg: 100
+      lifted_index: 3
+      precipitation_mm_h: 0.5
+      precip_prev_3h_mm: 1.2
+      cloud_cover_pct: 95
+      cloud_cover_low_pct: 90
+      temperature_c: 12
+      dew_point_c: 10
+      convection: {start: "10:00", end: "14:00"}
+    expect:
+      flyability: no_go
+      risk_codes: [RAIN, LOW_CLOUD_BASE]
+
+  - id: S13
+    title: "Forclaz, sec à l'heure cible mais forte pluie juste avant"
+    reference_time: "2026-09-05T03:00:00Z"
+    horizon: "12h"                # cible 15:00Z
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      takeoff_wind_kmh: 8
+      takeoff_wind_dir: 280
+      takeoff_gust_kmh: 12
+      landing_wind_kmh: 6
+      landing_wind_dir: 0
+      landing_gust_kmh: 10
+      winds_aloft: {1550: [8, 270], 2000: [12, 260], 3000: [18, 250]}
+      thermal_ceiling_m: 2000
+      cloud_base_m: 2200
+      thermal_strength_ms: 1.0
+      cape_j_kg: 50
+      lifted_index: 4
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 2.5
+      cloud_cover_pct: 50
+      cloud_cover_low_pct: 20
+      temperature_c: 14
+      dew_point_c: 8
+      convection: {start: "10:00", end: "16:00"}
+    expect:
+      flyability: no_go
+      risk_codes: [RAIN]
+
+  - id: S14
+    title: "Forclaz en hiver, mer de nuages : atterro dans le stratus"
+    reference_time: "2026-12-11T12:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 15, duration_max_minutes: 60}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      takeoff_wind_kmh: 5
+      takeoff_wind_dir: 270
+      takeoff_gust_kmh: 8
+      landing_wind_kmh: 2
+      landing_wind_dir: 0
+      landing_gust_kmh: 4
+      landing_temperature_c: 1.0        # clé à ajouter côté backend
+      landing_dew_point_c: 0.5
+      landing_cloud_cover_low_pct: 100
+      winds_aloft: {1550: [5, 260], 2000: [10, 260], 3000: [15, 270]}
+      thermal_ceiling_m: 1300
+      cloud_base_m: null
+      thermal_strength_ms: 0.3
+      cape_j_kg: 0
+      lifted_index: 10
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 60
+      cloud_cover_low_pct: 60
+      temperature_c: 3
+      dew_point_c: -5
+      convection: {start: "11:30", end: "13:30"}
+    expect:
+      flyability: no_go
+      risk_codes: [LOW_CLOUD_BASE]
+
+  - id: S15
+    title: "Dune du Pyla, soaring régulier"
+    reference_time: "2026-08-09T14:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: avoid, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *pyla_takeoff
+    landing: *pyla_top
+    weather: *w_s15
+    expect:
+      flyability: go
+      flight_type: ridge_soaring
+      thermal_usage_in: [none]
+      min_duration_min: 30
+      max_duration_min: 90
+      risk_codes_forbidden: [STRONG_THERMALS, GLIDE_MARGIN]
+      flight_types_forbidden: [cross_country]
+
+  - id: S16
+    title: "Dune du Pyla, soaring fort, brevet de pilote"
+    reference_time: "2026-08-10T14:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: avoid, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *pyla_takeoff
+    landing: *pyla_top
+    weather: *w_s16
+    expect:
+      flyability: no_go
+      risk_codes: [TAKEOFF_WIND]
+
+  - id: S16b
+    title: "Idem S16, expert"
+    reference_time: "2026-08-10T14:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: avoid, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *pyla_takeoff
+    landing: *pyla_top
+    weather: *w_s16
+    expect:
+      flyability: marginal
+      flight_type: ridge_soaring
+      difficulty_min: advanced
+      risk_codes: [TAKEOFF_WIND]
+
+  - id: S17
+    title: "Planfait, vent de travers NNW, brevet de pilote"
+    reference_time: "2026-09-19T23:00:00Z"
+    horizon: "12h"                # cible 11:00Z
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *planfait_takeoff
+    landing: *talloires
+    weather: *w_s17
+    expect:
+      flyability: no_go
+      risk_codes: [CROSSWIND]
+
+  - id: S17b
+    title: "Idem S17, brevet confirmé"
+    reference_time: "2026-09-19T23:00:00Z"
+    horizon: "12h"
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *planfait_takeoff
+    landing: *talloires
+    weather: *w_s17
+    expect:
+      flyability: marginal
+      flight_type: local
+      risk_codes: [CROSSWIND]
+
+  - id: S18
+    title: "Forclaz, vent arrière faible, brevet confirmé"
+    reference_time: "2026-09-19T21:00:00Z"
+    horizon: "12h"                # cible 09:00Z
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather: *w_s18
+    expect:
+      flyability: no_go
+      risk_codes: [TAILWIND]
+
+  - id: S18b
+    title: "Idem S18, expert"
+    reference_time: "2026-09-19T21:00:00Z"
+    horizon: "12h"
+    filters: {difficulty: expert, thermals: allowed, duration_min_minutes: 15, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather: *w_s18
+    expect:
+      flyability: marginal
+      risk_codes: [TAILWIND]
+      risk_codes_forbidden: [LEE_SIDE]
+
+  - id: S19
+    title: "Forclaz, 18 h 45 en octobre, coucher ≈ 19 h 05"
+    reference_time: "2026-10-08T14:45:00Z"
+    horizon: "2h"                 # cible 16:45Z
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      takeoff_wind_kmh: 6
+      takeoff_wind_dir: 290
+      takeoff_gust_kmh: 9
+      landing_wind_kmh: 4
+      landing_wind_dir: 0
+      landing_gust_kmh: 6
+      winds_aloft: {1550: [6, 280], 2000: [10, 270], 3000: [15, 260]}
+      thermal_ceiling_m: 1500
+      cloud_base_m: null
+      thermal_strength_ms: 0.3
+      cape_j_kg: 0
+      lifted_index: 6
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 10
+      cloud_cover_low_pct: 0
+      temperature_c: 12
+      dew_point_c: 2
+      convection: {start: "10:00", end: "14:30"}
+    expect:
+      flyability: marginal
+      flight_type: local
+      min_duration_min: 10
+      max_duration_min: 20
+      landing_before_sunset: true
+      summary_explains_duration: true
+      risk_codes: [SUNSET]
+
+  - id: S20
+    title: "Forclaz au déco (30 min) : la balise contredit le modèle"
+    reference_time: "2026-10-08T11:00:00Z"
+    horizon: "30m"
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      takeoff_wind_kmh: 10
+      takeoff_wind_dir: 270
+      takeoff_gust_kmh: 16
+      landing_wind_kmh: 6
+      landing_wind_dir: 0
+      landing_gust_kmh: 10
+      winds_aloft: {1550: [12, 270], 2000: [15, 270], 3000: [20, 260]}
+      thermal_ceiling_m: 2000
+      cloud_base_m: 2300
+      thermal_strength_ms: 1.5
+      cape_j_kg: 50
+      lifted_index: 4
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 30
+      cloud_cover_low_pct: 10
+      temperature_c: 13
+      dew_point_c: 3
+      convection: {start: "10:00", end: "14:30"}
+    beacons:
+      - {name: "Balise Forclaz", lat: 45.8125, lon: 6.2455, elevation_m: 1250, wind_speed_kmh: 25, wind_gust_kmh: 38, wind_direction_deg: 0, age_min: 5}
+    expect:
+      flyability: no_go
+      risk_codes: [TAKEOFF_GUSTS, BEACON_MISMATCH]
+
+  - id: S21
+    title: "Saint-Hilaire à 48 h, modèles en désaccord"
+    reference_time: "2026-10-08T09:00:00Z"
+    horizon: "48h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *st_hilaire_takeoff
+    landing: *lumbin
+    weather:
+      takeoff_wind_kmh: 14
+      takeoff_wind_dir: 135
+      takeoff_gust_kmh: 19
+      landing_wind_kmh: 8
+      landing_wind_dir: 45
+      landing_gust_kmh: 12
+      winds_aloft: {1280: [14, 140], 1500: [15, 150], 2000: [16, 160], 3000: [20, 170]}
+      thermal_ceiling_m: 2000
+      cloud_base_m: 2300
+      thermal_strength_ms: 1.5
+      cape_j_kg: 50
+      lifted_index: 4
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 30
+      cloud_cover_low_pct: 10
+      temperature_c: 14
+      dew_point_c: 4
+      convection: {start: "10:00", end: "14:30"}
+    models:                       # clé à ajouter côté backend : vent au déco par modèle (dispersion → confiance)
+      arome_france_hd: {takeoff_wind_kmh: 6, takeoff_wind_dir: 135}
+      icon_d2: {takeoff_wind_kmh: 26, takeoff_wind_dir: 150}
+      ecmwf_ifs025: {takeoff_wind_kmh: 15, takeoff_wind_dir: 135}
+    expect:
+      flyability: marginal
+      confidence_max: 0.40
+      risk_codes: [LOW_CONFIDENCE]
+
+  - id: S22
+    title: "Chalvet, vol du matin un jour d'orages l'après-midi"
+    reference_time: "2026-07-24T07:30:00Z"
+    horizon: "24h"                # cible 07:30Z = 09:30 légale
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 180}
+    takeoff: *chalvet_takeoff
+    landing: *st_andre
+    weather:
+      takeoff_wind_kmh: 6
+      takeoff_wind_dir: 180
+      takeoff_gust_kmh: 10
+      landing_wind_kmh: 5
+      landing_wind_dir: 160
+      landing_gust_kmh: 8
+      winds_aloft: {1850: [6, 200], 2000: [10, 220], 3000: [12, 230]}
+      thermal_ceiling_m: 2600
+      cloud_base_m: 2800
+      thermal_strength_ms: 1.8
+      cape_j_kg: 150
+      lifted_index: 1
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 20
+      cloud_cover_low_pct: 0
+      temperature_c: 18
+      dew_point_c: 8
+      convection: {start: "08:00", end: "16:00"}
+      hourly:
+        "14": {cape_j_kg: 900, lifted_index: -2}
+        "15": {cape_j_kg: 1200, lifted_index: -4, precipitation_mm_h: 2.0}
+        "16": {cape_j_kg: 1200, lifted_index: -4, precipitation_mm_h: 3.0}
+    expect:
+      flyability: marginal
+      flight_type: local
+      max_duration_min: 90
+      landing_before_utc: "13:00"     # surdév (14Z) − 1 h
+      risk_codes: [OVERDEVELOPMENT]
+      flight_types_forbidden: [cross_country]
+
+  - id: S23
+    title: "Site de niveau confirmé demandé par un brevet de pilote"
+    reference_time: "2026-05-15T09:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *technique_takeoff
+    landing: *technique_landing
+    weather:
+      <<: *w_s07
+      takeoff_wind_dir: 180
+      landing_wind_dir: 180
+      winds_aloft: {1900: [10, 190], 2000: [12, 190], 3000: [18, 200]}
+      thermal_ceiling_m: 2800
+      cloud_base_m: 3000
+    expect:
+      flyability: no_go
+      risk_codes: [SITE_LEVEL]
+      rejected_reason_contains: "niveau"
+
+  - id: S24
+    title: "Saint-Hilaire, plouf du matin, élève"
+    reference_time: "2026-07-15T18:30:00Z"
+    horizon: "12h"                # cible 06:30Z = 08:30 légale
+    filters: {difficulty: beginner, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 45}
+    takeoff: *st_hilaire_takeoff
+    landing: *lumbin
+    weather:
+      takeoff_wind_kmh: 2
+      takeoff_wind_dir: 135
+      takeoff_gust_kmh: 5
+      landing_wind_kmh: 4
+      landing_wind_dir: 225
+      landing_gust_kmh: 6
+      winds_aloft: {1280: [5, 160], 1500: [6, 200], 2000: [8, 220], 3000: [12, 240]}
+      thermal_ceiling_m: 1200
+      cloud_base_m: null
+      thermal_strength_ms: 0.4
+      cape_j_kg: 50
+      lifted_index: 4
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 5
+      cloud_cover_low_pct: 0
+      temperature_c: 14
+      dew_point_c: 8
+      convection: {start: "08:30", end: "16:30"}
+    expect:
+      flyability: go
+      flight_type: local
+      thermal_usage_in: [none]
+      min_duration_min: 10
+      max_duration_min: 20
+      difficulty_max: beginner
+      risk_codes_forbidden: [STRONG_THERMALS, LEE_SIDE, TAILWIND]
+      flight_types_forbidden: [cross_country]
+
+  - id: S25
+    title: "Forclaz, cross expert : la route ne doit pas traverser une CTR"
+    reference_time: "2026-07-14T09:30:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: required, duration_min_minutes: 120, duration_max_minutes: 300, flight_types: [cross_country], wing_glide_ratio: 9.5}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather: *w_s01
+    airspaces:
+      - {name: "CTR TEST Annecy (fictif)", airspace_class: D, type: CTR, floor_m: 0, ceiling_m: 1500, polygon: [[6.05, 45.88], [6.20, 45.88], [6.20, 45.98], [6.05, 45.98], [6.05, 45.88]]}
+    expect:
+      flyability: go
+      flight_type: cross_country
+      no_route_intersects_classes: [A, C, D, P]
+
+  - id: S26
+    title: "Planpraz en juillet, zone de quiétude rapaces active près du déco"
+    reference_time: "2026-07-14T10:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *planpraz_takeoff
+    landing: *bouchet
+    weather: &w_s26
+      takeoff_wind_kmh: 10
+      takeoff_wind_dir: 180
+      takeoff_gust_kmh: 15
+      landing_wind_kmh: 8
+      landing_wind_dir: 45
+      landing_gust_kmh: 12
+      winds_aloft: {2300: [10, 200], 3000: [15, 230]}
+      thermal_ceiling_m: 3000
+      cloud_base_m: 3300
+      thermal_strength_ms: 1.8
+      cape_j_kg: 100
+      lifted_index: 3
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 20
+      cloud_cover_low_pct: 0
+      temperature_c: 14
+      dew_point_c: 2
+      convection: {start: "08:30", end: "16:30"}
+    sensitive_areas:
+      - {name: "Zone de quiétude aigle royal (fictif)", kind: species, species: "Aigle royal", period_months: [2, 3, 4, 5, 6, 7], min_height_agl_m: 300, recommendation: "Ne pas survoler à moins de 300 m/sol de février à juillet (nidification).", polygon: [[6.848, 45.930], [6.868, 45.930], [6.868, 45.944], [6.848, 45.944], [6.848, 45.930]]}
+    expect:
+      flyability: marginal
+      risk_codes: [SENSITIVE_AREA]
+
+  - id: S26b
+    title: "Idem S26 en octobre : zone inactive"
+    reference_time: "2026-10-05T10:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90, flight_types: [local]}
+    takeoff: *planpraz_takeoff
+    landing: *bouchet
+    weather:
+      <<: *w_s26
+      thermal_ceiling_m: 2700
+      cloud_base_m: null
+      thermal_strength_ms: 1.2
+      convection: {start: "09:30", end: "14:30"}
+    sensitive_areas:
+      - {name: "Zone de quiétude aigle royal (fictif)", kind: species, species: "Aigle royal", period_months: [2, 3, 4, 5, 6, 7], min_height_agl_m: 300, recommendation: "Ne pas survoler à moins de 300 m/sol de février à juillet (nidification).", polygon: [[6.848, 45.930], [6.868, 45.930], [6.868, 45.944], [6.848, 45.944], [6.848, 45.930]]}
+    expect:
+      flyability: go
+      risk_codes_forbidden: [SENSITIVE_AREA]   # au plus « info » ; jamais caution/danger hors période
+
+  - id: S27
+    title: "Déco situé dans un cœur de parc national"
+    reference_time: "2026-05-15T09:00:00Z"
+    horizon: "24h"
+    filters: {difficulty: expert, thermals: allowed, duration_min_minutes: 30, duration_max_minutes: 90}
+    takeoff: *technique_takeoff
+    landing: *technique_landing
+    weather:
+      <<: *w_s07
+      takeoff_wind_dir: 180
+      landing_wind_dir: 180
+      winds_aloft: {1900: [10, 190], 2000: [12, 190], 3000: [18, 200]}
+    sensitive_areas:
+      - {name: "Cœur de parc national (fictif)", kind: national_park_core, species: null, period_months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], min_height_agl_m: 1000, recommendation: "Cœur de parc national : décollage et atterrissage interdits, survol à moins de 1000 m/sol à éviter.", polygon: [[6.48, 45.49], [6.52, 45.49], [6.52, 45.51], [6.48, 45.51], [6.48, 45.49]]}
+    expect:
+      flyability: no_go
+      risk_codes: [NATIONAL_PARK]
