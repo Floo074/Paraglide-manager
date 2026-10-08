@@ -12,7 +12,6 @@ hauteur + altitude du terrain si connue (sinon hauteur seule, signalée AGL).
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -358,4 +357,3 @@ def airspace_feature(a: Airspace) -> dict:
     }
 
 
-__all__ = ["math"]

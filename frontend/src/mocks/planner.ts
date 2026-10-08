@@ -744,15 +744,30 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   const est = Math.round(clamp((Math.max(lo, mn) + Math.min(hi, mx)) / 2, lo, hi));
   const route = buildRoute(cand.variant, ctx, c, est, level);
   const pts = route.builder.pts;
-  const finalFrom = route.lastBeforeFinal;
-  const legBearing = bearingDeg(finalFrom, landing);
   const landingWind = c.landingWx.wind_10m;
-  // composante du vent sur la tranche finale, positive = vent arrière (CDC §2.3)
-  const tailComp = -landingWind.speed_kmh * Math.cos(((legBearing - landingWind.direction_deg) * Math.PI) / 180);
   const finesseAir = filters.wing_glide_ratio * RULES.glideK[level];
-  const available = Math.max(0, (finesseAir * (RULES.airSpeedKmh + tailComp)) / RULES.airSpeedKmh);
-  const heightAvail = finalFrom.alt - (landing.elevation_m + arrivalMargin(level, site.elevation_m - landing.elevation_m));
-  const required = heightAvail > 0 ? (haversineKm(finalFrom, landing) * 1000) / heightAvail : 99;
+  const alternates = nearbyLandings(pts, landing);
+  // Finesse requise = PIRE cas (CDC, règle backend) : (a) déco → atterro principal à l'altitude du déco,
+  // (b) chaque point de route à son altitude prévue → atterro identifié le plus proche.
+  const legRatio = (from: P3, to: Site) => {
+    const margin = arrivalMargin(level, site.elevation_m - to.elevation_m);
+    const h = from.alt - (to.elevation_m + margin);
+    const d = haversineKm(from, to) * 1000;
+    const bearing = bearingDeg(from, to);
+    // composante du vent sur la tranche, positive = vent arrière (CDC §2.3)
+    const tail = -landingWind.speed_kmh * Math.cos(((bearing - landingWind.direction_deg) * Math.PI) / 180);
+    const avail = Math.max(0, (finesseAir * (RULES.airSpeedKmh + tail)) / RULES.airSpeedKmh);
+    return { req: h > 0 ? d / h : 99, avail };
+  };
+  let worst = legRatio({ lat: site.lat, lon: site.lon, alt: site.elevation_m }, landing);
+  for (const p of pts) {
+    const near = [landing, ...alternates].reduce((best, l) => (haversineKm(p, l) < haversineKm(p, best) ? l : best), landing);
+    if (haversineKm(p, near) < 0.3) continue;
+    const r = legRatio(p, near);
+    if (r.req / Math.max(0.1, r.avail) > worst.req / Math.max(0.1, worst.avail)) worst = r;
+  }
+  const required = worst.req;
+  const available = worst.avail;
   const glide = { required_ratio: Math.round(required * 10) / 10, available_ratio: Math.round(available * 10) / 10, margin_ok: required <= available };
 
   // créneau
@@ -856,7 +871,6 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   ];
 
   const id = encodePlanId({ siteId: site.id, variant: cand.variant, target, horizon, filters, rank });
-  const alternates = nearbyLandings(pts, landing);
   for (const a of alternates) {
     route.waypoints.push({ name: a.name, lat: a.lat, lon: a.lon, altitude_m: a.elevation_m, type: "alternate_landing", radius_m: 200, eta_min: null, note: "Atterrissage de secours identifié" });
   }

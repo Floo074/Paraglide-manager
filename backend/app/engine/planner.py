@@ -8,7 +8,6 @@ Point d'entrée : `evaluate_sites(ctx, filters) -> (plans, rejected, warnings)` 
 from __future__ import annotations
 
 import hashlib
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -32,7 +31,6 @@ from app.engine.conditions import (
     sun_times,
     takeoff_wind,
     vector_mean,
-    wind_angle,
 )
 from app.engine.context import DataContext, PointTimeline
 from app.engine.findings import Finding, max_level, smallest_passing_level

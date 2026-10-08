@@ -74,3 +74,21 @@ describe("erreurs et seuils", () => {
     expect(windVerdict(18, 20, takeoffLimits("beginner"))).toBe("over");
   });
 });
+
+describe("invariants des plans de démo", () => {
+  it("la route ne dépasse jamais le plafond utile ; finesse requise ≥ plouf depuis le déco", () => {
+    for (const difficulty of ["beginner", "intermediate", "advanced", "expert"] as const) {
+      for (const h of ["30m", "2h", "8h", "24h"] as const) {
+        const res = mockPlans({ ...base, horizon: h, filters: { ...base.filters, difficulty, duration_max_minutes: 300 } }, now);
+        for (const p of res.plans) {
+          const maxAlt = Math.max(...p.route.coordinates.map((c) => c[2]));
+          expect(maxAlt, p.title).toBeLessThanOrEqual(Math.max(p.thermals.ceiling_m, p.takeoff.elevation_m) + 10);
+          expect(p.max_altitude_m).toBeLessThanOrEqual(Math.max(p.thermals.ceiling_m, p.takeoff.elevation_m) + 10);
+          const d = Math.hypot((p.takeoff.lat - p.landing.lat) * 111, (p.takeoff.lon - p.landing.lon) * 78) * 1000;
+          const plouf = d / (p.takeoff.elevation_m - p.landing.elevation_m - 100);
+          expect(p.glide.required_ratio + 0.3, p.title).toBeGreaterThanOrEqual(Math.min(plouf, 99));
+        }
+      }
+    }
+  });
+});

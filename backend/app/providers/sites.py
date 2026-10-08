@@ -64,6 +64,14 @@ def pge_orientations(props: dict) -> list[str]:
     return out
 
 
+def https_link(url: str | None) -> str | None:
+    """Liens PGE en https://www (le http et le domaine sans www sont refusés par certains proxys)."""
+    if not url:
+        return None
+    u = url.strip().replace("http://", "https://", 1)
+    return u.replace("https://paraglidingearth.com", "https://www.paraglidingearth.com", 1)
+
+
 def _is_closed(name: str) -> bool:
     n = name.lower()
     return any(w in n for w in CLOSED_WORDS)
@@ -105,7 +113,7 @@ def parse_pge(data) -> tuple[list[Site], dict[str, SiteMeta]]:
                     elevation_m=lalt if lalt is not None and lalt > 0 else -1.0,
                     orientations=[], difficulty=None, flight_types=[],
                     description=(ldg.get("landing_description") or None), access=None, restrictions=None,
-                    status="unknown", source="paraglidingearth", url=props.get("pge_link"), associated_landing_ids=[],
+                    status="unknown", source="paraglidingearth", url=https_link(props.get("pge_link")), associated_landing_ids=[],
                 )  # fmt: skip
             )
             landing_ids.append(lid)
@@ -117,7 +125,7 @@ def parse_pge(data) -> tuple[list[Site], dict[str, SiteMeta]]:
                 orientations=pge_orientations(props), difficulty=None, flight_types=types,
                 description=(props.get("takeoff_description") or props.get("comments") or None),
                 access=(props.get("going_there") or None), restrictions=(props.get("flight_rules") or None),
-                status=status, source="paraglidingearth", url=props.get("pge_link"), associated_landing_ids=landing_ids,
+                status=status, source="paraglidingearth", url=https_link(props.get("pge_link")), associated_landing_ids=landing_ids,
             )  # fmt: skip
         )
         meta[f"pge:{pid}"] = SiteMeta()

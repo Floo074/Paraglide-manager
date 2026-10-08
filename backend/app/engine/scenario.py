@@ -20,7 +20,6 @@ from app.meteo.ensemble import Spread
 from app.meteo.profile import VerticalProfile
 from app.meteo.snapshot import iso
 from app.meteo.thermals import HourAnalysis
-from app.meteo.thermo import rh_from_dew_point
 from app.meteo.types import HourData, LevelData
 from app.models import HORIZON_MINUTES, Beacon, CircleZone, LatLon, PlanFilters, PlanResponse, Site
 from app.providers.fixture_data import fixture_relief
