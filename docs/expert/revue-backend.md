@@ -86,6 +86,17 @@ Essai d'accès direct à ParaglidingEarth depuis l'environnement de l'expert : c
 
 Points validés tels quels : surchauffe +1 °C proportionnelle au rayonnement, Espy 125 m/°C, plafond utile = min(plafond, base − 300), W* de Deardorff avec zi = sommet sec, vario = W* − 1 réduit au-delà de 20 km/h de vent, mélange pondéré 35 % avec la hauteur de couche limite du modèle, définitions low/moderate/high du surdéveloppement (CDC §4.6), fenêtre de convection (couche limite ≥ 500 m et W* ≥ 1,2 au début, W* ≥ 1,0 à la fin), vitesse du vent moyennée sur les forces et non vectoriellement (prudent).
 
+### Lot 5 : relecture de `engine/conditions.py` et `engine/findings.py` (envoyé)
+
+| # | Demande | Statut |
+|---|---|---|
+| 5.1 | Critères de faisabilité (vent mini en soaring, plafond mini, vario mini) : `band=False`, `blocks_go=False` ; sous le minimum, pas de plan de ce type plutôt qu'un danger | envoyé |
+| 5.2 | Brise d'atterro : rampe × 1,15 entre 12 et 13 h et entre 17 et 18 h, au lieu d'une marche d'escalier | envoyé |
+| 5.3 | Composante de vent arrière au secteur le plus proche : vérifiée, conforme | constaté conforme |
+| 5.4 | Dans un FlightPlan, `wind_10m` = vent RETENU au site (altitude du déco, nowcast, brise à l'atterro) ; à documenter dans le contrat | envoyé (décision expert) |
+
+Validé tel quel : architecture des `Finding` évalués par niveau (seuil strict, bande 80-100 %, difficulté = plus petit niveau qui passe) ; nowcast (modèle + poids × écart balise, pondération par âge et par écart d'altitude, rafale max des balises aux horizons courts) ; vent de crête à déco + 300 m.
+
 ## Réponses du backend
 
 - Lot 1 : tout accepté. Précision technique acceptée : le sol « lissé » du modèle = moyenne du MNT sur 2,5 km de rayon autour du déco ; le vent au déco est interpolé entre ce point 10 m et les niveaux de pression. Rafales = `gust_10m × v_déco / v_10m`, bornées à `v_déco + 25` (× 1,35 si le modèle ne fournit pas de rafales). ScoreItem `airspace` informatif (poids 0) : **accepté** côté expert (les espaces aériens restent un filtre dur).
@@ -109,6 +120,17 @@ Réponse du frontend : F1 accepté en totalité. Trois choix soumis :
 - (a) « posé avant » = `min(window.end + durée, coucher − 30 min)` → **corrigé par l'expert** : `min(window.end + durée, coucher)`, en orange si l'heure dépasse coucher − 30 min. Champs backend `window.latest_landing` / `sun` demandés (lot 3.7) ;
 - (b) couleurs selon le niveau choisi : validé, avec seuils de soaring pour les plans `ridge_soaring` et rafales d'atterro colorées ;
 - (c) grilles météo désactivées par défaut sur la carte principale : validé, avec l'altitude affichée en gros dans la légende.
+
+### Lot F2 : premiers composants (PlanCard, ResultsPanel, VerdictBanner, WindowBlock, planTimes) (envoyé)
+
+| # | Demande | Statut |
+|---|---|---|
+| F2.1 | `wind_10m` d'un plan = vent retenu au site ; libellé « atterro à l'arrivée vers hh:mm » | envoyé |
+| F2.2 | Lire `window.latest_landing` et `sun.sunset` tels que le backend les publiera dans le contrat | envoyé |
+| F2.3 | Libellé du code `SITE_LEVEL` | envoyé |
+| F2.4 | PlanCard : « posé avant », et « air calme » au lieu de « 0,0 m/s » | envoyé |
+| F2.5 | Verdict : rappel « l'analyse sur place prime » pour GO et MARGINAL | envoyé |
+| F2.6 | Ordre des blocs de la page plan (à vérifier une fois la page assemblée) | en attente |
 
 ## Désaccords remontés au coordinateur
 

@@ -361,14 +361,16 @@ def convection_window(hours: list[HourAnalysis]) -> ConvectionWindow:
     if risk != "low":
         from datetime import timedelta
 
+        # heure de surdéveloppement (lot expert 2.6 / 4.1) : la plus précoce entre
+        # - la 1re heure où le risque horaire atteint « moderate » (CAPE/LI, humidité + cumulus) ;
+        # - premier cumulus + 3,5 h ;
+        # - à défaut, début de convection + 3,5 h.
+        candidates = [a.time for a in hours if overdevelopment_level(a) != "low"][:1]
         if first_cu is not None:
-            od_time = first_cu + timedelta(hours=rules.OVERDEV_DELAY_AFTER_FIRST_CU_H)
-        else:
-            # pas de cumulus détecté : première heure où le risque apparaît
-            for a in hours:
-                if overdevelopment_level(a) != "low":
-                    od_time = a.time
-                    break
+            candidates.append(first_cu + timedelta(hours=rules.OVERDEV_DELAY_AFTER_FIRST_CU_H))
+        if not candidates and start is not None:
+            candidates.append(start + timedelta(hours=rules.OVERDEV_DELAY_AFTER_FIRST_CU_H))
+        od_time = min(candidates) if candidates else None
     return ConvectionWindow(start, end, peak, peak_strength, first_cu, risk, od_time)
 
 

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect } from "react";
 import { Marker, Rectangle, Tooltip } from "react-leaflet";
 import L from "leaflet";
 import { getForecastGrid } from "../../api/client";
@@ -60,7 +60,7 @@ export function WeatherGridLayer({
   const key = `${bboxParam(bbox)}|${time}|${layer}|${altitude}`;
   const { data, loading, error } = useAsync((signal) => getForecastGrid(bbox, time, layer, altitude, signal), [key]);
   const zoom = useMapZoom();
-  useMemo(() => onLoaded?.(data, loading, error), [data, loading, error, onLoaded]);
+  useEffect(() => onLoaded?.(data, loading, error), [data, loading, error, onLoaded]);
   if (!data || data.layer !== layer) return null;
   const def = WEATHER_LAYERS.find((l) => l.value === layer)!;
   const half = data.resolution_deg / 2;

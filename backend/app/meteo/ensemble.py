@@ -38,6 +38,8 @@ class Spread:
     precip_max_mm_h: float
     cape_max_j_kg: float
     wind_speed_max_kmh: float
+    gust_max_kmh: float
+    li_min: float | None
     models: list[str]
 
 
@@ -110,5 +112,7 @@ def hour_spread(hours: list[HourData], models: list[str]) -> Spread:
         precip_max_mm_h=max([h.precipitation or 0.0 for h in hours] or [0.0]),
         cape_max_j_kg=max([h.cape or 0.0 for h in hours] or [0.0]),
         wind_speed_max_kmh=max(speeds or [0.0]),
+        gust_max_kmh=max([h.wind_gusts_10m or 0.0 for h in hours] or [0.0]),
+        li_min=min([h.lifted_index for h in hours if h.lifted_index is not None], default=None),
         models=list(models),
     )
