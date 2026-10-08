@@ -1,0 +1,20 @@
+{
+  "_comment": "Balises de démonstration (mode mock). Les mesures sont simulées à partir de la météo synthétique au même instant (+ écart déterministe). Positions approximatives.",
+  "beacons": [
+    {"id": "fixture:b-forclaz", "name": "Col de la Forclaz", "lat": 45.8145, "lon": 6.2470, "elevation_m": 1240, "bias": {"speed": 2, "dir": 10}},
+    {"id": "fixture:b-planfait", "name": "Planfait", "lat": 45.8575, "lon": 6.2290, "elevation_m": 1250, "bias": {"speed": -1, "dir": -8}},
+    {"id": "fixture:b-doussard", "name": "Doussard atterrissage", "lat": 45.7885, "lon": 6.2230, "elevation_m": 452, "bias": {"speed": 3, "dir": 5}},
+    {"id": "fixture:b-semnoz", "name": "Semnoz sommet", "lat": 45.7850, "lon": 6.0960, "elevation_m": 1690, "bias": {"speed": 4, "dir": 0}},
+    {"id": "fixture:b-sthilaire", "name": "Saint-Hilaire déco", "lat": 45.3110, "lon": 5.8885, "elevation_m": 980, "bias": {"speed": 1, "dir": 12}},
+    {"id": "fixture:b-lumbin", "name": "Lumbin", "lat": 45.3035, "lon": 5.9140, "elevation_m": 240, "bias": {"speed": 2, "dir": -5}},
+    {"id": "fixture:b-planpraz", "name": "Planpraz", "lat": 45.9320, "lon": 6.8550, "elevation_m": 2000, "bias": {"speed": -2, "dir": 15}},
+    {"id": "fixture:b-chamonix", "name": "Chamonix Bois du Bouchet", "lat": 45.9335, "lon": 6.8750, "elevation_m": 1040, "bias": {"speed": 1, "dir": 0}},
+    {"id": "fixture:b-plainejoux", "name": "Plaine-Joux", "lat": 45.9540, "lon": 6.7425, "elevation_m": 1360, "bias": {"speed": 0, "dir": -10}},
+    {"id": "fixture:b-chalvet", "name": "Chalvet", "lat": 43.9870, "lon": 6.4885, "elevation_m": 1580, "bias": {"speed": 2, "dir": 6}},
+    {"id": "fixture:b-stvincent", "name": "Saint-Vincent-les-Forts", "lat": 44.4445, "lon": 6.3725, "elevation_m": 1310, "bias": {"speed": -1, "dir": 4}},
+    {"id": "fixture:b-pilat", "name": "Dune du Pilat", "lat": 44.5890, "lon": -1.2125, "elevation_m": 105, "bias": {"speed": 1, "dir": 0}},
+    {"id": "fixture:b-puydedome", "name": "Puy de Dôme", "lat": 45.7720, "lon": 2.9640, "elevation_m": 1460, "bias": {"speed": 3, "dir": -6}},
+    {"id": "fixture:b-millau", "name": "Millau Brunas", "lat": 44.1100, "lon": 3.0890, "elevation_m": 830, "bias": {"speed": 0, "dir": 8}},
+    {"id": "fixture:b-gourdon", "name": "Gourdon", "lat": 43.7220, "lon": 6.9770, "elevation_m": 750, "bias": {"speed": 1, "dir": -4}, "stale_minutes": 75}
+  ]
+}

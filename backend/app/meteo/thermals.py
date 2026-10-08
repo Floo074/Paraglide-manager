@@ -197,9 +197,13 @@ def analyze_hour(
     lat: float,
     lon: float,
     models: list[str] | None = None,
+    wind_ground_m: float | None = None,
 ) -> HourAnalysis:
-    """Calculs aérologiques complets pour une heure (données déjà agrégées)."""
-    profile = VerticalProfile.from_hour(hour, ground_m)
+    """Calculs aérologiques complets pour une heure (données déjà agrégées).
+
+    `wind_ground_m` : altitude du sol lissé du modèle (le vent 10 m y est placé, cf. profile.py).
+    """
+    profile = VerticalProfile.from_hour(hour, ground_m, wind_ground_m)
     t2 = hour.temperature_2m if hour.temperature_2m is not None else profile.temperature(ground_m)
     td2 = hour.dew_point_2m if hour.dew_point_2m is not None else t2 - 8.0
     td2 = min(td2, t2)
@@ -235,7 +239,7 @@ def analyze_hour(
     wstar = deardorff_wstar(h_flux, zi, theta, ground_m) if zi > 100 else 0.0
     bl_wind = profile.mean_wind(ground_m, max(ground_m + 200, thermal_ceiling))[0] if zi > 0 else 0.0
     strength = thermal_strength_from_wstar(wstar, bl_wind)
-    if precip >= rules.NOGO_PRECIP_MM_H:
+    if precip >= rules.NOGO["precip_mm_h"]:
         strength *= 0.3
 
     parcel = parcel_analysis(profile, t2 + excess, td2, ground_m)
@@ -264,7 +268,7 @@ def analyze_hour(
         wind_direction_deg=hour.wind_direction_10m or 0.0,
         wind_gust_kmh=hour.wind_gusts_10m
         if hour.wind_gusts_10m is not None
-        else (hour.wind_speed_10m or 0.0) * rules.GUST_FACTOR_FREE_AIR,
+        else (hour.wind_speed_10m or 0.0) * rules.GUST_FACTOR_DEFAULT,
         cloud_cover_pct=cc,
         cloud_cover_low_pct=cc_low,
         cloud_cover_midhigh_pct=cc_midhigh,
@@ -309,7 +313,7 @@ def overdevelopment_level(a: HourAnalysis) -> str:
     """Risque de surdéveloppement d'une heure (§4.6 du cahier des charges)."""
     cape = a.cape_j_kg
     li = a.lifted_index if a.lifted_index is not None else 5.0
-    hi_cape, hi_li = rules.OVERDEV_HIGH
+    hi_cape, hi_li = rules.OVERDEV_HIGH["cape"], rules.OVERDEV_HIGH["li"]
     if cape > hi_cape and li < hi_li:
         return "high"
     if (

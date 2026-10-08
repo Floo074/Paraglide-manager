@@ -29,9 +29,6 @@ export const MOCK_AIRSPACES: AirspaceFeature[] = [
   poly("tma-annecy-1", "TMA Annecy 1 (démo)", "D", "TMA", 1676, 2591, [
     [5.96, 45.86], [6.14, 45.855], [6.245, 45.87], [6.27, 45.95], [6.24, 46.05], [5.98, 46.05],
   ]),
-  poly("zsm-bout-du-lac", "Réserve du Bout du Lac (démo)", "ZSM", "PROTECTED", 0, 760, [
-    [6.2225, 45.7905], [6.236, 45.7915], [6.2385, 45.8005], [6.226, 45.802],
-  ]),
   poly("tma-geneve", "TMA Genève (démo)", "C", "TMA", 1981, 5944, [
     [5.95, 46.07], [6.35, 46.07], [6.45, 46.25], [6.0, 46.3],
   ]),

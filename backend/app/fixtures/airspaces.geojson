@@ -1,0 +1,22 @@
+{
+  "type": "FeatureCollection",
+  "_comment": "Espaces aériens de DÉMONSTRATION aux formes et limites APPROXIMATIVES (mode mock). Ne jamais utiliser pour la navigation : consulter la carte OACI / SIA / fichiers OpenAir à jour.",
+  "features": [
+    {"type": "Feature", "properties": {"name": "CTR GENEVE (approx.)", "airspace_class": "D", "type": "CTR", "floor_m": 0, "ceiling_m": 1980},
+     "geometry": {"type": "Polygon", "coordinates": [[[5.98, 46.12], [6.30, 46.16], [6.32, 46.30], [6.08, 46.36], [5.95, 46.26], [5.98, 46.12]]]}},
+    {"type": "Feature", "properties": {"name": "TMA GENEVE secteur Annecy (approx.)", "airspace_class": "C", "type": "TMA", "floor_m": 2900, "ceiling_m": 5950},
+     "geometry": {"type": "Polygon", "coordinates": [[[5.95, 45.85], [6.40, 45.85], [6.45, 46.12], [5.95, 46.12], [5.95, 45.85]]]}},
+    {"type": "Feature", "properties": {"name": "CTR ANNECY (approx.)", "airspace_class": "D", "type": "CTR", "floor_m": 0, "ceiling_m": 1370},
+     "geometry": {"type": "Polygon", "coordinates": [[[6.03, 45.89], [6.16, 45.89], [6.17, 45.98], [6.04, 45.99], [6.03, 45.89]]]}},
+    {"type": "Feature", "properties": {"name": "CTR CHAMBERY (approx.)", "airspace_class": "D", "type": "CTR", "floor_m": 0, "ceiling_m": 1520},
+     "geometry": {"type": "Polygon", "coordinates": [[[5.80, 45.56], [5.97, 45.56], [5.98, 45.72], [5.82, 45.73], [5.80, 45.56]]]}},
+    {"type": "Feature", "properties": {"name": "TMA GRENOBLE (approx.)", "airspace_class": "D", "type": "TMA", "floor_m": 2600, "ceiling_m": 3660},
+     "geometry": {"type": "Polygon", "coordinates": [[[5.20, 45.20], [5.75, 45.20], [5.75, 45.50], [5.20, 45.50], [5.20, 45.20]]]}},
+    {"type": "Feature", "properties": {"name": "R 46 MONT-BLANC (approx., activable)", "airspace_class": "R", "type": "R", "floor_m": 3000, "ceiling_m": 5800},
+     "geometry": {"type": "Polygon", "coordinates": [[[6.80, 45.78], [6.98, 45.80], [6.99, 45.90], [6.82, 45.89], [6.80, 45.78]]]}},
+    {"type": "Feature", "properties": {"name": "TMA NICE (approx.)", "airspace_class": "D", "type": "TMA", "floor_m": 1200, "ceiling_m": 3650},
+     "geometry": {"type": "Polygon", "coordinates": [[[6.90, 43.55], [7.35, 43.55], [7.35, 43.80], [7.05, 43.80], [6.90, 43.70], [6.90, 43.55]]]}},
+    {"type": "Feature", "properties": {"name": "CTR CLERMONT (approx.)", "airspace_class": "D", "type": "CTR", "floor_m": 0, "ceiling_m": 1070},
+     "geometry": {"type": "Polygon", "coordinates": [[[3.08, 45.72], [3.25, 45.72], [3.25, 45.85], [3.08, 45.85], [3.08, 45.72]]]}}
+  ]
+}

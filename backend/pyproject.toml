@@ -29,7 +29,7 @@ asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["ignore::DeprecationWarning:httpx.*"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py312"
 extend-exclude = [".venv"]
 

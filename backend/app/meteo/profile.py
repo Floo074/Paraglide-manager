@@ -27,15 +27,27 @@ class ProfilePoint:
 
 
 class VerticalProfile:
-    def __init__(self, points: list[ProfilePoint], ground_m: float) -> None:
+    def __init__(
+        self,
+        points: list[ProfilePoint],
+        ground_m: float,
+        wind_points: list[tuple[float, float, float]] | None = None,
+    ) -> None:
         if not points:
             raise ValueError("profil vide")
         self.points = sorted(points, key=lambda pt: pt.z)
         self.ground_m = ground_m
         self._zs = [pt.z for pt in self.points]
+        # profil de vent (z, u, v) : peut différer du profil thermodynamique car le vent 10 m du modèle
+        # est placé au sol LISSÉ du modèle (piège §10.1), pas à l'altitude réelle du site.
+        wp = wind_points if wind_points else [(pt.z, pt.u, pt.v) for pt in self.points]
+        self._wind = sorted(wp, key=lambda w: w[0])
+        self._wzs = [w[0] for w in self._wind]
 
     @classmethod
-    def from_hour(cls, hour: HourData, ground_m: float) -> VerticalProfile:
+    def from_hour(cls, hour: HourData, ground_m: float, wind_ground_m: float | None = None) -> VerticalProfile:
+        """Construit le profil. `wind_ground_m` = altitude du sol lissé du modèle où placer le vent 10 m
+        (défaut : `ground_m`). Le vent au site s'obtient alors par interpolation verticale."""
         pts: list[ProfilePoint] = []
         t2 = hour.temperature_2m
         td2 = hour.dew_point_2m
@@ -69,6 +81,13 @@ class VerticalProfile:
             )
         if not pts:
             raise ValueError("aucune donnée de profil")
+        wind_points: list[tuple[float, float, float]] | None = None
+        if wind_ground_m is not None and abs(wind_ground_m - ground_m) > 1.0:
+            u10, v10 = wind_components(hour.wind_speed_10m or 0.0, hour.wind_direction_10m or 0.0)
+            wind_points = [(wind_ground_m + 10.0, u10, v10)]
+            for lv in hour.levels:
+                if lv.height_m >= wind_ground_m + 150.0:
+                    wind_points.append((lv.height_m, *wind_components(lv.wind_speed_kmh, lv.wind_direction_deg)))
         if len(pts) == 1:
             # Pas de niveaux de pression : atmosphère standard humide au-dessus du sol
             base = pts[0]
@@ -83,7 +102,9 @@ class VerticalProfile:
                         v=base.v * (1 + dz / 2000.0),
                     )
                 )
-        return cls(pts, ground_m)
+        if wind_points is not None and len(wind_points) == 1:
+            wind_points = None
+        return cls(pts, ground_m, wind_points)
 
     @property
     def top_m(self) -> float:
@@ -128,15 +149,33 @@ class VerticalProfile:
         return math.exp(math.log(a.p) + f * (math.log(b.p) - math.log(a.p)))
 
     def wind(self, z: float) -> tuple[float, float]:
-        """(vitesse km/h, direction °) à l'altitude z."""
-        if z <= self._zs[0]:
-            p = self.points[0]
-            return wind_from_components(p.u, p.v)
-        if z >= self._zs[-1]:
-            p = self.points[-1]
-            return wind_from_components(p.u, p.v)
-        a, b, f = self._bracket(z)
-        return wind_from_components(a.u + f * (b.u - a.u), a.v + f * (b.v - a.v))
+        """(vitesse km/h, direction °) à l'altitude z (interpolation des composantes u, v)."""
+        zs = self._wzs
+        if z <= zs[0]:
+            _, u, v = self._wind[0]
+            return wind_from_components(u, v)
+        if z >= zs[-1]:
+            _, u, v = self._wind[-1]
+            return wind_from_components(u, v)
+        i = bisect.bisect_right(zs, z)
+        za, ua, va = self._wind[i - 1]
+        zb, ub, vb = self._wind[i]
+        f = 0.0 if zb == za else (z - za) / (zb - za)
+        return wind_from_components(ua + f * (ub - ua), va + f * (vb - va))
+
+    def free_air_wind(self, z: float) -> tuple[float, float]:
+        """Vent « air libre » à z interpolé dans les seuls niveaux de pression (sans le vent 10 m)."""
+        lv = [w for w in self._wind[1:]] if len(self._wind) > 1 else self._wind
+        zs = [w[0] for w in lv]
+        if z <= zs[0]:
+            return wind_from_components(lv[0][1], lv[0][2])
+        if z >= zs[-1]:
+            return wind_from_components(lv[-1][1], lv[-1][2])
+        i = bisect.bisect_right(zs, z)
+        za, ua, va = lv[i - 1]
+        zb, ub, vb = lv[i]
+        f = 0.0 if zb == za else (z - za) / (zb - za)
+        return wind_from_components(ua + f * (ub - ua), va + f * (vb - va))
 
     def wind_uv(self, z: float) -> tuple[float, float]:
         s, d = self.wind(z)
