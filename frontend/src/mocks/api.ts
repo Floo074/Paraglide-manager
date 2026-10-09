@@ -9,12 +9,14 @@ import type {
   ForecastPointResponse,
   GridLayer,
   HealthResponse,
+  LandingAnalyzeRequest,
   PlanRequest,
   SensitiveAreaFeature,
 } from "../api/types";
 import { buildGpx, buildXctsk } from "../utils/exports";
 import { mockAirspaceCollection } from "./airspaces";
 import { mockBeacons } from "./beacons";
+import { mockAnalyzeLandings } from "./landings";
 import { mockPlanById, mockPlans } from "./planner";
 import { mockSensitiveAreaCollection } from "./sensitiveAreas";
 import { MOCK_SITES } from "./sites";
@@ -60,7 +62,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Réponse simulée pour `METHOD /api{path}`. Les exports renvoient du texte. */
 export async function mockRequest(method: string, path: string, query: URLSearchParams, body?: unknown): Promise<unknown> {
   const route = path.replace(/\/+$/, "");
-  await sleep(route === "/plans" ? 650 : 120 + Math.random() * 180);
+  await sleep(route === "/plans" ? 650 : route === "/landings/analyze" ? 450 : 120 + Math.random() * 180);
 
   if (method === "GET" && route === "/health") {
     return { status: "ok", data_mode: "mock", version: "démo-frontend" } satisfies HealthResponse;
@@ -105,6 +107,7 @@ export async function mockRequest(method: string, path: string, query: URLSearch
     return gridAt(b, parseTime(query.get("time")), layer, layer === "wind" ? Number(alt ?? 10) : null);
   }
   if (method === "POST" && route === "/plans") return mockPlans(body as PlanRequest);
+  if (method === "POST" && route === "/landings/analyze") return mockAnalyzeLandings(body as LandingAnalyzeRequest);
 
   const planMatch = /^\/plans\/([^/]+)(\/(gpx|xctsk))?$/.exec(route);
   if (method === "GET" && planMatch) {

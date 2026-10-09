@@ -63,7 +63,7 @@ export const RULES = {
   },
   /** go si confidence ≥ goMinConfidenceRatio × horizonBaseConfidence[horizon] (CDC rév. 2). */
   verdict: { goMinScore: 65, goMinSafety: 50, goMinConfidenceRatio: 0.75, nogoMaxScore: 45 },
-  horizonBaseConfidence: { "30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4 } as Record<Horizon, number>,
+  horizonBaseConfidence: { "15m": 0.92, "30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4 } as Record<Horizon, number>,
 };
 
 /** Marge d'arrivée effective : bornée à 25 % du dénivelé disponible. */

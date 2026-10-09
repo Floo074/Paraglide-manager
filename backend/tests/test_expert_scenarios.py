@@ -1,6 +1,8 @@
 """Scénarios de validation métier de l'expert (docs/expert/scenarios-validation.yaml) + invariants §3.
 
 Chaque scénario est exécuté par le vrai moteur via `app.engine.scenario.run_scenario` (sans réseau).
+Blocs chargés : `scenarios` + `scenarios_phase2` (CDC §12 : horizon 15m, balises d'atterro, tendance ; décollage libre
+et atterros non officiels → xfail tant que le moteur ne les gère pas).
 """
 
 from __future__ import annotations
@@ -25,10 +27,22 @@ LEVELS = list(rules.LEVELS)
 def _load() -> list[dict]:
     if not YAML_PATH.exists():  # pragma: no cover
         return []
-    return yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))["scenarios"]
+    data = yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
+    return list(data["scenarios"]) + list(data.get("scenarios_phase2") or [])
 
 
 SCENARIOS = _load()
+FREE_TAKEOFF_XFAIL = "décollage libre : agent suivant"
+
+
+def _needs_free_takeoff(sc: dict) -> bool:
+    """Scénario qui exige le décollage libre / l'analyse des atterros (mode custom_takeoff, landing_candidates)."""
+    return sc.get("mode", "classic") != "classic" or "landing_candidates" in sc
+
+
+def _param(sc: dict):
+    marks = [pytest.mark.xfail(reason=FREE_TAKEOFF_XFAIL, strict=False)] if _needs_free_takeoff(sc) else []
+    return pytest.param(sc, id=sc["id"], marks=marks)
 
 
 def _t(s: str) -> datetime:
@@ -47,13 +61,21 @@ def _codes(res: PlanResponse) -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def results() -> dict[str, PlanResponse]:
-    return {sc["id"]: run_scenario(sc) for sc in SCENARIOS}
+def results() -> dict[str, PlanResponse | Exception]:
+    out: dict[str, PlanResponse | Exception] = {}
+    for sc in SCENARIOS:
+        try:
+            out[sc["id"]] = run_scenario(sc)
+        except Exception as e:  # scénario non encore exécutable (décollage libre) : signalé par son test
+            out[sc["id"]] = e
+    return out
 
 
-@pytest.mark.parametrize("sc", SCENARIOS, ids=[s["id"] for s in SCENARIOS])
-def test_scenario(sc: dict, results: dict[str, PlanResponse]) -> None:
+@pytest.mark.parametrize("sc", [_param(s) for s in SCENARIOS])
+def test_scenario(sc: dict, results: dict[str, PlanResponse | Exception]) -> None:
     res = results[sc["id"]]
+    if isinstance(res, Exception):
+        raise res
     exp = sc["expect"]
     plans = res.plans
     best = plans[0] if plans else None
@@ -113,6 +135,26 @@ def test_scenario(sc: dict, results: dict[str, PlanResponse]) -> None:
         assert "plus court" in s or "seul" in s or "coucher" in s
     for cls in exp.get("no_route_intersects_classes", []):
         assert not any(a.intersects_route and a.airspace_class == cls for p in plans for a in p.airspaces)
+    # --- phase 2 (CDC §12) -----------------------------------------------------------------------
+    ldg_readings = [r for r in best.station_readings if r.site_role == "landing"]
+    if "landing_beacon_representative" in exp:
+        rep = [r for r in ldg_readings if r.representative]
+        assert bool(rep) == exp["landing_beacon_representative"], [(r.beacon.name, r.comment) for r in ldg_readings]
+    if "landing_beacon_weight_max" in exp:
+        rep = [r for r in ldg_readings if r.representative]
+        assert rep and all(r.weight <= exp["landing_beacon_weight_max"] + 1e-9 for r in rep), [r.weight for r in rep]
+    if "landing_beacon_comment_contains" in exp:
+        rep = [r for r in ldg_readings if r.representative]
+        assert any(exp["landing_beacon_comment_contains"].lower() in r.comment.lower() for r in rep), [r.comment for r in rep]
+    if "landing_kind" in exp:
+        kind = best.landing.landing_kind or ("official" if best.landing.official else None)
+        assert kind == exp["landing_kind"], kind
+    for k in exp.get("landing_kinds_forbidden", []):
+        for p in plans:
+            assert all(s.landing_kind != k for s in [p.landing, *p.alternate_landings]), p.title
+    if "landing_warnings_contains" in exp:
+        la = getattr(best, "landing_analysis", None) or []
+        assert la and exp["landing_warnings_contains"].lower() in " ".join(la[0].warnings).lower()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -120,13 +162,15 @@ def test_scenario(sc: dict, results: dict[str, PlanResponse]) -> None:
 # ---------------------------------------------------------------------------------------------
 def _all_plans(results):
     for sid, res in results.items():
+        if isinstance(res, Exception):
+            continue
         sc = next(s for s in SCENARIOS if s["id"] == sid)
         for p in res.plans:
             yield sc, res, p
 
 
 def test_invariants(results: dict[str, PlanResponse]) -> None:
-    for sc, _res, p in _all_plans(results):
+    for sc, res, p in _all_plans(results):
         f = sc["filters"]
         level = f["difficulty"]
         tag = f"{sc['id']} {p.title}"
@@ -182,8 +226,28 @@ def test_invariants(results: dict[str, PlanResponse]) -> None:
         # I15
         if p.flight_type == "cross_country":
             assert p.distance_km <= rules.XC_MAX_DISTANCE_KM[level] + 0.1, tag
+        # I20 (phase 2) : horizons ≤ 1 h, créneau borné (§12.5) et briefing[1] = lecture des balises
+        if sc["horizon"] in rules.NOWCAST_WINDOW_START_MIN:
+            lo, hi = rules.NOWCAST_WINDOW_START_MIN[sc["horizon"]]
+            ref = _t(sc["reference_time"])
+            target = _t(res.target_time)
+            ws = _t(p.window.start)
+            assert ws >= ref + timedelta(minutes=rules.NOWCAST_MIN_LEAD_MIN) - timedelta(seconds=1), tag
+            assert target + timedelta(minutes=lo) - timedelta(seconds=1) <= ws <= target + timedelta(minutes=hi), tag
+            assert p.briefing[1].startswith("Balises") or "Pas de balise" in p.briefing[1], (tag, p.briefing[1])
+            assert any("manche à air" in x for x in p.checklist), tag
+        # I21 (phase 2) : balise non représentative → poids nul ; poids ≤ beacon_weight_by_minutes(Δt)
+        for r in p.station_readings:
+            if not r.representative:
+                assert r.weight == 0, (tag, r.beacon.name)
+            assert r.weight <= rules.beacon_weight_by_minutes(0) + 1e-9, tag
+            if r.site_role == "takeoff":
+                dt = (_t(p.window.start) - _t(sc["reference_time"])).total_seconds() / 60
+                assert r.weight <= rules.beacon_weight_by_minutes(dt) + 0.006, (tag, r.weight, dt)
     # I9 : au plus 2 plans par décollage
     for res in results.values():
+        if isinstance(res, Exception):
+            continue
         ids = [p.takeoff.id for p in res.plans]
         assert all(ids.count(i) <= 2 for i in ids)
 

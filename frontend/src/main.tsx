@@ -7,6 +7,7 @@ import "./styles/layout.css";
 import "./styles/components.css";
 import "./styles/map.css";
 import "./styles/plan.css";
+import "./styles/live.css";
 import "./styles/print.css";
 import { App } from "./App";
 

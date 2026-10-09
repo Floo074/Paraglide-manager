@@ -11,7 +11,7 @@ export function AboutPage() {
       <Disclaimer />
       <Card title="À quoi sert Paraglide Manager ?">
         <p>
-          Pour une zone choisie sur la carte et un horizon (30 min à 48 h), l'outil propose les vols les plus adaptés à ton niveau et à tes envies, avec un
+          Pour une zone choisie sur la carte (ou un décollage libre posé sur la carte) et un horizon (15 min à 48 h), l'outil propose les vols les plus adaptés à ton niveau et à tes envies, avec un
           briefing complet, la carte des conditions et les fichiers GPX / XCTrack. Il croise ce que les outils existants séparent : <em>site</em> (orientations,
           consignes) × <em>vent au déco à l'heure du vol</em> × <em>aérologie</em> (fenêtre thermique, plafond, surdéveloppement) × <em>brise à l'atterro à
           l'arrivée</em> × <em>niveau du pilote</em> × <em>espaces aériens et zones sensibles</em>.
@@ -24,7 +24,13 @@ export function AboutPage() {
           </li>
           <li>
             <strong>Météo à l'heure cible</strong> (maintenant + horizon) : modèles AROME, ICON-D2, ECMWF ; vent interpolé à l'altitude réelle du déco ; plafond,
-            base, vario. Jusqu'à 2 h, correction par les balises (nowcasting).
+            base, vario. Jusqu'à 2 h, correction par les balises rattachées au déco et à l'atterro (nowcasting, tendance sur 1 h) ; jusqu'à 1 h,
+            les « Balises en direct » passent en tête de la fiche.
+          </li>
+          <li>
+            <strong>Décollage libre</strong> (vol rando) : point choisi sur la carte, altitude et orientation déduites du relief si besoin ; recherche des
+            atterrissages dans le cône de finesse (vent compris) parmi les officiels, puis, si tu l'acceptes, les atterros communautaires et les champs
+            détectés. Les atterrissages non officiels sont à repérer et l'autorisation du propriétaire est à vérifier ; jamais proposés aux élèves.
           </li>
           <li>
             <strong>Filtres de sécurité d'abord</strong> : pluie, orage, vent hors limites, vent de travers ou arrière, dévent, base trop basse, vent fort en
@@ -93,7 +99,7 @@ export function AboutPage() {
       <Card title="Données et licences">
         <ul>
           <li>Prévisions : Open-Meteo (AROME France HD, ICON-D2, ECMWF IFS), altitude Open-Meteo.</li>
-          <li>Sites : ParaglidingEarth (et autres sources configurées côté serveur) ; balises : Pioupiou / OpenWindMap.</li>
+          <li>Sites : ParaglidingEarth (et autres sources configurées côté serveur) ; balises : © contributeurs OpenWindMap / Pioupiou.</li>
           <li>Espaces aériens : OpenAIP ou fichiers OpenAir locaux ; zones sensibles : Biodiv'Sports, cœurs de parcs nationaux.</li>
           <li>Fonds de carte : © contributeurs OpenStreetMap, OpenTopoMap (CC-BY-SA), imagerie Esri World Imagery.</li>
           <li>Hotspots thermiques (option) : thermal.kk7.ch (CC BY-NC-SA 4.0).</li>

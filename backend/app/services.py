@@ -24,7 +24,7 @@ from app.meteo.ensemble import aggregate_hours, hour_spread
 from app.meteo.snapshot import iso
 from app.meteo.thermals import analyze_hour
 from app.meteo.types import PointForecast
-from app.models import Beacon, Site, SourceRef, SourceStatus
+from app.models import Beacon, BeaconTrend, Site, SourceRef, SourceStatus
 from app.providers.airspaces import OpenAipAirspaces, OpenAirFiles, fixture_airspace_list
 from app.providers.base import ProviderDisabled, ProviderError, SourceState, make_client, now_utc
 from app.providers.beacons import FfvlBeacons, FixtureBeacons, PioupiouBeacons, ages_from, filter_bbox
@@ -43,6 +43,17 @@ from app.providers.synthetic_terrain import terrain_elevation
 
 log = logging.getLogger("paraglide.services")
 
+MAX_TREND_CALLS = 10  # appels /v1/archive Pioupiou au plus par requête de plans
+OPENWINDMAP_URL = "https://www.openwindmap.org"
+PIOUPIOU_ATTRIBUTION = (
+    "Pioupiou / OpenWindMap — balises temps réel et historique 1 h, (c) contributors of the OpenWindMap wind network "
+    "(licence : https://developers.pioupiou.fr/data-licensing)"
+)
+DEMO_BEACONS_ATTRIBUTION = (
+    "Balises de démonstration (mesures simulées ; positions de balises Pioupiou / OpenWindMap, "
+    "(c) contributors of the OpenWindMap wind network)"
+)
+
 
 class DataService:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
@@ -55,6 +66,7 @@ class DataService:
         self.airspace_cache = TTLCache(settings.cache_ttl_airspaces_s, 100)
         self.sensitive_cache = TTLCache(settings.cache_ttl_sensitive_s, 100)
         self.elev_cache = TTLCache(settings.cache_ttl_elevation_s, 200_000)
+        self.trend_cache = TTLCache(settings.cache_ttl_beacons_s, 2000)  # tendance des balises : 2 min
         # fournisseurs
         self.om = OpenMeteoForecast(self.client, settings.open_meteo_base_url, settings.open_meteo_model_list, settings.open_meteo_api_key)
         self.om_elev = OpenMeteoElevation(self.client, settings.open_meteo_elevation_url)
@@ -86,6 +98,8 @@ class DataService:
             "open-meteo-elevation": SourceState("Open-Meteo Elevation", "elevation", "https://open-meteo.com/en/docs/elevation-api"),
             "paraglidingearth": SourceState("ParaglidingEarth", "sites", "https://www.paraglidingearth.com"),
             "pioupiou": SourceState("Pioupiou / OpenWindMap", "beacons", "https://www.openwindmap.org"),
+            "pioupiou-archive": SourceState("Pioupiou / OpenWindMap (historique 1 h, tendance)", "beacons",
+                                            "https://developers.pioupiou.fr/api/archive/"),
             "openaip": SourceState("OpenAIP", "airspaces", "https://www.openaip.net", requires_api_key=True,
                                    api_key_configured=bool(s.openaip_api_key)),
             "openair": SourceState("Fichiers OpenAir locaux", "airspaces", None),
@@ -203,23 +217,80 @@ class DataService:
     # ------------------------------------------------------------------------------------------
     # Élévation / MNT
     # ------------------------------------------------------------------------------------------
-    async def elevations(self, points: list[tuple[float, float]]) -> tuple[list[float], str]:
+    async def elevations_detailed(self, points: list[tuple[float, float]]) -> list[tuple[float, str]]:
+        """Altitude MNT par point et son origine (« live » = Open-Meteo / Copernicus 90 m, « mock » = MNT de démo).
+        Les points absents du cache (7 j) partent en un seul appel groupé (≤ 100 points par requête)."""
         keys = [(round(la, 4), round(lo, 4)) for la, lo in points]
         missing = [k for k in dict.fromkeys(keys) if self.elev_cache.get(("e",) + k) is None]
-        mode = "mock"
         if missing:
             res = await self._try_live("open-meteo-elevation", lambda: self.om_elev.fetch(missing))
             if res is not None:
-                mode = "live"
                 for k, v in zip(missing, res, strict=True):
                     self.elev_cache.set(("e",) + k, (v, "live"))
             else:
                 for k in missing:
                     self.elev_cache.set(("e",) + k, (terrain_elevation(*k), "mock"), ttl_s=600)
-        vals = [self.elev_cache.get(("e",) + k) for k in keys]
-        if all(v[1] == "live" for v in vals):
-            mode = "live"
+        return [self.elev_cache.get(("e",) + k) for k in keys]
+
+    async def elevations(self, points: list[tuple[float, float]]) -> tuple[list[float], str]:
+        vals = await self.elevations_detailed(points)
+        mode = "live" if vals and all(v[1] == "live" for v in vals) else "mock"
         return [v[0] for v in vals], mode
+
+    async def beacon_dem(self, beacons: list[Beacon]) -> dict[str, float]:
+        """Altitude MNT au point des balises sans altitude (Pioupiou n'en fournit pas, CDC §12.1) : un seul appel
+        Open-Meteo Elevation groupé pour les balises de la zone, en cache 7 j. Balises de démonstration : MNT de démo.
+        Une balise réelle dont le MNT réel est indisponible est absente du résultat (« altitude inconnue »)."""
+        unknown = [b for b in beacons if b.elevation_m is None]
+        if not unknown:
+            return {}
+        out: dict[str, float] = {}
+        demo = [b for b in unknown if b.source == "fixture"]
+        for b in demo:
+            out[b.id] = round(terrain_elevation(b.lat, b.lon))
+        real = [b for b in unknown if b.source != "fixture"]
+        if real and self.s.data_mode != "mock":
+            vals = await self.elevations_detailed([(b.lat, b.lon) for b in real])
+            for b, (v, mode) in zip(real, vals, strict=True):
+                if mode == "live":
+                    out[b.id] = round(v)
+        return out
+
+    async def beacon_trends(self, beacon_ids: list[str]) -> dict[str, BeaconTrend]:
+        """Tendance sur la dernière heure (archive Pioupiou) pour au plus MAX_TREND_CALLS balises, en cache 2 min.
+        Un échec n'empêche jamais le calcul des plans : la tendance reste « indisponible »."""
+        out: dict[str, BeaconTrend] = {}
+        st = self.states["pioupiou-archive"]
+        if self.s.data_mode == "mock" or st.recently_failed(self.s.live_retry_after_s):
+            return out
+        todo: list[str] = []
+        for bid in dict.fromkeys(beacon_ids):
+            if not bid.startswith("pioupiou:"):
+                continue
+            cached = self.trend_cache.get(bid)
+            if cached is not None:
+                if cached != "none":
+                    out[bid] = cached
+                continue
+            if len(todo) < MAX_TREND_CALLS:
+                todo.append(bid)
+        sem = asyncio.Semaphore(3)
+
+        async def one(bid: str) -> None:
+            async with sem:
+                try:
+                    t = await asyncio.wait_for(self.pioupiou.fetch_trend(bid), timeout=self.s.http_timeout_s * 2)
+                except (ProviderError, TimeoutError, httpx.HTTPError) as e:
+                    st.record_failure(str(e) or type(e).__name__)
+                    log.info("tendance Pioupiou indisponible pour %s (%s)", bid, e)
+                    return
+                st.record_success()
+                self.trend_cache.set(bid, t if t is not None else "none")
+                if t is not None:
+                    out[bid] = t
+
+        await asyncio.gather(*(one(b) for b in todo))
+        return out
 
     async def terrain_function(self, bbox: tuple[float, float, float, float]) -> tuple[Callable[[float, float], float], bool]:
         """MNT pour le moteur. Live : grille Open-Meteo (pas ~0,015°, ≤ 2500 points, en cache 7 j) ;
@@ -317,14 +388,15 @@ class DataService:
                     self.beacons_cache.set(k, res)
                     out += filter_bbox(res, bbox)
                     live_any = True
-                    refs.append(SourceRef(name=self.states[k].name, url=self.states[k].url, fetched_at=iso(now), mode="live"))
+                    name, url = (PIOUPIOU_ATTRIBUTION, OPENWINDMAP_URL) if k == "pioupiou" else (self.states[k].name, self.states[k].url)
+                    refs.append(SourceRef(name=name, url=url, fetched_at=iso(now), mode="live"))
         if live_any:
             return out, ages_from(out, now), refs
         if self.s.data_mode == "live":
             return [], {}, refs
         fb, ages = self.fixture_beacons.fetch_sync(at)
         fb = filter_bbox(fb, bbox)
-        refs.append(SourceRef(name="Balises de démonstration (simulées)", url=None, fetched_at=iso(now), mode="mock"))
+        refs.append(SourceRef(name=DEMO_BEACONS_ATTRIBUTION, url=OPENWINDMAP_URL, fetched_at=iso(now), mode="mock"))
         return fb, {b.id: ages[b.id] for b in fb}, refs
 
     # ------------------------------------------------------------------------------------------

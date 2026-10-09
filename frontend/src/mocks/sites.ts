@@ -7,6 +7,7 @@ import type { Site } from "../api/types";
 type SiteInput = Pick<Site, "id" | "name" | "kind" | "lat" | "lon" | "elevation_m"> & Partial<Site>;
 
 function site(s: SiteInput): Site {
+  const official = s.official ?? true;
   return {
     orientations: [],
     difficulty: null,
@@ -19,6 +20,8 @@ function site(s: SiteInput): Site {
     url: null,
     associated_landing_ids: [],
     ...s,
+    official,
+    landing_kind: s.landing_kind ?? (s.kind === "takeoff" ? null : official ? "official" : "community"),
   };
 }
 

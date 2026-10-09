@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from app.engine import rules
 from app.engine.conditions import dir_label, fmt_hm
+from app.engine.stations import Attachment, coherence_text, trend_label
 from app.meteo.thermals import thermal_quality_label
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -72,6 +73,10 @@ def briefing(c: Candidate) -> list[str]:
     if c.mock:
         line += ". ⚠ DONNÉES SYNTHÉTIQUES (démo hors-ligne) : ne pas utiliser pour décider d'un vol"
     out.append(line + ". L'analyse sur place prime toujours.")
+    # §12.5 : horizons ≤ 1 h, la lecture des balises (déco + atterro) vient juste après le verdict
+    short = c.horizon in rules.NOWCAST_WINDOW_START_MIN
+    if short:
+        out.append(beacons_line(c))
 
     # 2. créneau
     end_reason = c.landing_cap_reason or "fin de la fenêtre de vol"
@@ -103,11 +108,8 @@ def briefing(c: Candidate) -> list[str]:
         f"Vent : au déco {wind_to} ; en altitude {aloft} km/h ; à l'atterro vers {fmt_hm(lw.time)} "
         f"{dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f}{breeze}."
     )
-    if tw.nowcast is not None:
-        out.append(
-            "Balises : " + " ; ".join(tw.nowcast.details[:3])
-            + f" → correction du vent prévu de {tw.nowcast.weight * tw.nowcast.speed_bias_kmh:+.0f} km/h."
-        )
+    if not short and c.horizon in rules.NOWCAST_HORIZONS:
+        out.append(beacons_line(c))
     # 5. aérologie
     cw = c.convection
     if cw.start and cw.end:
@@ -188,6 +190,70 @@ def briefing(c: Candidate) -> list[str]:
     return out
 
 
+def _reading_short(a: Attachment, landing: bool) -> str:
+    b = a.beacon
+    g = f" (raf. {b.wind_gust_kmh:.0f})" if b.wind_gust_kmh is not None else ""
+    txt = f"{dir_label(b.wind_direction_deg) + ' ' if b.wind_direction_deg is not None else ''}{b.wind_speed_kmh:.0f} km/h{g}"
+    tl = trend_label(b)
+    if tl != "tendance indisponible":
+        txt += f", {tl}"
+        t = b.trend
+        if t is not None and t.speed_change_kmh * 60.0 / t.window_min > rules.TREND_1H["wind_increase_kmh_per_h"]["caution"]:
+            txt += ", la brise forcit" if landing else ", le vent forcit"
+    coh = coherence_text(a)
+    if coh:
+        txt += f", {coh}"
+    return txt
+
+
+def beacons_line(c: Candidate) -> str:
+    """Lecture des balises du déco et de l'atterro (§12.5) : valeur, âge, tendance, cohérence avec la prévision ;
+    absence de balise représentative dite explicitement, avec la confiance réduite."""
+    tw, lw = c.takeoff_wind, c.landing_wind
+    nc_to, nc_l = tw.nowcast, lw.nowcast
+    top = c.landing.id == c.takeoff.id
+    has_to = nc_to is not None and nc_to.has_representative
+    has_l = top or (nc_l is not None and nc_l.has_representative)
+    parts: list[str] = []
+    ages: list[float] = []
+    if has_to:
+        a = nc_to.representative[0]
+        ages.append(a.age_min)
+        parts.append(f"déco ({a.beacon.name}) {_reading_short(a, False)}")
+    if not top and nc_l is not None and nc_l.has_representative:
+        a = nc_l.representative[0]
+        ages.append(a.age_min)
+        txt = f"atterro ({a.beacon.name}) {_reading_short(a, True)}"
+        te = nc_l.trend
+        if te is not None and te.v_ext is not None:
+            txt += (f" : environ {te.v_ext:.0f} km/h (raf. {te.g_ext:.0f}) attendus à ton arrivée vers {fmt_hm(lw.time)}, "
+                    f"alors que le modèle en prévoit {lw.model_speed_kmh:.0f}")  # fmt: skip
+        parts.append(txt)
+    conf = f"confiance réduite ({c.confidence * 100:.0f} %)"
+    if not parts:
+        return (
+            f"Pas de balise représentative au déco ni à l'atterro ({nearest_reading_text_safe(c)}) : vent estimé par le "
+            f"modèle seul, {conf}. Regarde la manche à air de l'atterro avant de décoller, ou demande le vent par radio."
+        )
+    line = f"Balises (il y a {max(ages):.0f} min) : " + " ; ".join(parts) + "."
+    if not has_to:
+        line += " Pas de balise représentative au déco : vent du déco estimé par le modèle seul."
+    if not has_l:
+        breeze = ", brise comprise" if lw.breeze_factor > 1 else ""
+        line += (
+            f" Pas de balise à l'atterro ({nearest_reading_text_safe(c)}) : vent d'arrivée estimé par le modèle seul "
+            f"(environ {lw.model_speed_kmh:.0f} km/h{breeze}), {conf}. Regarde la manche à air de l'atterro avant de décoller."
+        )
+    return line
+
+
+def nearest_reading_text_safe(c: Candidate) -> str:
+    nc = c.landing_wind.nowcast
+    if nc is not None and nc.nearest_text:
+        return nc.nearest_text
+    return "aucune balise rattachable"
+
+
 def checklist(c: Candidate) -> list[str]:
     items = [
         "Météo revue il y a moins d'1 h (balises déco + atterro), plan B connu.",
@@ -202,4 +268,6 @@ def checklist(c: Candidate) -> list[str]:
         "Plan de vol communiqué à un proche ou au chauffeur (site, route, heure de retour).",
         "Contrôle final au déco (PRÉVOL) : attaches, casque, suspentes, voile, vent et espace devant libres.",
     ]
+    if c.horizon in rules.NOWCAST_WINDOW_START_MIN:  # §12.5
+        items.insert(1, "Regarder la manche à air de l'atterro avant de décoller (jumelles), ou demander le vent par radio.")
     return items

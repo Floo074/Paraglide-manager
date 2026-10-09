@@ -98,9 +98,10 @@ WEIGHTS: Final = {
     "data_confidence": 5,
     "site_fit": 5,
 }
-HORIZON_BEACON_WEIGHT: Final = {"30m": 0.7, "1h": 0.5, "2h": 0.3, "8h": 0.1, "12h": 0.0, "24h": 0.0, "48h": 0.0}
+# §12.9 (a) : valeurs complétées de l'horizon 15m (remplacent celles du §11)
+HORIZON_BEACON_WEIGHT: Final = {"15m": 0.85, "30m": 0.7, "1h": 0.5, "2h": 0.3, "8h": 0.1, "12h": 0.0, "24h": 0.0, "48h": 0.0}
 HORIZON_BASE_CONFIDENCE: Final = {
-    "30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4,
+    "15m": 0.92, "30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4,
 }  # fmt: skip
 XC_SPEED_KMH_BY_VARIO: Final = {  # vario m/s -> km/h (aile EN-B ; ×1.15 si finesse ≥ 9.5)
     "intermediate": {1: 8, 2: 14, 3: 19},
@@ -270,7 +271,6 @@ OVERDEV_MODERATE_WINDOW_AFTER_LANDING_H: Final = 2.0  # moderate → marginal si
 WINDOW_START_BEFORE_TARGET_MIN: Final = 30.0  # créneau : début ∈ [cible − 30 min, cible + 3 h]
 WINDOW_START_AFTER_TARGET_H: Final = 3.0
 SUNSET_NOGO_AFTER: Final = True  # atterrissage après le coucher → no-go ; < 30 min avant → caution
-BEACON_GUST_HORIZONS: Final = ("30m", "1h")  # rafale retenue = max(rafale balise 10 min, rafale fusionnée)
 
 # --- §6 durées -----------------------------------------------------------------------------------
 PLOUF_EXTRA_MIN: Final = 3.0
@@ -335,6 +335,182 @@ EMERGENCY_NUMBER: Final = "112"
 
 
 # =============================================================================================
+# PARTIE 3 — Bloc YAML du §12.9 (copie fidèle : balises, 15 min, tendance, décollage libre,
+# atterros non officiels). Mêmes clés en MAJUSCULES, mêmes valeurs.
+# =============================================================================================
+# --- (a) balises, horizon 15 min, tendance --------------------------------------------------------
+HORIZON_MINUTES_ADD: Final = {"15m": 15}  # ajouté à HORIZON_MINUTES (models.py)
+# HORIZON_BEACON_WEIGHT et HORIZON_BASE_CONFIDENCE : partie 1 (valeurs 15m incluses)
+# Δt (min) depuis reference_time → poids nominal ; déco : début du créneau ; atterro : ARRIVÉE ; interpolation linéaire
+BEACON_WEIGHT_BY_MINUTES: Final = {0: 0.90, 15: 0.85, 30: 0.70, 60: 0.50, 120: 0.30, 480: 0.10, 720: 0.0}
+BEACON_GUST_HORIZONS: Final = ("15m", "30m", "1h")  # rafale retenue = max(rafale balise 10 min, rafale fusionnée)
+NOWCAST_HORIZONS: Final = ("15m", "30m", "1h", "2h")  # horizons où NO_LANDING_BEACON / STALE_BEACONS existent
+NOWCAST_WINDOW_START_MIN: Final = {"15m": (-10, 45), "30m": (-15, 60), "1h": (-30, 90)}  # bornes de window.start / cible
+NOWCAST_MIN_LEAD_MIN: Final = 10  # window.start ≥ reference_time + 10 min
+BEACON_FRESHNESS_MIN: Final = {"full_weight": 10, "stale": 30, "factor_at_stale": 0.3}  # > 30 min : périmée (poids 0)
+BEACON_REPRESENTATIVE_MIN_FACTOR: Final = 0.3  # f_distance × f_altitude × f_alt_inconnue × f_fraîcheur
+BEACON_SUSPECT_MODEL_MIN_KMH: Final = 12  # balise à 0 (rafale 0 ou nulle) et modèle ≥ 12 → poids 0
+BEACON_OUTLIER: Final = {"deviation_kmh": 10, "factor": 0.3}  # ≥ 2 balises représentatives : écart à la médiane > 10
+TAKEOFF_BEACON_ATTACH: Final = {
+    "distance_km": {"full": 1.0, "max": 5.0, "factor_at_max": 0.4},
+    # 300-600 m : biais calculé au vent modèle à l'altitude de la balise (composante synoptique)
+    "alt_diff_m": {"full": 100, "reduced": 300, "factor_at_reduced": 0.5, "synoptic_max": 600, "factor_synoptic": 0.3},
+    "name_bonus": {"keywords": ("déco", "deco", "décollage", "decollage", "take off", "takeoff"), "site_name": True,
+                   "full_distance_km": 2.0},
+    "wrong_role": {"keywords": ("atterro", "attero", "atterrissage", "landing"), "max_alt_diff_m": 100},
+}  # fmt: skip
+LANDING_BEACON_ATTACH: Final = {
+    "distance_km": {"full": 1.5, "max": 3.0, "factor_at_max": 0.5},
+    "alt_diff_m": {"full": 50, "max": 150, "factor_at_max": 0.5},
+    "name_bonus": {"keywords": ("atterro", "attero", "atterrissage", "landing", "posé"), "site_name": True,
+                   "full_distance_km": 2.5, "max_distance_km": 4.0, "max_alt_diff_m": 200},
+    "wrong_role": {"keywords": ("déco", "deco", "décollage", "sommet", "crête", "col", "top"), "max_alt_diff_m": 50},
+    "same_valley_relief_margin_m": 100,  # aucun point MNT du segment au-dessus de max(alt balise, alt atterro) + 100 m
+}  # fmt: skip
+UNKNOWN_BEACON_ALTITUDE: Final = {
+    "dem_factor": 0.8,  # altitude prise sur le MNT
+    "no_dem_factor": 0.5,
+    "no_dem_takeoff_max_distance_km": 2.0,
+    "no_dem_landing": {"requires_name_bonus": True, "max_distance_km": 1.5},  # sinon non représentative
+}
+TREND_1H: Final = {
+    "min_window_min": 45,
+    "min_samples": 4,
+    "wind_increase_kmh_per_h": {"caution": 5, "danger": 20},  # strictement supérieur ; r = speed_change × 60 / window
+    "caution_min_ratio_to_threshold": 0.5,  # caution seulement si max(v_fusion, v_ext) ≥ 50 % du seuil, sinon info
+    "rotation": {"caution_deg": 60, "min_wind_kmh": 8},
+    "reversal": {"deg": 120, "min_wind_kmh": 10,
+                 "level": {"beginner": "danger", "intermediate": "danger", "advanced": "caution", "expert": "caution"}},
+    "gust_max_over_threshold_kmh": {"caution": 0, "danger": 10},  # gust_max_kmh > seuil rafale du niveau (+ 10 → danger)
+    "extrapolate_horizons": ("15m", "30m", "1h"),
+    "extrapolate_max_minutes": 60,
+    "extrapolate_cap_kmh": 15,
+    "extrapolate_down": False,
+}  # fmt: skip
+TREND_IMPACT: Final = {  # niveau du Risk par horizon ; horizon absent = ignoré
+    "wind_increase": {"15m": "caution", "30m": "caution", "1h": "caution", "2h": "info"},
+    "wind_increase_high": {"15m": "danger", "30m": "danger", "1h": "danger", "2h": "caution"},
+    "rotation": {"15m": "caution", "30m": "caution", "1h": "info"},
+    "reversal": {"15m": "by_level", "30m": "by_level", "1h": "caution", "2h": "info"},
+    "gust_max": {"15m": "caution", "30m": "caution", "1h": "caution", "2h": "info"},
+    "gust_max_high": {"15m": "danger", "30m": "danger", "1h": "caution", "2h": "info"},
+}
+NO_LANDING_BEACON: Final = {
+    "level": {"15m": "caution", "30m": "caution", "1h": "caution", "2h": "info"},
+    "caution_legal_hours": (12, 18),  # arrivée hors de cette plage → info
+    "blocking": False,  # ajouté à NON_BLOCKING_CAUTIONS
+    "landing_marginal_band_factor": {"15m": 0.9, "30m": 0.9, "1h": 0.9},  # bande marginale atterro dès 72 %
+    "confidence_factor": {"15m": 0.9, "30m": 0.9, "1h": 0.9, "2h": 0.95},
+}
+LANDING_BEACON_CONFIDENCE_FACTOR: Final = {"coherent": 1.0, "contradictory": 0.85}
+RISK_CODES_ADD: Final = ("NO_LANDING_BEACON", "WIND_SHIFT", "FREE_TAKEOFF", "UNOFFICIAL_LANDING", "DETECTED_FIELD")
+NON_BLOCKING_CAUTIONS_ADD: Final = ("NO_LANDING_BEACON",)
+
+# --- (b) décollage libre (mode custom_takeoff) -----------------------------------------------------
+FREE_TAKEOFF: Final = {
+    "allowed_levels": ("intermediate", "advanced", "expert"),  # jamais beginner
+    "site_difficulty": "intermediate",  # plan.difficulty ≥ intermediate
+    "risk_level": by_level("danger", "caution", "info", "info"),  # FREE_TAKEOFF
+    "best_verdict": {"intermediate": "marginal", "advanced": "go", "expert": "go"},
+    "wind_max_kmh": {"intermediate": 15, "advanced": 20, "expert": 25},
+    "gust_max_kmh": {"intermediate": 20, "advanced": 25, "expert": 30},
+    "gust_spread_max_kmh": {"intermediate": 8, "advanced": 10, "expert": 12},
+    "wind_slope_angle_max_deg": {"intermediate": 20, "advanced": 30, "expert": 45},  # sans tolérance de secteur
+    "tailwind_max_kmh": 3,  # vent arrière ≥ 3 km/h → TAILWIND danger
+    "calm_kmh": 5,  # vent nul accepté seulement si pente ≥ min_without_headwind
+    "slope_pct": {
+        "min": 15,  # avec vent de face ≥ headwind_for_gentle_kmh
+        "min_without_headwind": 25,
+        "headwind_for_gentle_kmh": 10,
+        "ideal": (30, 50),
+        "max": {"intermediate": 60, "advanced": 70, "expert": 80},
+    },
+    "slope_sampling": {"downslope_m": 150, "step_m": 50},
+    "axis_profile": {"distance_m": 300, "max_slope_line": 0.1667},  # aucun point MNT au-dessus de alt_déco − d/6
+    "orientation_halfwidth_deg": 22.5,  # orientations déduites de l'exposition MNT
+    "clear_area_m": {"length": 30, "width": 15},  # non vérifiable au MNT : contrôle obligatoire
+    "refusal_beginner": "Décollage libre non proposé au niveau élève : uniquement sous la responsabilité d'un moniteur "
+    "présent sur place.",
+    "warning": "Décollage libre, hors site officiel : pente, obstacles et vent ne sont vérifiés par personne. Reconnais le "
+    "terrain à pied, vérifie l'autorisation, et ne décolle qu'une fois tous les contrôles faits.",
+    "mandatory_checks": (
+        "Autorisation du propriétaire ou de la commune ; pas de décollage en cœur de parc national, réserve naturelle, "
+        "arrêté de biotope ou zone Biodiv'Sports active.",
+        "Reconnaissance à pied de l'aire et de l'axe : pierres, souches, clôtures, câbles, téléskis, lignes, randonneurs, "
+        "bétail ; prévoir de quoi interrompre le décollage.",
+        "Observer le vent 5 min (manche, rubalise, herbes) : de face et régulier, ni rotor, ni dévent, ni cycles thermiques "
+        "trop forts.",
+        "Atterro repéré à vue avant de gonfler, dans le cône de finesse, plus un atterro de secours.",
+        "Espaces aériens, NOTAM et zones sensibles vérifiés ; prévenir un proche (point exact, heure, atterro prévu) ; "
+        "radio 143,9875.",
+        "Matériel (aile légère, secours, casque) et prévol complète après la marche (sueur, fatigue, hydratation).",
+    ),
+}
+
+# --- (c) atterros non officiels --------------------------------------------------------------------
+LANDING_POLICY_KINDS: Final = {
+    "official_only": ("official",),
+    "include_community": ("official", "community"),
+    "include_fields": ("official", "community", "field"),
+}
+BEGINNER_LANDING_POLICY: Final = "official_only"  # forcé, avec warning « Élève : seuls les atterros officiels… »
+LANDING_KIND_USE: Final = {  # main = principal possible ; alternate = secours seulement ; never
+    "official": by_level("main", "main", "main", "main"),
+    "community": by_level("never", "main_if_frequent", "main", "main"),  # sinon alternate
+    "field": by_level("never", "alternate", "main_marginal", "main_marginal"),
+}
+UNOFFICIAL_LANDING_MIN: Final = {  # community et field ; un critère manquant → candidat exclu
+    "length_m": {"intermediate": 150, "advanced": 120, "expert": 100},
+    "width_m": {"intermediate": 50, "advanced": 40, "expert": 30},
+    "slope_pct_max": {"intermediate": 8, "advanced": 10, "expert": 12},
+    "power_line_clearance_m": {"intermediate": 150, "advanced": 100, "expert": 100},
+    "tree_building_clearance_m": {"intermediate": 30, "advanced": 25, "expert": 20},
+    "water_clearance_m": {"intermediate": 100, "advanced": 50, "expert": 50},
+    "road_clearance_m": 30,
+    "approach_free_m": 150,  # aucun obstacle > 10 m dans l'axe de finale
+    "approach_obstacle_length_factor": 5,  # longueur utile = longueur − 5 × hauteur de l'obstacle en bout de finale
+    "long_axis_vs_wind_max_deg": 45,
+    "unknown_clearance_subscore": 50,  # obstacle non cartographié : pas d'exclusion, sous-score 50 + warning
+}
+UNOFFICIAL_GLIDE: Final = {
+    "available_factor": {"community": 0.90, "field": 0.80},  # required ≤ available × facteur (en plus de glide_k)
+    "arrival_height_min_m": {
+        "community": {"intermediate": 150, "advanced": 120, "expert": 100},
+        "field": {"intermediate": 200, "advanced": 150, "expert": 150},
+    },
+}
+LANDING_CANDIDATE_WEIGHTS: Final = {
+    "glide_margin": 25, "obstacles": 20, "wind_at_arrival": 15, "size": 10, "community_usage": 10, "slope": 8,
+    "access": 7, "beacon": 5,
+}  # fmt: skip
+LANDING_CATEGORY_BONUS: Final = {"official": 15, "community": 5, "field": 0}
+COMMUNITY_USAGE_SUBSCORE: Final = {"official": 100, "frequent": 80, "occasional": 50, "unknown": 20, "field": 0}
+ACCESS_SUBSCORE_BY_ROAD_M: Final = {200: 100, 1000: 50}  # > 1000 m : 0 ; inconnu : 30
+ACCESS_UNKNOWN_SUBSCORE: Final = 30
+SIZE_SUBSCORE_FULL_AT: Final = 2.0  # × dimensions minimales
+OBSTACLE_SUBSCORE_FULL_AT: Final = 2.0  # × distances minimales
+FIELD_CROP_SEASON_MONTHS: Final = (5, 6, 7, 8, 9)
+UNOFFICIAL_WARNINGS: Final = {
+    "community": "Non officiel : repérage et autorisation du propriétaire à vérifier. Atterro utilisé par les pilotes, "
+    "mais non validé par la FFVL : vérifie l'état du terrain (cultures, bétail, clôtures, lignes) et repère-le en vol "
+    "avant de t'engager.",
+    "field": "Champ détecté automatiquement, jamais repéré : à vérifier sur place. Non officiel : repérage et "
+    "autorisation du propriétaire à vérifier. Les lignes électriques, les clôtures, les cultures hautes et la pente ne "
+    "sont pas toutes visibles sur la carte : survole-le à 150 m au moins et garde une autre option.",
+    "field_season": "Saison des cultures et des foins : on ne se pose pas dans un champ cultivé ou en herbe haute "
+    "(dégâts, risque de culbute).",
+    "unknown_clearance": "Lignes électriques non cartographiées : à repérer en vol.",
+    "beginner_policy": "Élève : seuls les atterros officiels sont proposés.",
+}
+RISK_LEVELS: Final = {
+    "UNOFFICIAL_LANDING": {"intermediate": "caution", "advanced": "info", "expert": "info",
+                           "only_reachable_beginner": "danger"},  # atterro principal community
+    "DETECTED_FIELD": {"main": "caution", "only_reachable_beginner_intermediate": "danger", "alternate_only": "info"},
+    "FREE_TAKEOFF": by_level("danger", "caution", "info", "info"),
+}  # fmt: skip
+
+
+# =============================================================================================
 # Fonctions utilitaires (aucune logique métier cachée : uniquement des lectures de tables)
 # =============================================================================================
 def level_index(level: str) -> int:
@@ -377,3 +553,15 @@ def xc_speed_kmh(vario_ms: float, level: str, glide_ratio: float) -> float:
 
 def trim_speed_kmh(glide_ratio: float) -> float:
     return AIR_SPEED_TRIM_HIGH_PERF_KMH if glide_ratio >= HIGH_PERF_GLIDE_RATIO else AIR_SPEED_TRIM_KMH
+
+
+def beacon_weight_by_minutes(dt_min: float) -> float:
+    """Poids nominal d'une balise (§12.1) pour Δt minutes après reference_time, interpolé linéairement."""
+    pts = sorted(BEACON_WEIGHT_BY_MINUTES.items())
+    x = max(0.0, dt_min)
+    if x >= pts[-1][0]:
+        return float(pts[-1][1])
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:], strict=False):
+        if x0 <= x <= x1:
+            return float(y0 + (y1 - y0) * (x - x0) / (x1 - x0))
+    return float(pts[0][1])  # pragma: no cover

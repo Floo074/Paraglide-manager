@@ -99,6 +99,7 @@ export function AirspacesLayer({ features }: { features: AirspaceFeature[] }) {
                       <td>
                         {p.floor_m <= 0 ? "Sol (SFC)" : formatAltitude(p.floor_m)}{" "}
                         {p.floor_m > 0 ? <span className="muted">({ft(p.floor_m)})</span> : null}
+                        {p.floor_reference === "GND" && p.floor_m > 0 ? <span className="muted"> — publié par rapport au sol</span> : null}
                       </td>
                     </tr>
                   </tbody>

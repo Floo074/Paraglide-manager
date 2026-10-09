@@ -410,7 +410,7 @@
 }
 @media (min-width: 420px) {
   .chips--horizon {
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(8, 1fr);
   }
   .planner__panel .chips--horizon {
     grid-template-columns: repeat(4, 1fr);

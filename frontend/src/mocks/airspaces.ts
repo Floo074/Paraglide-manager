@@ -18,7 +18,7 @@ function poly(
     type: "Feature",
     id,
     geometry: { type: "Polygon", coordinates: [closed] },
-    properties: { name, airspace_class, type, floor_m, ceiling_m },
+    properties: { name, airspace_class, type, floor_m, ceiling_m, floor_reference: floor_m <= 0 ? "GND" : "AMSL" },
   };
 }
 

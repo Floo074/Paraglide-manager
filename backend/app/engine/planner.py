@@ -43,6 +43,17 @@ from app.engine.routing import (
     build_ridge,
     glide_to,
 )
+from app.engine.stations import (
+    StationNowcast,
+    landing_band_start,
+    landing_confidence_factor,
+    nearest_unattached,
+    no_landing_beacon_finding,
+    reading_comment,
+    site_attachments,
+    station_nowcast,
+    trend_findings,
+)
 from app.engine.scoring import (
     CRITERION_LABEL_FR,
     CRITERION_RISK_CODE,
@@ -71,6 +82,7 @@ from app.models import (
     Risk,
     RouteGeometry,
     Site,
+    StationReading,
     SunTimes,
     ThermalAnalysis,
     TimeWindow,
@@ -78,7 +90,7 @@ from app.models import (
 
 LEVELS = rules.LEVELS
 VARIANT_TYPE = {"plouf": "local", "restitution": "local", "local_thermal": "local", "ridge": "ridge_soaring", "xc": "cross_country"}
-NON_BLOCKING_CAUTIONS = {"MOCK_DATA", "ALTITUDE_LIMIT", "ACCESS_TIME"}
+NON_BLOCKING_CAUTIONS = {"MOCK_DATA", "ALTITUDE_LIMIT", "ACCESS_TIME", *rules.NON_BLOCKING_CAUTIONS_ADD}
 ALL_CODES_ORDER = ["danger", "caution", "info"]
 
 
@@ -332,20 +344,28 @@ def aloft_findings(
     return out
 
 
-def landing_findings(lw: LandingWind, landing: Site, end: datetime) -> list[Finding]:
+def landing_findings(lw: LandingWind, landing: Site, end: datetime, band_start: float | None = None) -> list[Finding]:
+    """Vent à l'atterro à l'heure d'arrivée (vent retenu : brise, balises de l'atterro, tendance extrapolée).
+    `band_start` : début de la bande marginale (72 % sans balise représentative à l'atterro, §12.3)."""
     out: list[Finding] = []
     lw_lim = rules.LANDING_WIND_MAX_KMH
     lg_lim = rules.LANDING_GUST_MAX_KMH
     breeze = lw.breeze_factor > 1.0
     breeze_txt = f" (brise de vallée ×{lw.breeze_factor:.2f} incluse)" if breeze else ""
+    nc = lw.nowcast
+    src = ""
+    if nc is not None and nc.has_representative:
+        src = f" ; balise{'s' if len(nc.representative) > 1 else ''} de l'atterro prise{'s' if len(nc.representative) > 1 else ''} en compte (poids {nc.weight * 100:.0f} %)"
+        if nc.trend is not None and nc.trend.v_ext is not None:
+            src += f", tendance extrapolée ({nc.trend.v_ext:.0f} km/h, raf. {nc.trend.g_ext:.0f})"
     out.append(
         Finding("LANDING_WIND", "Vent à l'atterrissage",
-                f"Vent à {landing.name} vers {fmt_hm(end)} : {dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h{breeze_txt}.",
-                criterion="landing", value=lw.speed_kmh, limits=dict(lw_lim), band=not breeze)
+                f"Vent à {landing.name} vers {fmt_hm(end)} : {dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h{breeze_txt}{src}.",
+                criterion="landing", value=lw.speed_kmh, limits=dict(lw_lim), band=not breeze, band_start=band_start)
     )  # fmt: skip
     out.append(
         Finding("LANDING_WIND", "Rafales à l'atterrissage", f"Rafales {lw.gust_kmh:.0f} km/h à {landing.name}{breeze_txt}.",
-                criterion="landing", value=lw.gust_kmh, limits=dict(lg_lim), band=not breeze)
+                criterion="landing", value=lw.gust_kmh, limits=dict(lg_lim), band=not breeze, band_start=band_start)
     )  # fmt: skip
     if lw.speed_kmh > rules.LANDING_WIND_ABS_MAX_KMH or lw.gust_kmh > rules.LANDING_GUST_ABS_MAX_KMH:
         out.append(Finding("LANDING_WIND", "Vent à l'atterrissage hors limites",
@@ -353,11 +373,15 @@ def landing_findings(lw: LandingWind, landing: Site, end: datetime) -> list[Find
     if breeze:
         # VALLEY_BREEZE : info sous 80 % du seuil, caution entre 80 et 100 % (le no-go reste LANDING_WIND)
         ratios = {lv: min(1.0, max(lw.speed_kmh / lw_lim[lv], lw.gust_kmh / lg_lim[lv])) for lv in LEVELS}
+        if abs(lw.speed_kmh - lw.model_speed_kmh) >= 1.0 or abs(lw.gust_kmh - lw.model_gust_kmh) >= 1.0:
+            txt = (f"modèle × {lw.breeze_factor:.2f} = {lw.model_speed_kmh:.0f} km/h (rafales {lw.model_gust_kmh:.0f}), "
+                   f"vent retenu avec la balise de l'atterro : {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f}")
+        else:
+            txt = f"{lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} (×{lw.breeze_factor:.2f} sur le modèle)"
         out.append(
             Finding("VALLEY_BREEZE", "Brise de vallée à l'atterrissage",
-                    f"Brise de vallée attendue à {landing.name} vers {fmt_hm(end)} : {lw.speed_kmh:.0f} km/h, rafales "
-                    f"{lw.gust_kmh:.0f} (×{lw.breeze_factor:.2f} sur le modèle). Approche face à la brise.",
-                    ratios=ratios, info=True, band=True)
+                    f"Brise de vallée attendue à {landing.name} vers {fmt_hm(end)} : {txt}. Approche face à la brise.",
+                    ratios=ratios, info=True, band=True, band_start=band_start)
         )  # fmt: skip
     return out
 
@@ -372,6 +396,22 @@ def regional_wind_findings(site: Site, landing_hour: HourAnalysis) -> list[Findi
                                    absolute_nogo=True))  # fmt: skip
             elif v >= rules.REGIONAL_WIND_CAUTION_KMH:
                 out.append(Finding("REGIONAL_WIND", f"{name} sensible", f"{name} {v:.0f} km/h en vallée.", caution=True))
+    return out
+
+
+def landing_nowcast_findings(ctx: DataContext, lw: LandingWind, landing: Site, end: datetime) -> list[Finding]:
+    """Balises de l'atterro à l'heure d'arrivée (§12.1-12.4) : tendance, désaccord, absence de balise."""
+    out: list[Finding] = []
+    nc = lw.nowcast
+    out += trend_findings(nc, ctx.horizon, lw.speed_kmh)
+    if nc is not None and nc.has_representative and nc.mismatch:
+        out.append(Finding("BEACON_MISMATCH", "Balises en désaccord avec la prévision",
+                           "À l'atterro, la balise contredit le modèle : " + " ; ".join(nc.details[:2])
+                           + f". Vent retenu à l'arrivée : {lw.speed_kmh:.0f} km/h (modèle seul : {lw.model_speed_kmh:.0f}).",
+                           caution=True))  # fmt: skip
+    nb = no_landing_beacon_finding(ctx, nc, landing, end, lw.model_speed_kmh)
+    if nb is not None:
+        out.append(nb)
     return out
 
 
@@ -668,10 +708,12 @@ def evaluate_variant(
         return "variante inconnue"
 
     end = start + timedelta(minutes=dur)
-    lw = landing_wind(td.ltl, end, td.big_valley)
+    lw = landing_wind(td.ltl, end, td.big_valley, ctx, landing)
     findings: list[Finding] = list(td.site_findings) + feas
     ridge = variant == "ridge"
     findings += takeoff_wind_findings(tw, site, ridge, sh)
+    # nowcasting (§12) : tendance des balises du déco (début du créneau)
+    findings += trend_findings(tw.nowcast, ctx.horizon, tw.speed_kmh, ridge)
     top = (max_alt + rules.ALOFT_CHECK_ABOVE_CEILING_M) if thermal_variant else alt + rules.CREST_CHECK_ABOVE_TAKEOFF_M
     findings += aloft_findings(a, site, top, ridge, usable, thermal_variant)
     findings += regional_wind_findings(site, td.ltl.at(start))
@@ -707,7 +749,8 @@ def evaluate_variant(
     # atterrissage à l'heure d'arrivée (en top landing : même vent que le déco, déjà contrôlé — lot 6.8)
     top_ldg = ridge and td.top_landing
     if not top_ldg:
-        findings += landing_findings(lw, landing, end)
+        findings += landing_findings(lw, landing, end, landing_band_start(ctx, lw.nowcast))
+        findings += landing_nowcast_findings(ctx, lw, landing, end)
     # finesse (par niveau)
     glide_ratios: dict[str, float] = {}
     glide_by_level: dict[str, GlideCheck] = {}
@@ -800,9 +843,12 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     tl = ctx.timelines[cand.takeoff.id]
     model_winds = tl.model_winds.get(min(tl.model_winds, key=lambda x: abs((x - t).total_seconds()))) if tl.model_winds else []
     nc = cand.takeoff_wind.nowcast
-    coherent = None if nc is None else (True if nc.coherent else (False if nc.mismatch else None))
+    rep_to = nc is not None and nc.has_representative
+    coherent = None if not rep_to else (True if nc.coherent else (False if nc.mismatch else None))
     disp, beacon, sig_v, sig_d = confidence_factors(model_winds or [], coherent)
-    conf_raw = compute_confidence(ctx.horizon, disp, beacon)
+    top_ldg = cand.landing.id == cand.takeoff.id
+    f_ldg = 1.0 if top_ldg else landing_confidence_factor(ctx, cand.landing_wind.nowcast)
+    conf_raw = compute_confidence(ctx.horizon, disp, beacon, f_ldg)
     cand.conf_raw = conf_raw
     cand.confidence = min(conf_raw, rules.MOCK_CONFIDENCE_CAP) if ctx.mock else conf_raw
     base = rules.HORIZON_BASE_CONFIDENCE[ctx.horizon]
@@ -810,14 +856,18 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
         why = f"dispersion des modèles (σ vent {sig_v:.0f} km/h" + (f", σ direction {sig_d:.0f}°" if sig_d else "") + ")"
         if beacon < 1:
             why += ", balises en désaccord"
+        if f_ldg < 1:
+            why += ", balise de l'atterro absente ou en désaccord"
         findings.append(Finding("LOW_CONFIDENCE", "Prévision incertaine", f"Confiance {conf_raw * 100:.0f} % : {why}.", caution=True))
-    if nc is not None and nc.mismatch:
+    if rep_to and nc.mismatch:
         findings.append(Finding("BEACON_MISMATCH", "Balises en désaccord avec la prévision",
-                                "Les balises contredisent le modèle : " + " ; ".join(nc.details[:2]) + ". On suit la balise pour les 2 prochaines heures.",
-                                caution=True))  # fmt: skip
-    stale = [b for b in ctx.beacons if b.stale and haversine_km(b.lat, b.lon, cand.takeoff.lat, cand.takeoff.lon) <= rules.BEACON_MAX_DISTANCE_KM]
-    if stale and ctx.horizon in ("30m", "1h", "2h"):
-        findings.append(Finding("STALE_BEACONS", "Balises anciennes", "Mesure > 30 min ignorée : " + ", ".join(b.name for b in stale[:3]) + ".", info=True))
+                                "Au déco, les balises contredisent le modèle : " + " ; ".join(nc.details[:2])
+                                + ". On suit la balise pour les 2 prochaines heures.", caution=True))  # fmt: skip
+    if ctx.horizon in rules.NOWCAST_HORIZONS:
+        stale = _stale_attached(ctx, cand)
+        if stale:
+            findings.append(Finding("STALE_BEACONS", "Balises anciennes",
+                                    "Mesure de plus de 30 min ignorée : " + ", ".join(stale[:3]) + ".", info=True))  # fmt: skip
     # une source no-go (lot 4.3)
     sp = tl.spreads.get(min(tl.spreads, key=lambda x: abs((x - t).total_seconds()))) if tl.spreads else None
     if sp is not None and sp.n_models >= 2:
@@ -836,7 +886,7 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     if ctx.mock:
         findings.append(Finding("MOCK_DATA", "Données synthétiques", "Plan calculé sur des données SYNTHÉTIQUES (démo hors-ligne) : ne pas utiliser pour voler.",
                                 caution=True, blocks_go=False))  # fmt: skip
-    if ctx.horizon in ("30m", "1h") and cand.takeoff.access:
+    if ctx.horizon in ("15m", "30m", "1h") and cand.takeoff.access:
         findings.append(Finding("ACCESS_TIME", "Temps d'accès au déco", f"Vérifie que tu peux être au déco à temps : {cand.takeoff.access}",
                                 info=True, blocks_go=False))  # fmt: skip
 
@@ -925,7 +975,7 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
         cand.flyability = "no_go"
         cand.risks = risks
         return cand
-    if v == "marginal" and not any(r.level == "caution" and r.code != "MOCK_DATA" for r in risks):
+    if v == "marginal" and not any(r.level == "caution" and r.code not in NON_BLOCKING_CAUTIONS for r in risks):
         weak = min(rules.WEIGHTS, key=lambda c: sr.subscores.get(c, 100.0))
         risks.append(Risk(code=CRITERION_RISK_CODE[weak], level="caution", title=f"{CRITERION_LABEL_FR[weak]} limite",
                           detail=f"Critère « {CRITERION_LABEL_FR[weak]} » à {sr.subscores[weak]:.0f}/100 : conditions moyennes."))  # fmt: skip
@@ -935,6 +985,21 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     cand.score_items = sr.items
     cand.risks = risks
     return cand
+
+
+def _stale_attached(ctx: DataContext, cand: Candidate) -> list[str]:
+    """Balises rattachables au déco ou à l'atterro mais périmées (§12.1) : « nom (muette depuis N min) »."""
+    out: list[str] = []
+    for nc in (cand.takeoff_wind.nowcast, cand.landing_wind.nowcast):
+        if nc is None:
+            continue
+        for a in nc.attachments:
+            if a.stale:
+                what = f"muette depuis {a.age_min:.0f} min" if a.beacon.wind_speed_kmh is not None else "aucune mesure"
+                txt = f"{a.beacon.name} ({what})"
+                if txt not in out:
+                    out.append(txt)
+    return out
 
 
 def _only_strong_thermals(cand: Candidate) -> bool:
@@ -1025,12 +1090,30 @@ def _site_findings(ctx: DataContext, site: Site, landing: Site, proj: Projector)
     return out
 
 
+def start_bounds(ctx: DataContext) -> tuple[datetime, datetime]:
+    """Bornes de window.start : [cible − 30 min, cible + 3 h] (§9.4) ; horizons ≤ 1 h : bornes du §12.5 et au
+    moins 10 min après reference_time (le pilote est déjà au déco ou en train d'y monter)."""
+    t0 = ctx.target_time
+    nb = rules.NOWCAST_WINDOW_START_MIN.get(ctx.horizon)
+    if nb is None:
+        return t0 - timedelta(minutes=rules.WINDOW_START_BEFORE_TARGET_MIN), t0 + timedelta(hours=rules.WINDOW_START_AFTER_TARGET_H)
+    lo = max(t0 + timedelta(minutes=nb[0]), ctx.reference_time + timedelta(minutes=rules.NOWCAST_MIN_LEAD_MIN))
+    return lo, max(lo, t0 + timedelta(minutes=nb[1]))
+
+
 def candidate_starts(ctx: DataContext, td: TakeoffData, variant: str, level: str) -> list[datetime]:
     t0 = ctx.target_time
-    base = [t0, t0 - timedelta(minutes=rules.WINDOW_START_BEFORE_TARGET_MIN)]
-    base += [t0 + timedelta(hours=h) for h in range(1, int(rules.WINDOW_START_AFTER_TARGET_H) + 1)]
-    lo = t0 - timedelta(minutes=rules.WINDOW_START_BEFORE_TARGET_MIN)
-    hi = t0 + timedelta(hours=rules.WINDOW_START_AFTER_TARGET_H)
+    lo, hi = start_bounds(ctx)
+    if ctx.horizon in rules.NOWCAST_WINDOW_START_MIN:
+        t0 = min(max(t0, lo), hi)
+        base = [t0, lo]
+        k = 1
+        while t0 + timedelta(minutes=15 * k) <= hi:
+            base.append(t0 + timedelta(minutes=15 * k))
+            k += 1
+    else:
+        base = [t0, t0 - timedelta(minutes=rules.WINDOW_START_BEFORE_TARGET_MIN)]
+        base += [t0 + timedelta(hours=h) for h in range(1, int(rules.WINDOW_START_AFTER_TARGET_H) + 1)]
     extra: list[datetime] = []
     cw = td.cw
     if variant in ("local_thermal", "xc") and cw.start is not None:
@@ -1038,7 +1121,7 @@ def candidate_starts(ctx: DataContext, td: TakeoffData, variant: str, level: str
         extra.append(cw.start + timedelta(minutes=30))
     if level == "beginner" and cw.start is not None:
         extra.append(cw.start + timedelta(minutes=30))
-    starts = base + [e for e in extra if lo <= e <= hi]
+    starts = [b for b in base if lo <= b <= hi] + [e for e in extra if lo <= e <= hi]
     uniq: list[datetime] = []
     for s in starts:
         if all(abs((s - u).total_seconds()) > 60 for u in uniq):
@@ -1150,7 +1233,7 @@ def _wind_ratio_at(ctx: DataContext, td: TakeoffData, cand: Candidate, t: dateti
     gl = rules.RIDGE_GUST_MAX_KMH[level] if ridge else rules.TAKEOFF_GUST_MAX_KMH[level]
     r = max(tw.speed_kmh / wl, tw.gust_kmh / gl)
     if not (ridge and td.top_landing):
-        lw = landing_wind(td.ltl, t + timedelta(minutes=cand.duration_min), td.big_valley)
+        lw = landing_wind(td.ltl, t + timedelta(minutes=cand.duration_min), td.big_valley, ctx, td.landing)
         r = max(r, lw.speed_kmh / rules.LANDING_WIND_MAX_KMH[level], lw.gust_kmh / rules.LANDING_GUST_MAX_KMH[level])
     wet = td.tl.at(t).precipitation_mm_h >= rules.NOGO["precip_mm_h"]
     tail = tw.angle.category == "tail" and tw.speed_kmh > rules.TAILWIND_MAX_KMH[level]
@@ -1165,11 +1248,16 @@ def _compute_window(ctx: DataContext, td: TakeoffData, cand: Candidate, filters:
     start = cand.start
     latest_start = cand.latest_landing - timedelta(minutes=cand.duration_min)
     hard_end = min(latest_start, start + timedelta(hours=rules.WINDOW_START_AFTER_TARGET_H))
+    step = timedelta(minutes=30)
+    if ctx.horizon in rules.NOWCAST_WINDOW_START_MIN:
+        # horizons ≤ 1 h (§12.5) : créneau borné par la validité du nowcasting, pas de 15 min
+        hard_end = min(hard_end, start_bounds(ctx)[1])
+        step = timedelta(minutes=15)
     if cand.variant in ("plouf", "restitution") and cand.sunset:
         hard_end = min(hard_end, cand.sunset - timedelta(minutes=cand.duration_min))
     r0, _ = _wind_ratio_at(ctx, td, cand, start, level)
     end = start
-    t = start + timedelta(minutes=30)
+    t = start + step
     increasing_at: datetime | None = None
     while t <= hard_end:
         r, nogo = _wind_ratio_at(ctx, td, cand, t, level)
@@ -1178,14 +1266,18 @@ def _compute_window(ctx: DataContext, td: TakeoffData, cand: Candidate, filters:
         if increasing_at is None and r0 < rules.MARGINAL_BAND <= r:
             increasing_at = t
         end = t
-        t += timedelta(minutes=30)
+        t += step
     cand.window_start = start
     cand.window_end = max(end, start + timedelta(minutes=15)) if end > start else start + timedelta(minutes=15)
     if increasing_at is not None:
-        cand.risks.append(
-            Risk(code="WIND_INCREASING", level="caution", title="Le vent forcit",
-                 detail=f"Le vent forcit à partir de {fmt_hm(increasing_at)} (proche des limites de ton niveau) : décoller tôt dans le créneau.")
-        )  # fmt: skip
+        detail = f"Le vent forcit à partir de {fmt_hm(increasing_at)} (proche des limites de ton niveau) : décoller tôt dans le créneau."
+        prev = next((r for r in cand.risks if r.code == "WIND_INCREASING"), None)
+        if prev is None:
+            cand.risks.append(Risk(code="WIND_INCREASING", level="caution", title="Le vent forcit", detail=detail))
+        else:  # un seul Risk par code (lot 6.8) : on complète celui de la tendance des balises
+            prev.detail = f"{prev.detail} {detail}"
+            if prev.level == "info":
+                prev.level = "caution"
 
 
 # =============================================================================================
@@ -1204,20 +1296,75 @@ def _window_end(ctx: DataContext, td_tl: PointTimeline, cand: Candidate) -> date
     return max(end, cand.start)
 
 
+def _correction(nc: StationNowcast | None, dv: float, d: float, md: float) -> NowcastCorrection | None:
+    """Correction effectivement appliquée au vent modèle (fusion balise + tendance), au déco ou à l'atterro."""
+    if nc is None or not nc.has_representative:
+        return None
+    return NowcastCorrection(
+        beacon_ids=nc.beacon_ids,
+        wind_speed_bias_kmh=round(dv, 1),
+        wind_direction_bias_deg=round((d - md + 180.0) % 360.0 - 180.0, 0),
+    )
+
+
+MAX_READINGS_PER_SITE = 3
+
+
+def _readings_for(ctx: DataContext, nc: StationNowcast | None, site: Site, role: str) -> list[StationReading]:
+    """Balises rattachées (représentatives d'abord) ; sans balise représentative, la plus proche quand même, avec la
+    raison dans `comment` (§12.3)."""
+    out: list[StationReading] = []
+    atts = list(nc.attachments) if nc is not None else []
+    if not any(a.representative for a in atts):
+        near = nearest_unattached(ctx, site, role, {a.beacon.id for a in atts})
+        if near is not None and (not atts or near.distance_km < min(a.distance_km for a in atts)):
+            atts.append(near)
+    for a in atts[:MAX_READINGS_PER_SITE]:
+        w = round(nc.weight_of(a), 2) if nc is not None else 0.0
+        dz = a.alt_diff_m
+        out.append(StationReading(
+            site_role=role, site_id=site.id, beacon=a.beacon, distance_km=round(a.distance_km, 2),
+            altitude_diff_m=round(dz) if dz is not None else 0.0, representative=a.representative and w > 0,
+            weight=round(w, 2), comment=reading_comment(a, w),
+        ))  # fmt: skip
+    return out
+
+
+def station_readings(ctx: DataContext, cand: Candidate) -> list[StationReading]:
+    """StationReading du déco (début du créneau), de l'atterro et des atterros de secours (heure d'arrivée).
+    Horizons de nowcasting seulement (≤ 2 h) : au-delà, les balises ne corrigent pas la prévision (§8.2)."""
+    from app.engine.stations import nowcast_active
+
+    if not ctx.beacons or not nowcast_active(ctx):
+        return []
+    out: list[StationReading] = []
+    tl = ctx.timelines[cand.takeoff.id]
+    out += _readings_for(ctx, cand.takeoff_wind.nowcast, cand.takeoff, "takeoff")
+    arrival = cand.landing_time
+    if cand.landing.id != cand.takeoff.id:
+        out += _readings_for(ctx, cand.landing_wind.nowcast, cand.landing, "landing")
+    seen = {r.beacon.id for r in out}
+    for alt in cand.alternates[:3]:
+        if alt.id == cand.takeoff.id:
+            continue
+        atl = ctx.timelines.get(alt.id) or ctx.timelines.get(cand.landing.id) or tl
+        nc_a = station_nowcast(ctx, alt, "alternate_landing", atl, arrival, _big_valley(ctx, alt))
+        for r in _readings_for(ctx, nc_a, alt, "alternate_landing"):
+            if r.beacon.id not in seen or r.representative:
+                out.append(r)
+                seen.add(r.beacon.id)
+    return out
+
+
 def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> FlightPlan:
     tl = ctx.timelines[cand.takeoff.id]
     ltl = ctx.timelines.get(cand.landing.id) or tl
     tw = cand.takeoff_wind
-    nc = None
-    if tw.nowcast is not None:
-        nc = NowcastCorrection(
-            beacon_ids=tw.nowcast.beacon_ids,
-            wind_speed_bias_kmh=round(tw.nowcast.weight * tw.nowcast.speed_bias_kmh, 1),
-            wind_direction_bias_deg=round(tw.nowcast.weight * tw.nowcast.dir_bias_deg, 0),
-        )
-    snap_to = snapshot_from_analysis(tw.hour, tl.model_label, (tw.speed_kmh, tw.direction_deg, tw.gust_kmh), nc)
+    nc_to = _correction(tw.nowcast, tw.speed_kmh - tw.model_speed_kmh, tw.direction_deg, tw.model_direction_deg)
+    snap_to = snapshot_from_analysis(tw.hour, tl.model_label, (tw.speed_kmh, tw.direction_deg, tw.gust_kmh), nc_to)
     lw = cand.landing_wind
-    snap_ldg = snapshot_from_analysis(lw.hour, ltl.model_label, (lw.speed_kmh, lw.direction_deg, lw.gust_kmh))
+    nc_ldg = _correction(lw.nowcast, lw.speed_kmh - lw.model_speed_kmh, lw.direction_deg, lw.model_direction_deg)
+    snap_ldg = snapshot_from_analysis(lw.hour, ltl.model_label, (lw.speed_kmh, lw.direction_deg, lw.gust_kmh), nc_ldg)
     timeline = []
     for h in tl.hours:
         if abs((h.time - cand.start).total_seconds()) <= 3 * 3600 + 1:
@@ -1283,6 +1430,7 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         thermals=thermals,
         sounding=sounding_from_analysis(tw.hour),
         beacons_nearby=beacons_nearby,
+        station_readings=station_readings(ctx, cand),
         airspaces=cand.airspaces,
         risks=cand.risks,
         briefing=briefing(cand),

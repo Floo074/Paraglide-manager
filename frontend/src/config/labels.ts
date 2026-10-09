@@ -1,4 +1,4 @@
-import type { Difficulty, FlightType, Flyability, RiskLevel, ThermalPreference, FlightPlan } from "../api/types";
+import type { Difficulty, FlightType, Flyability, LandingCandidate, LandingKind, LandingPolicy, PlanMode, RiskLevel, ThermalPreference, FlightPlan } from "../api/types";
 
 export interface DifficultyInfo {
   value: Difficulty;
@@ -97,7 +97,36 @@ export const SOURCE_LABEL: Record<string, string> = {
   spotair: "SpotAir",
   fixture: "Données locales",
   pioupiou: "Pioupiou / OpenWindMap",
+  osm: "OpenStreetMap (détection automatique)",
+  user: "Point choisi sur la carte",
 };
+
+/** Catégories d'atterrissage (couleurs : officiel vert, communautaire bleu, champ orange). */
+export const LANDING_KIND: Record<LandingKind, { label: string; short: string; color: string; className: string; description: string }> = {
+  official: { label: "Officiel", short: "Officiel", color: "#16a34a", className: "lk--official", description: "Atterrissage officiel / référencé (FFVL, ParaglidingEarth validé)." },
+  community: { label: "Communautaire", short: "Commu.", color: "#2563eb", className: "lk--community", description: "Utilisé par les pilotes, non validé FFVL : état du terrain et accord du propriétaire à vérifier." },
+  field: { label: "Champ détecté", short: "Champ", color: "#ea580c", className: "lk--field", description: "Détecté automatiquement (cartographie + relief), jamais vérifié : secours uniquement, après reconnaissance." },
+};
+
+export const LANDING_POLICY_OPTIONS: { value: LandingPolicy; label: string; description: string }[] = [
+  { value: "official_only", label: "Officiels uniquement", description: "Seulement des atterrissages officiels référencés." },
+  { value: "include_community", label: "+ communautaires", description: "Ajoute les atterros utilisés par les pilotes, non validés FFVL (pas pour les élèves)." },
+  { value: "include_fields", label: "+ champs détectés", description: "Ajoute les champs détectés automatiquement, en secours uniquement (pilotes confirmés)." },
+];
+
+export const PLAN_MODE_OPTIONS: { value: PlanMode; label: string; sub: string }[] = [
+  { value: "classic", label: "Classique", sub: "déco + atterro officiels" },
+  { value: "custom_takeoff", label: "Décollage libre", sub: "point choisi sur la carte" },
+];
+
+export const COMMUNITY_USAGE_LABEL: Record<LandingCandidate["community_usage"], string> = {
+  frequent: "fréquent",
+  occasional: "occasionnel",
+  unknown: "inconnu",
+};
+
+/** Avertissement permanent du mode décollage libre. */
+export const FREE_MODE_WARNING = "Atterrissages non officiels : repérage et autorisation du propriétaire à vérifier";
 
 /** Libellés français des critères de score (ScoreItem.criterion = identifiants CDC §9.2). */
 export const CRITERION_LABEL: Record<string, string> = {
@@ -152,6 +181,10 @@ export const RISK_CODE_LABEL: Record<string, string> = {
   FRONT: "Front",
   FREEZING: "Froid",
   WIND_INCREASING: "Vent qui forcit",
+  NO_LANDING_BEACON: "Pas de balise atterro",
+  FREE_TAKEOFF: "Décollage libre",
+  UNOFFICIAL_LANDING: "Atterro non officiel",
+  DETECTED_FIELD: "Champ détecté",
   BEACON_MISMATCH: "Balises / modèle",
   STALE_BEACONS: "Balises",
   LOW_CONFIDENCE: "Confiance faible",

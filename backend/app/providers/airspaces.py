@@ -6,8 +6,17 @@ OpenAIP v2 — structure réelle constatée (tests/fixtures/openaip_airspaces_an
 lowerLimit/upperLimit = {value, unit, referenceDatum}, geometry (GeoJSON Polygon), activity, byNotam…
 Codes : unit 0 = m, 1 = ft, 6 = FL ; referenceDatum 0 = GND (sol), 1 = MSL, 2 = STD (niveau de vol) ;
 icaoClass 0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 8 non classé (SIV, zones R/D/P…).
+Types (champ `type`) : 0 autre, 1 R, 2 D, 3 P, 4 CTR, 5 TMZ, 6 RMZ, 7 TMA, 8 TRA, 9 TSA, 10 FIR,
+11 UIR, 12 ADIZ, 13 ATZ, 14 MATZ, 15 AWY, 16 MTR, 17 alerte, 18 avertissement, 19 protégée,
+20 HTZ, 21 secteur vol à voile, 22 TRP, 23 TIZ, 24 TIA, 25 MTA, 26 CTA, 27 secteur ACC,
+28 activité sportive / loisir, 29 survol basse altitude restreint, 30 MRT, 31 TFR, 32 secteur VFR,
+33 secteur FIS (= SIV en France), 34 LTA, 35 UTA. Type inconnu → « OTHER ».
+SIV / FIS (33), FIR, UIR, ACC : information seulement (jamais un danger) — classe exposée « SIV ».
 Conversion : FL × 100 ft × 0,3048 (atmosphère standard, approximation sans QNH) ; plancher « sol » :
 hauteur + altitude du terrain si connue (sinon hauteur seule, signalée AGL).
+Pagination : `page`/`nextPage` suivis au plus `MAX_PAGES` fois ; arrêt si `nextPage` absent, nul,
+non croissant ou page vide. Doublons (même `_id`) éliminés. OpenAIP est derrière Cloudflare (429
+possible) : l'appelant limite à un appel toutes les 5 min, sans boucle de nouvelle tentative.
 """
 
 from __future__ import annotations
@@ -29,19 +38,35 @@ FT = 0.3048
 NM_KM = 1.852
 ICAO_CLASS = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E", 5: "F", 6: "G", 8: "UNCLASSIFIED"}
 OPENAIP_TYPE = {
-    0: "OTHER", 1: "R", 2: "D", 3: "P", 4: "CTR", 5: "TMZ", 6: "RMZ", 7: "TMA", 8: "TRA", 9: "TSA", 10: "FIR",
-    11: "UIR", 12: "ADIZ", 13: "ATZ", 14: "MATZ", 15: "AWY", 16: "MTR", 17: "ALERT", 18: "WARNING",
-    19: "PROTECTED", 20: "HTZ", 21: "GLIDING_SECTOR", 22: "TRP", 23: "TIZ", 24: "TIA", 25: "MTA", 26: "CTA",
-    27: "ACC", 28: "SPORT", 29: "LOW_OVERFLIGHT", 30: "MRT", 31: "TFR", 32: "VFR_SECTOR", 33: "SIV", 34: "LTA", 35: "UTA",
+    0: "OTHER", 1: "R", 2: "D", 3: "P", 4: "CTR", 5: "TMZ", 6: "RMZ", 7: "TMA", 8: "TRA", 9: "TSA",
+    10: "FIR", 11: "UIR", 12: "ADIZ", 13: "ATZ", 14: "MATZ", 15: "AWY", 16: "MTR", 17: "ALERT",
+    18: "WARNING", 19: "PROTECTED", 20: "HTZ", 21: "GLIDING_SECTOR", 22: "TRP", 23: "TIZ", 24: "TIA",
+    25: "MTA", 26: "CTA", 27: "ACC", 28: "SPORT", 29: "LOW_OVERFLIGHT", 30: "MRT", 31: "TFR",
+    32: "VFR_SECTOR", 33: "SIV", 34: "LTA", 35: "UTA",
 }  # fmt: skip
+OPENAIP_UNIT_M, OPENAIP_UNIT_FT, OPENAIP_UNIT_FL = 0, 1, 6
+OPENAIP_DATUM_GND, OPENAIP_DATUM_MSL, OPENAIP_DATUM_STD = 0, 1, 2
+ACTIVATION_TYPES = ("R", "D", "TRA", "TSA")
+
+
+def _int(x, default: int) -> int:
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return default
 
 
 def limit_to_m(value: float, unit: int, datum: int) -> tuple[float, bool]:
-    """(altitude en m, référencée sol ?)."""
-    if unit == 6:  # FL
+    """Limite OpenAIP → (altitude en m, référencée sol ?).
+
+    unit 0 = m, 1 = ft, 6 = FL (niveau de vol, toujours STD) ; datum 0 = GND (sol), 1 = MSL, 2 = STD.
+    Une limite en ft/m rapportée à STD est convertie comme une altitude pression (≈ AMSL en atmosphère
+    standard). Unité inconnue : pieds (cas le plus fréquent).
+    """
+    if unit == OPENAIP_UNIT_FL:
         return value * 100 * FT, False
-    meters = value * FT if unit == 1 else value
-    return meters, datum == 0
+    meters = value if unit == OPENAIP_UNIT_M else value * FT
+    return meters, datum == OPENAIP_DATUM_GND
 
 
 def _airspace_class(icao: int, typ: str) -> str:
@@ -54,49 +79,70 @@ def _airspace_class(icao: int, typ: str) -> str:
     return cls
 
 
+def _clean_geometry(raw) -> BaseGeometry | None:
+    try:
+        geom = shape(raw)
+    except Exception:
+        return None
+    if geom.is_empty:
+        return None
+    if not geom.is_valid:
+        geom = geom.buffer(0)  # anneau auto-intersectant : réparation minimale
+    return None if geom.is_empty else geom
+
+
 def parse_openaip(data, terrain=None) -> tuple[list[Airspace], int | None]:
-    if not isinstance(data, dict) or "items" not in data:
+    """Page OpenAIP → (espaces, page suivante ou None)."""
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         raise ProviderError("OpenAIP : réponse sans 'items'")
     out = []
     for it in data["items"]:
-        try:
-            geom = shape(it["geometry"])
-        except Exception:
+        if not isinstance(it, dict):
             continue
-        typ = OPENAIP_TYPE.get(int(it.get("type", 0)), "OTHER")
+        geom = _clean_geometry(it.get("geometry"))
+        if geom is None:
+            continue
+        typ = OPENAIP_TYPE.get(_int(it.get("type"), 0), "OTHER")
         lo = it.get("lowerLimit") or {}
         hi = it.get("upperLimit") or {}
-        floor, floor_agl = limit_to_m(float(lo.get("value", 0)), int(lo.get("unit", 1)), int(lo.get("referenceDatum", 1)))
-        ceil, ceil_agl = limit_to_m(float(hi.get("value", 0)), int(hi.get("unit", 1)), int(hi.get("referenceDatum", 1)))
+        floor_raw = float(lo.get("value") or 0)
+        floor, floor_agl = limit_to_m(floor_raw, _int(lo.get("unit"), 1), _int(lo.get("referenceDatum"), 1))
+        ceil_raw = float(hi.get("value") or 0)
+        ceil, ceil_agl = limit_to_m(ceil_raw, _int(hi.get("unit"), 1), _int(hi.get("referenceDatum"), 1))
+        floor_agl = floor_agl and floor_raw > 0  # « SFC / 0 ft GND » = sol, pas une hauteur à convertir
         if terrain is not None and (floor_agl or ceil_agl):
             c = geom.representative_point()
             ground = terrain(c.y, c.x) or 0.0
-            if floor_agl and floor > 0:
+            if floor_agl:
                 floor += ground
             if ceil_agl:
                 ceil += ground
-        cls = _airspace_class(int(it.get("icaoClass", 8)), typ)
+        cls = _airspace_class(_int(it.get("icaoClass"), 8), typ)
         by_notam = bool(it.get("byNotam") or it.get("onRequest") or it.get("onDemand"))
         out.append(
             Airspace(
-                name=str(it.get("name", "Espace aérien")),
+                name=str(it.get("name") or "Espace aérien").strip(),
                 airspace_class=cls,
                 type=typ,
                 floor_m=round(floor),
                 ceiling_m=round(ceil),
                 geometry=geom,
                 floor_agl=floor_agl,
-                activity_known=False if typ in ("R", "D", "TRA", "TSA") or by_notam else True,
+                activity_known=not (typ in ACTIVATION_TYPES or by_notam),
                 active=False,
             )
         )
     nxt = data.get("nextPage")
-    return out, (int(nxt) if nxt else None)
+    page = _int(data.get("page"), 0)
+    nxt_i = _int(nxt, 0) if nxt not in (None, "", False) else 0
+    has_more = bool(data["items"]) and nxt_i > page
+    return out, (nxt_i if has_more else None)
 
 
 class OpenAipAirspaces:
     name = "OpenAIP"
     MAX_PAGES = 5
+    PAGE_SIZE = 500
 
     def __init__(self, client: httpx.AsyncClient, url: str, api_key: str | None):
         self.client = client
@@ -107,13 +153,20 @@ class OpenAipAirspaces:
         if not self.api_key:
             raise ProviderDisabled("clé OpenAIP absente")
         out: list[Airspace] = []
+        seen: set[tuple] = set()
         page = 1
+        headers = {"x-openaip-api-key": self.api_key}
         for _ in range(self.MAX_PAGES):
-            params = {"bbox": ",".join(f"{x:.4f}" for x in bbox), "limit": "500", "page": str(page)}
-            data = await get_json(self.client, f"{self.url}/airspaces", params, headers={"x-openaip-api-key": self.api_key})
+            params = {"bbox": ",".join(f"{x:.4f}" for x in bbox), "limit": str(self.PAGE_SIZE), "page": str(page)}
+            data = await get_json(self.client, f"{self.url}/airspaces", params, headers=headers)
             items, nxt = parse_openaip(data, terrain)
-            out += items
-            if not nxt or nxt == page:
+            for a in items:
+                key = (a.name, a.type, a.floor_m, a.ceiling_m, round(a.geometry.area, 8))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(a)
+            if nxt is None:
                 break
             page = nxt
         return out
@@ -193,6 +246,32 @@ def _bearing_dist(center, pt) -> tuple[float, float]:
     return bearing_deg(center[0], center[1], pt[0], pt[1]), haversine_km(center[0], center[1], pt[0], pt[1])
 
 
+# classes OpenAir non OACI (AC …) → (classe exposée, type)
+_OPENAIR_AC = {
+    "CTR": ("D", "CTR"),  # CTR françaises : classe D (quelques C) → interdites sans clairance
+    "GP": ("P", "P"),  # glider prohibited
+    "RMZ": ("UNCLASSIFIED", "RMZ"),
+    "TMZ": ("UNCLASSIFIED", "TMZ"),
+    "W": ("UNCLASSIFIED", "WAVE"),
+    "UNC": ("UNCLASSIFIED", "OTHER"),
+    "UNCLASSIFIED": ("UNCLASSIFIED", "OTHER"),
+    "SIV": ("SIV", "SIV"),
+    "FIS": ("SIV", "SIV"),
+}
+
+
+def _openair_class_type(blk: _OpenAirBlock) -> tuple[str, str]:
+    cls = (blk.cls or "UNCLASSIFIED").upper()
+    name = blk.name.upper()
+    if cls in _OPENAIR_AC:
+        cls, typ = _OPENAIR_AC[cls]
+    else:
+        typ = "CTR" if "CTR" in name else "TMA" if "TMA" in name else "SIV" if name.startswith("SIV") else cls
+    if blk.typ:
+        typ = blk.typ.upper()
+    return cls, typ
+
+
 def parse_openair(text: str, terrain=None) -> list[Airspace]:
     """Analyse un fichier OpenAir : AC, AN, AY, AL, AH, DP, V X=, V D=, DA, DB, DC."""
     out: list[Airspace] = []
@@ -223,8 +302,7 @@ def parse_openair(text: str, terrain=None) -> list[Airspace]:
                     floor += ground
                 if c_agl:
                     ceil += ground
-            cls = blk.cls or "UNCLASSIFIED"
-            typ = (blk.typ or ("CTR" if "CTR" in blk.name.upper() else "TMA" if "TMA" in blk.name.upper() else cls)).upper()
+            cls, typ = _openair_class_type(blk)
             out.append(
                 Airspace(
                     name=blk.name or "Espace aérien",
@@ -234,7 +312,7 @@ def parse_openair(text: str, terrain=None) -> list[Airspace]:
                     ceiling_m=round(min(ceil, 99999)),
                     geometry=geom,
                     floor_agl=f_agl and floor > 0,
-                    activity_known=cls not in ("R", "Q", "D") and typ not in ("R", "ZRT", "TRA", "TSA"),
+                    activity_known=cls not in ("R", "Q") and typ not in ("R", "Q", "ZRT", "TRA", "TSA"),
                     active=False,
                 )
             )
@@ -287,6 +365,15 @@ def parse_openair(text: str, terrain=None) -> list[Airspace]:
     return out
 
 
+def read_openair_text(path: Path) -> str:
+    """Fichier OpenAir en UTF-8, sinon Windows-1252 / Latin-1 (fréquent pour les fichiers français)."""
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
+
+
 class OpenAirFiles:
     name = "Fichiers OpenAir locaux"
 
@@ -309,8 +396,7 @@ class OpenAirFiles:
             return self._cache
         out: list[Airspace] = []
         for p in files:
-            text = p.read_bytes().decode("utf-8", errors="replace")
-            out += parse_openair(text, terrain)
+            out += parse_openair(read_openair_text(p), terrain)
         self._cache, self._mtime = out, mtime
         return out
 
@@ -333,9 +419,15 @@ def fixture_airspace_list(bbox=None) -> list[Airspace]:
             continue
         out.append(
             Airspace(
-                name=p["name"], airspace_class=p["airspace_class"], type=p["type"], floor_m=float(p["floor_m"]),
-                ceiling_m=float(p["ceiling_m"]), geometry=g, activity_known=p["type"] not in ("R", "D", "ZRT"), active=False,
-            )  # fmt: skip
+                name=p["name"],
+                airspace_class=p["airspace_class"],
+                type=p["type"],
+                floor_m=float(p["floor_m"]),
+                ceiling_m=float(p["ceiling_m"]),
+                geometry=g,
+                activity_known=p["type"] not in ("R", "D", "ZRT"),
+                active=False,
+            )
         )
     return out
 

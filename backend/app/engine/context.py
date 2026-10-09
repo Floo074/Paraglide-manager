@@ -111,6 +111,11 @@ class DataContext:
     exact_inputs: bool = False  # scénario de test : données = source exacte
     warnings: list[str] = field(default_factory=list)
     beacon_timelines: dict[str, PointTimeline] = field(default_factory=dict)
+    # altitude MNT au point des balises dont la source ne donne pas l'altitude (Pioupiou) ; absente = MNT
+    # indisponible à ce point → « altitude inconnue » (CDC §12.1)
+    beacon_dem_m: dict[str, float] = field(default_factory=dict)
+    # cache des rattachements balise ↔ site (app.engine.stations), indépendants de l'instant évalué
+    station_cache: dict = field(default_factory=dict)
 
     def terrain_at(self, lat: float, lon: float) -> float | None:
         if self.terrain is None:

@@ -10,7 +10,7 @@
 
 // ───────────────────────────── Énumérations ─────────────────────────────
 
-export type Horizon = "30m" | "1h" | "2h" | "8h" | "12h" | "24h" | "48h";
+export type Horizon = "15m" | "30m" | "1h" | "2h" | "8h" | "12h" | "24h" | "48h";
 export type Difficulty = "beginner" | "intermediate" | "advanced" | "expert";
 // beginner = élève / brevet initial, intermediate = brevet de pilote,
 // advanced = brevet de pilote confirmé, expert = compétiteur / pilote cross aguerri
@@ -18,7 +18,10 @@ export type ThermalPreference = "required" | "allowed" | "avoid";
 export type FlightType = "local" | "ridge_soaring" | "cross_country";
 export type Flyability = "go" | "marginal" | "no_go";
 export type RiskLevel = "info" | "caution" | "danger";
-export type SiteSource = "ffvl" | "paraglidingearth" | "spotair" | "fixture";
+export type SiteSource = "ffvl" | "paraglidingearth" | "spotair" | "osm" | "user" | "fixture";
+export type LandingKind = "official" | "community" | "field";
+// official = atterro officiel / référencé ; community = utilisé par les pilotes (PGE non officiel, OSM free_flying…) ;
+// field = champ candidat détecté (OSM + relief), jamais repéré : à vérifier sur place
 export type BeaconSource = "ffvl" | "pioupiou" | "fixture";
 export type DataMode = "live" | "mock" | "mixed";
 
@@ -53,6 +56,8 @@ export interface Site {
   source: SiteSource;
   url: string | null;
   associated_landing_ids: string[]; // pour un décollage : atterrissages officiels associés
+  official: boolean; // site officiel / référencé (FFVL, PGE validé, fixture)
+  landing_kind: LandingKind | null; // pour un atterrissage
 }
 
 export interface Beacon {
@@ -69,6 +74,30 @@ export interface Beacon {
   temperature_c: number | null;
   source: BeaconSource;
   stale: boolean; // mesure > 30 min
+  trend: BeaconTrend | null; // tendance sur l'historique récent (null si indisponible)
+}
+
+/** Beacon.trend (le contrat la décrit en ligne ; nommée ici pour la réutiliser). */
+export interface BeaconTrend {
+  window_min: number; // ex. 60
+  speed_change_kmh: number; // vent moyen actuel − vent moyen au début de la fenêtre
+  direction_change_deg: number; // rotation signée (+ = horaire)
+  gust_max_kmh: number | null; // rafale max sur la fenêtre
+  samples: number;
+}
+
+export type StationRole = "takeoff" | "landing" | "alternate_landing";
+
+export interface StationReading {
+  // balise rattachée à un site du plan (nowcasting)
+  site_role: StationRole;
+  site_id: string;
+  beacon: Beacon;
+  distance_km: number;
+  altitude_diff_m: number; // balise − site
+  representative: boolean; // assez proche/fraîche/à la bonne altitude pour corriger la prévision
+  weight: number; // poids appliqué dans la correction (0..1)
+  comment: string; // ex. "Doussard : 12 km/h NNW, rafales 18, il y a 4 min — conforme à la prévision"
 }
 
 export interface WindLevel {
@@ -112,12 +141,16 @@ export interface WeatherSnapshot {
   wstar_ms: number; // vitesse convective de Deardorff
   shortwave_radiation_w_m2: number;
   nowcast_correction: {
-    // correction court terme par balises (horizons <= 2h)
+    // correction court terme par balises (horizons <= 2h), au déco ET à l'atterro
     beacon_ids: string[];
     wind_speed_bias_kmh: number;
     wind_direction_bias_deg: number;
   } | null;
 }
+// Dans un FlightPlan, wind_10m = vent RETENU au site : au déco (weather.takeoff et weather.timeline[*]),
+// vent interpolé à l'altitude réelle du déco, nowcast inclus, rafales mises à l'échelle ; à l'atterro
+// (weather.landing), vent à l'heure d'arrivée, facteur de brise de vallée inclus. Le 10 m brut du modèle
+// reste dans GET /api/forecast/point (usage carte).
 
 export interface ThermalAnalysis {
   convection_start: string | null;
@@ -160,6 +193,24 @@ export interface AirspaceWarning {
   intersects_route: boolean;
 }
 
+export interface LandingCandidate {
+  site: Site; // site.landing_kind renseigné ; source "osm" pour un champ détecté
+  kind: LandingKind;
+  score: number; // 0..100
+  required_glide_ratio: number; // finesse sol nécessaire depuis le déco (vent compris)
+  available_glide_ratio: number; // finesse de calcul retenue (prudente)
+  arrival_height_m: number; // hauteur estimée à l'arrivée au-dessus de l'atterro
+  size_m: { length: number; width: number } | null;
+  slope_pct: number | null;
+  surface: string | null; // "prairie", "pré fauché", "plage"…
+  obstacles: string[]; // "ligne électrique à 80 m", "forêt en bout de champ"…
+  wind_at_arrival: { speed_kmh: number; direction_deg: number; gust_kmh: number } | null;
+  community_usage: "frequent" | "occasional" | "unknown";
+  access: string | null; // route / parking / navette
+  warnings: string[]; // ex. "Non officiel : autorisation du propriétaire à vérifier"
+  reasons: string[]; // pourquoi ce classement
+}
+
 export interface ScoreItem {
   criterion: string;
   score: number; // 0..100
@@ -186,11 +237,13 @@ export interface FlightPlan {
   summary: string; // 1-2 phrases
   target_time: string;
   window: { start: string; end: string; latest_landing?: string }; // créneau de décollage recommandé ;
-  // latest_landing (optionnel) = dernier atterrissage compatible avec ce verdict
+  // latest_landing (optionnel) = min(window.end + est_duration_min, plafond horaire
+  // du verdict : fin des thermiques / surdév − 1 h…, coucher du soleil)
   sun?: { sunrise: string | null; sunset: string | null }; // (optionnel) lever/coucher au déco, ISO UTC
   takeoff: Site;
   landing: Site;
   alternate_landings: Site[];
+  landing_analysis: LandingCandidate[]; // atterros candidats évalués, triés (le 1er = landing)
   waypoints: Waypoint[];
   route: { type: "LineString"; coordinates: [number, number, number][] }; // GeoJSON [lon, lat, alt]
   distance_km: number;
@@ -201,6 +254,7 @@ export interface FlightPlan {
   thermals: ThermalAnalysis;
   sounding: SoundingLevel[];
   beacons_nearby: Beacon[];
+  station_readings: StationReading[]; // balises du déco, de l'atterro et des atterros de secours
   airspaces: AirspaceWarning[];
   risks: Risk[];
   briefing: string[]; // puces ordonnées, en français
@@ -251,10 +305,11 @@ export interface BeaconsResponse {
 /** GET /api/airspaces?bbox=… → GeoJSON FeatureCollection */
 export interface AirspaceProperties {
   name: string;
-  airspace_class: string;
+  airspace_class: string; // A…G, R, Q (dangereuse), P, SIV, UNCLASSIFIED
   type: string;
-  floor_m: number;
-  ceiling_m: number;
+  floor_m: number; // m AMSL (FL convertis en atmosphère standard)
+  ceiling_m: number; // m AMSL
+  floor_reference: "AMSL" | "GND"; // plancher publié par rapport au sol, converti en AMSL
 }
 
 export type GeoJsonPosition = [number, number] | [number, number, number];
@@ -343,6 +398,19 @@ export interface PlanFilters {
   flight_types?: FlightType[]; // défaut : tous
   max_results?: number; // défaut 5, max 20
   wing_glide_ratio?: number; // finesse de l'aile, défaut 8.5
+  landing_policy?: LandingPolicy; // défaut "official_only"
+}
+
+export type LandingPolicy = "official_only" | "include_community" | "include_fields";
+export type PlanMode = "classic" | "custom_takeoff";
+
+export interface CustomTakeoff {
+  // requis si mode = "custom_takeoff" (ex. vol rando)
+  lat: number;
+  lon: number;
+  elevation_m?: number; // sinon altitude terrain (MNT)
+  orientations?: string[]; // sinon déduites de la pente (exposition MNT)
+  name?: string;
 }
 
 export interface PlanRequest {
@@ -350,6 +418,8 @@ export interface PlanRequest {
   horizon: Horizon;
   reference_time?: string; // défaut : maintenant
   filters: PlanFilters;
+  mode?: PlanMode; // défaut "classic" = déco ET atterro officiels
+  custom_takeoff?: CustomTakeoff;
 }
 
 export interface RejectedSite {
@@ -366,5 +436,29 @@ export interface PlanResponse {
   data_mode: DataMode;
   plans: FlightPlan[]; // triés par score décroissant
   rejected: RejectedSite[];
+  warnings: string[];
+}
+
+/** GeoJSON Polygon (cône de finesse). Positions [lon, lat] (ou [lon, lat, alt]). */
+export interface GeoJsonPolygon {
+  type: "Polygon";
+  coordinates: GeoJsonPosition[][];
+}
+
+/** POST /api/landings/analyze — analyse des atterrissages depuis un décollage libre (clic sur la carte). */
+export interface LandingAnalyzeRequest {
+  takeoff: { lat: number; lon: number; elevation_m?: number; orientations?: string[] };
+  horizon: Horizon;
+  reference_time?: string;
+  wing_glide_ratio?: number;
+  difficulty: Difficulty;
+  landing_policy: LandingPolicy;
+}
+
+export interface LandingAnalyzeResponse {
+  takeoff: Site; // source "user"
+  target_time: string;
+  glide_cone: GeoJsonPolygon; // zone atteignable avec marge, vent compris
+  candidates: LandingCandidate[];
   warnings: string[];
 }

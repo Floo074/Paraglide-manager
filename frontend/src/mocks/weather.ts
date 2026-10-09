@@ -165,7 +165,7 @@ export function terrainAt(lat: number, lon: number): number {
 }
 
 /** Orientation de la pente (direction vers laquelle elle fait face), via le gradient du relief. */
-function slopeAspect(lat: number, lon: number): { aspect: number; steep: number } {
+export function slopeAspect(lat: number, lon: number): { aspect: number; steep: number } {
   const e = 0.01;
   const dzdx = terrainAt(lat, lon + e) - terrainAt(lat, lon - e);
   const dzdy = terrainAt(lat + e, lon) - terrainAt(lat - e, lon);

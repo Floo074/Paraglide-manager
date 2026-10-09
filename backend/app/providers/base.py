@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -10,13 +12,26 @@ import httpx
 
 USER_AGENT = "ParaglideManager/0.1 (flight planning decision aid; contact: see repository)"
 
+# paramètres d'URL / champs pouvant porter un secret : jamais recopiés dans un message d'erreur
+_SECRET_RE = re.compile(r"(?i)((?:api[_-]?key|apikey|key|token|x-openaip-api-key)[\"']?\s*[=:]\s*[\"']?)[^&\s\"',;]+")
+
 
 class ProviderError(Exception):
-    """Erreur d'un fournisseur (réseau, HTTP, format)."""
+    """Erreur d'un fournisseur (réseau, HTTP, format).
+
+    `http_status` : code HTTP de la réponse en échec (None pour une erreur réseau ou de format).
+    """
+
+    http_status: int | None = None
 
 
 class ProviderDisabled(ProviderError):
     """Fournisseur désactivé (clé absente, pas d'accord…)."""
+
+
+def redact(text: str) -> str:
+    """Masque les valeurs de clés / jetons éventuellement présentes dans un texte (URL, corps d'erreur)."""
+    return _SECRET_RE.sub(r"\1***", text)
 
 
 @dataclass
@@ -40,7 +55,7 @@ class SourceState:
 
     def record_failure(self, err: str) -> None:
         self.last_failure = time.monotonic()
-        self.last_error = err[:300]
+        self.last_error = redact(err)[:300]
 
     def recently_failed(self, retry_after_s: float) -> bool:
         return (
@@ -58,27 +73,56 @@ def make_client(timeout_s: float) -> httpx.AsyncClient:
     )
 
 
+def _http_error(r: httpx.Response) -> ProviderError:
+    """Message d'erreur précis : code HTTP + motif renvoyé par l'API (`reason`, `message`…) si JSON."""
+    detail = ""
+    try:
+        body = r.json()
+    except (ValueError, json.JSONDecodeError):
+        body = None
+    if isinstance(body, dict):
+        for k in ("reason", "message", "detail", "error"):
+            v = body.get(k)
+            if isinstance(v, str) and v:
+                detail = v
+                break
+    if not detail:
+        detail = r.text[:200].replace("\n", " ").strip()
+    msg = f"HTTP {r.status_code}"
+    if r.status_code == 429:
+        msg += " (quota / limitation de débit)"
+        ra = r.headers.get("retry-after")
+        if ra:
+            msg += f", réessayer dans {ra} s"
+    if detail:
+        msg += f" : {detail}"
+    err = ProviderError(redact(msg))
+    err.http_status = r.status_code
+    return err
+
+
 async def get_json(client: httpx.AsyncClient, url: str, params: dict | None = None, headers: dict | None = None):
     try:
         r = await client.get(url, params=params, headers=headers)
     except httpx.HTTPError as e:  # réseau, timeout, proxy…
-        raise ProviderError(f"{type(e).__name__}: {e}") from e
+        raise ProviderError(redact(f"{type(e).__name__}: {e}")) from e
     if r.status_code != 200:
-        detail = r.text[:200].replace("\n", " ")
-        raise ProviderError(f"HTTP {r.status_code} : {detail}")
+        raise _http_error(r)
     try:
         return r.json()
     except ValueError as e:
-        raise ProviderError(f"réponse non JSON : {r.text[:120]!r}") from e
+        err = ProviderError(f"réponse non JSON : {redact(r.text[:120])!r}")
+        err.http_status = r.status_code
+        raise err from e
 
 
 async def get_text(client: httpx.AsyncClient, url: str, params: dict | None = None) -> str:
     try:
         r = await client.get(url, params=params)
     except httpx.HTTPError as e:
-        raise ProviderError(f"{type(e).__name__}: {e}") from e
+        raise ProviderError(redact(f"{type(e).__name__}: {e}")) from e
     if r.status_code != 200:
-        raise ProviderError(f"HTTP {r.status_code}")
+        raise _http_error(r)
     return r.text
 
 

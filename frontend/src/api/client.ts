@@ -16,12 +16,15 @@ import type {
   ForecastPointResponse,
   GridLayer,
   HealthResponse,
+  LandingAnalyzeRequest,
+  LandingAnalyzeResponse,
   PlanRequest,
   PlanResponse,
   SensitiveAreaFeatureCollection,
   SitesResponse,
   SourcesResponse,
 } from "./types";
+import { normalizeBeacon, normalizeLandingAnalysis, normalizePlan, normalizePlanResponse, normalizeSite } from "./normalize";
 import { bboxParam } from "../utils/zone";
 import { buildGpx, buildXctsk } from "../utils/exports";
 
@@ -164,9 +167,9 @@ export async function checkBackend(timeoutMs = 3000): Promise<boolean> {
 export const getHealth = () => request<HealthResponse>("GET", "/health");
 export const getSources = (signal?: AbortSignal) => request<SourcesResponse>("GET", "/sources", { signal });
 export const getSites = (bbox: BBoxZone, signal?: AbortSignal) =>
-  request<SitesResponse>("GET", "/sites", { query: { bbox: bboxParam(bbox) }, signal });
+  request<SitesResponse>("GET", "/sites", { query: { bbox: bboxParam(bbox) }, signal }).then((r) => ({ sites: r.sites.map(normalizeSite) }));
 export const getBeacons = (bbox: BBoxZone, signal?: AbortSignal) =>
-  request<BeaconsResponse>("GET", "/beacons", { query: { bbox: bboxParam(bbox) }, signal });
+  request<BeaconsResponse>("GET", "/beacons", { query: { bbox: bboxParam(bbox) }, signal }).then((r) => ({ beacons: r.beacons.map(normalizeBeacon) }));
 export const getAirspaces = (bbox: BBoxZone, signal?: AbortSignal) =>
   request<AirspaceFeatureCollection>("GET", "/airspaces", { query: { bbox: bboxParam(bbox) }, signal });
 /** `time` : paramètre optionnel accepté par le backend pour évaluer `active_now` (défaut : maintenant). */
@@ -187,9 +190,12 @@ export const getForecastGrid = (
     timeoutMs: 25_000,
   });
 export const createPlans = (req: PlanRequest, signal?: AbortSignal) =>
-  request<PlanResponse>("POST", "/plans", { body: req, signal, timeoutMs: 60_000 });
+  request<PlanResponse>("POST", "/plans", { body: req, signal, timeoutMs: 60_000 }).then(normalizePlanResponse);
 export const getPlan = (id: string, signal?: AbortSignal) =>
-  request<FlightPlan>("GET", `/plans/${encodeURIComponent(id)}`, { signal, timeoutMs: 20_000 });
+  request<FlightPlan>("GET", `/plans/${encodeURIComponent(id)}`, { signal, timeoutMs: 20_000 }).then(normalizePlan);
+/** Analyse des atterrissages depuis un décollage libre (cône de finesse + candidats classés). */
+export const analyzeLandings = (req: LandingAnalyzeRequest, signal?: AbortSignal) =>
+  request<LandingAnalyzeResponse>("POST", "/landings/analyze", { body: req, signal, timeoutMs: 45_000 }).then(normalizeLandingAnalysis);
 
 /** Contenu d'un export (GPX ou XCTrack) en texte, depuis le backend ou généré localement en démo. */
 export async function getPlanExport(plan: FlightPlan, kind: "gpx" | "xctsk"): Promise<string> {

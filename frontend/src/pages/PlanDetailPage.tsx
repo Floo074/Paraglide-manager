@@ -1,8 +1,8 @@
 import { ArrowLeft, Download, FileJson, Printer, Share2 } from "lucide-react";
-import { useEffect } from "react";
-import { Link, useParams } from "react-router-dom";
-import { getPlan, getPlanExport, isDemoPlanId } from "../api/client";
-import { cachedPlan, rememberPlan } from "../api/planCache";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { createPlans, getPlan, getPlanExport, isDemoPlanId } from "../api/client";
+import { cachedPlan, planMeta, rememberPlan, rememberResults } from "../api/planCache";
 import type { FlightPlan } from "../api/types";
 import { Disclaimer } from "../components/layout/Disclaimer";
 import {
@@ -17,6 +17,8 @@ import {
   WaypointTable,
 } from "../components/plan/Blocks";
 import { Emagram } from "../components/plan/Emagram";
+import { LandingAnalysisBlock } from "../components/plan/LandingAnalysisBlock";
+import { StationReadingsBlock } from "../components/plan/StationReadingsBlock";
 import { pilotLevel } from "../components/plan/level";
 import { PlanMap } from "../components/plan/PlanMap";
 import { RouteProfile } from "../components/plan/RouteProfile";
@@ -34,6 +36,7 @@ import { useNow } from "../hooks/useNow";
 import { copyToClipboard, downloadText } from "../utils/download";
 import { safeFilename } from "../utils/exports";
 import { formatDayTime, formatDuration, formatKm } from "../utils/format";
+import { beaconsFirst, findEquivalentPlan, planUpdatedAt, refreshRequestFor } from "../utils/planRefresh";
 
 /** Ouvre tous les <details> pendant l'impression (feuille de vol complète), puis restaure. */
 function usePrintExpand() {
@@ -60,6 +63,8 @@ export function PlanDetailPage() {
   const { id = "" } = useParams();
   const now = useNow();
   const mode = useApiMode();
+  const navigate = useNavigate();
+  const [refreshing, setRefreshing] = useState(false);
   usePrintExpand();
   const { data: plan, error, loading, reload } = useAsync<FlightPlan>(
     async (signal) => {
@@ -71,6 +76,9 @@ export function PlanDetailPage() {
     },
     [id],
   );
+
+  // requête d'origine et heure du calcul (null pour un lien partagé)
+  const meta = useMemo(() => (plan ? planMeta(plan.id) : null), [plan]);
 
   useEffect(() => {
     if (plan) document.title = `${plan.title} — Paraglide Manager`;
@@ -118,6 +126,40 @@ export function PlanDetailPage() {
     }
     toast((await copyToClipboard(url)) ? "Lien du plan copié" : url);
   };
+  const { request: refreshReq, rebuilt } = refreshRequestFor(plan, meta?.request ?? null, level, now);
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const res = await createPlans(refreshReq);
+      rememberResults(refreshReq, res);
+      const eq = findEquivalentPlan(plan, res.plans);
+      if (!eq) {
+        toast("Ce vol n'est plus proposé avec les dernières mesures : voici les résultats à jour.");
+        navigate("/", { state: { tab: "results" } });
+        return;
+      }
+      toast("Balises et prévision actualisées.");
+      if (eq.id === plan.id) reload();
+      else navigate(`/plan/${encodeURIComponent(eq.id)}`, { replace: true });
+    } catch (e) {
+      toast(`Actualisation impossible : ${e instanceof Error ? e.message : "erreur"}`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  const live = (
+    <StationReadingsBlock
+      plan={plan}
+      level={level}
+      now={now}
+      updatedAt={planUpdatedAt(plan, meta?.generated_at ?? null)}
+      onRefresh={refresh}
+      refreshing={refreshing}
+      rebuilt={rebuilt}
+    />
+  );
+  const liveFirst = beaconsFirst(plan, meta?.request ?? null, meta?.generated_at ?? null, now);
+
   const download = async (kind: "gpx" | "xctsk") => {
     try {
       const content = await getPlanExport(plan, kind);
@@ -160,8 +202,10 @@ export function PlanDetailPage() {
       <div className="plan-grid">
         <div className="plan-col plan-col--top">
           <VerdictBanner plan={plan} demo={demo} offline={offline} />
+          {liveFirst ? live : null}
           <WindowBlock plan={plan} level={level} />
           <WindBlock plan={plan} level={level} now={now} />
+          {liveFirst ? null : live}
           <BriefingBlock plan={plan} />
         </div>
 
@@ -194,6 +238,7 @@ export function PlanDetailPage() {
           </AerologyBlock>
           <RisksBlock risks={plan.risks} />
           <LandingBlock plan={plan} level={level} />
+          <LandingAnalysisBlock plan={plan} level={level} />
           <AirspacesBlock plan={plan} />
           <ChecklistBlock plan={plan} />
           <EmergencyBlock plan={plan} />

@@ -1,8 +1,8 @@
 # Scénarios de validation métier — Paraglide Manager
 
 > Rédigé par l'expert pilote (référent métier). Ces scénarios **font foi** pour le verdict, le type de vol, la durée et les risques.
-> À transformer en `backend/tests/test_expert_scenarios.py` (un test paramétré par scénario + les invariants globaux du §3). Source machine-readable : `scenarios-validation.yaml` (32 cas).
-> Codes `Risk` : catalogue du §1. Seuils : `cahier-des-charges-pilote.md` §2, §3 et §11.
+> À transformer en `backend/tests/test_expert_scenarios.py` (un test paramétré par scénario + les invariants globaux du §3). Source machine-readable : `scenarios-validation.yaml` : 32 cas actifs (`scenarios`) et 5 cas de phase 2, S28 à S32 (`scenarios_phase2`, CDC §12), à charger dès que le moteur les gère.
+> Codes `Risk` : catalogue du §1. Seuils : `cahier-des-charges-pilote.md` §2, §3, §11 et §12 (balises d'atterro, horizon 15 min, décollage libre, atterros non officiels).
 
 ---
 
@@ -11,6 +11,8 @@
 ### 1.1 Codes `Risk` (exacts)
 
 `RAIN, THUNDERSTORM, OVERDEVELOPMENT, SITE_LEVEL, FOEHN, REGIONAL_WIND, LOW_CLOUD_BASE, STRONG_WIND_ALOFT, LEE_SIDE, TAKEOFF_WIND, TAKEOFF_GUSTS, CROSSWIND, TAILWIND, LANDING_WIND, VALLEY_BREEZE, GLIDE_MARGIN, SUNSET, AIRSPACE, AIRSPACE_ACTIVATION, ALTITUDE_LIMIT, SENSITIVE_AREA, NATIONAL_PARK, SITE_CLOSED, SITE_RESTRICTED, WIND_GRADIENT, WIND_SHEAR, STRONG_THERMALS, WEAK_THERMALS, INVERSION, VENTURI, ROTOR, FRONT, FREEZING, WIND_INCREASING, BEACON_MISMATCH, STALE_BEACONS, LOW_CONFIDENCE, MOCK_DATA, ACCESS_TIME`
+
+Phase 2 (CDC §12) : `NO_LANDING_BEACON, WIND_SHIFT, FREE_TAKEOFF, UNOFFICIAL_LANDING, DETECTED_FIELD`. `NO_LANDING_BEACON` est la seule caution **non bloquante** de la liste.
 
 Niveaux : `danger` ⇒ no-go ; `caution` ⇒ marginal ou point de vigilance ; `info` ⇒ rappel.
 
@@ -24,6 +26,13 @@ Niveaux : `danger` ⇒ no-go ; `caution` ⇒ marginal ou point de vigilance ; `i
 - Conditions constantes sur ±3 h autour de l'heure cible, sauf indication dans `timeline` (heure légale → valeurs qui changent).
 - `models` (facultatif) : vent au déco par modèle, pour tester la dispersion et la confiance.
 - `beacons` (facultatif) : mesures de balises proches (âge en minutes).
+  - Phase 2 : `trend` (= `Beacon.trend` du contrat : `window_min`, `speed_change_kmh`, `direction_change_deg`, `gust_max_kmh`, `samples`).
+  - `elevation_m: null` signifie altitude inconnue. Si `dem_elevation_m` est absent, le MNT est considéré comme indisponible au point de la balise.
+  - Le rattachement au déco ou à l'atterro se fait par distance, altitude et nom (CDC §12.1) : le scénario ne le donne pas.
+- Phase 2, décollage libre :
+  - `mode: custom_takeoff` et `custom_takeoff` (`name`, `lat`, `lon`, `elevation_m`, `orientations`, `slope_pct`, `aspect_deg`) remplacent `takeoff`. `slope_pct` et `aspect_deg` sont des valeurs MNT imposées.
+  - `landing_candidates` remplace `landing` / `alternate_landings`. Chaque entrée porte `landing_kind` (`official` / `community` / `field`), `size_m`, `slope_pct`, `surface`, `community_usage`, `access` et `clearances_m` : distances aux lignes, aux arbres et bâtiments, à l'eau et aux routes.
+  - `filters.landing_policy` fixe les catégories d'atterros admises.
 - Les données injectées par scénario sont traitées comme **source exacte** : confiance = confiance de base de l'horizon (CDC §8.2) × dispersion. Elles ne sont **pas** plafonnées comme le mode mock.
 
 ### 1.3 Sites de référence (paramètres à injecter tels quels ; coordonnées approximatives)
@@ -37,6 +46,7 @@ Niveaux : `danger` ⇒ no-go ; `caution` ⇒ marginal ou point de vigilance ; `i
 | `chalvet` | Chalvet (Saint-André-les-Alpes), 43.975 N 6.488 E | 1550 | S, SSW, SW, WSW, W | intermediate | Saint-André, 43.966 N 6.505 E | 900 | 1,7 km / 125° | local, cross_country |
 | `pyla` | Dune du Pyla, 44.589 N 1.213 W | 100 | W, WNW | beginner | Top landing / plage | 100 / 5 | 0,3 km / 270° | ridge_soaring |
 | `deco_technique` | Site fictif, 45.500 N 6.500 E | 1600 | S | advanced | Atterro fictif | 700 | 3,0 km / 180° | local |
+| `rando` (décollage libre) | Alpage rando fictif, 45.700 N 6.400 E, pente 40 % face SE | 1500 | ESE, SE, SSE | — (vaut intermediate) | Pré communautaire, 1,6 km / 135° (alt. 800) ; pré de fauche détecté, 1,8 km / 150° (alt. 820) ; officiel à 15 km (hors de portée) | — | — | local |
 
 Finesse par défaut : 8,5 (EN-B), sauf mention.
 
@@ -82,6 +92,16 @@ Finesse par défaut : 8,5 (EN-B), sauf mention.
 | S26b | idem S26, 05/10/2026 | Zone hors période | intermediate, allowed, 30-90 | **go** | local | 30-90 | — | SENSITIVE_AREA |
 | S27 | deco_technique dans un cœur de parc national | Déco interdit | expert, allowed, 30-90 | **no_go** | — | — | NATIONAL_PARK (danger) | go, marginal |
 
+**Phase 2 (CDC §12, bloc `scenarios_phase2`)**
+
+| ID | Site / quand | Situation | Niveau / filtres | Verdict attendu | Type | Durée | Risques et contrôles obligatoires | Interdits |
+|---|---|---|---|---|---|---|---|---|
+| S28 | forclaz, horizon 15m, réf. 10/10/2026 13:45 | Modèle calme à l'atterro (4 km/h, × 1,3 = 5). Balise « Doussard atterro » à 12 g17 et +10 km/h en 1 h. Vers 14 h 25 à l'arrivée : ≈ 19 g24 extrapolés (≈ 75 % / 80 % des seuils advanced) | advanced, allowed, 15-45, local | **marginal** (tendance > 5 km/h/h, valeur extrapolée ≥ 50 % du seuil) | local | 15-45 | WIND_INCREASING (caution) ; balise d'atterro représentative | NO_LANDING_BEACON, WIND_SHIFT, TAKEOFF_GUSTS, TAILWIND ; go |
+| S29 | forclaz, horizon 15m, réf. 10/10/2026 13:45 | Aucune balise à l'atterro, balise du déco cohérente ; atterro 6 km/h × 1,3 = 7,8 | intermediate, allowed, 15-45, local | **go** (l'absence de balise n'est jamais un no-go à elle seule) | local | 15-45 | NO_LANDING_BEACON (caution non bloquante) ; confiance ≤ 0,915 (0,92 × 1,1 × 0,9) ; aucune balise d'atterro représentative | WIND_INCREASING, LANDING_WIND, BEACON_MISMATCH |
+| S30 | forclaz, horizon 30m, réf. 10/10/2026 13:30 | Balise « Pioupiou Doussard atterro » à 0,36 km, sans altitude et sans MNT ; cohérente avec le modèle | intermediate, allowed, 15-45, local | **go** | local | 15-45 | Balise d'atterro représentative (bonus de nom), poids ≤ 0,35 (× 0,5), commentaire « altitude inconnue » | NO_LANDING_BEACON, BEACON_MISMATCH, WIND_INCREASING |
+| S31 | rando (décollage libre), 20/09/2026 10:30 | SE 8 km/h de face. Seul un champ détecté est à portée (officiel à 15 km) | beginner, avoid, 10-30, `include_fields` | **rejeté** : aucun plan | — | — | FREE_TAKEOFF (danger), DETECTED_FIELD (danger) ; raison « décollage libre » | tout plan go ou marginal |
+| S32 | rando (décollage libre), 20/09/2026 10:30 | Idem, avec un pré communautaire à 1,6 km (finesse requise ≈ 2,8 pour ≈ 4,3 de finesse de calcul) | advanced, avoid, 10-30, `include_community` | **go** | local | 10-30 | FREE_TAKEOFF (info), UNOFFICIAL_LANDING (info) ; atterro principal `community` ; warning « Non officiel » | DETECTED_FIELD, GLIDE_MARGIN, TAILWIND, CROSSWIND, TAKEOFF_WIND ; atterro `field` |
+
 ---
 
 ## 3. Invariants globaux (à vérifier sur TOUS les plans de TOUS les scénarios et des appels `/api/plans` de démo)
@@ -105,12 +125,20 @@ Finesse par défaut : 8,5 (EN-B), sauf mention.
 | I15 | Pour `cross_country` : le premier segment part face au vent moyen de la couche de vol, à ± 60° près, si ce vent est ≥ 10 km/h ; distance ≤ `xc_max_distance_km[niveau]`. |
 | I16 | Tout plan dont la route touche une zone sensible active, ou un cœur de parc national sous 1000 m sol, porte le Risk `SENSITIVE_AREA` (ou `NATIONAL_PARK`). |
 | I17 | Pas de waypoint `thermal_trigger` sur une face à l'ombre à l'ETA (soleil sous 5° ou azimut à plus de 100° de l'orientation de la face) ni sur un lac. |
+| I18 | (Phase 2) `filters.difficulty = beginner` ⇒ aucun plan en `mode = custom_takeoff`, et aucun atterro principal ni de secours de kind `community` ou `field`. |
+| I19 | (Phase 2) Tout atterro `community` ou `field` d'un plan (principal ou secours) porte dans `warnings` un texte qui contient « Non officiel ». Un `field` n'est jamais l'atterro principal d'un niveau intermediate. |
+| I20 | (Phase 2) Horizons 15m, 30m, 1h : `window.start` est dans les bornes du CDC §12.5 et au moins 10 min après `reference_time` ; `briefing[1]` donne la lecture des balises, ou dit qu'il n'y a pas de balise à l'atterro. |
+| I21 | (Phase 2) Une `StationReading` avec `representative = false` a un poids nul dans la correction. `weight ≤ beacon_weight_by_minutes(Δt)` (CDC §12.1). |
 
 ---
 
 ## 4. Bloc machine-readable
 
-Le fichier **`docs/expert/scenarios-validation.yaml`** contient les 32 cas au format `app.engine.scenario.run_scenario(spec)` du backend : heures en UTC, sites et météos factorisés par ancres YAML. Il **fait foi**. Le tableau du §2 en est la lecture humaine.
+Le fichier **`docs/expert/scenarios-validation.yaml`** fait foi. Il est au format `app.engine.scenario.run_scenario(spec)` du backend : heures en UTC, sites et météos factorisés par ancres YAML. Il contient 37 cas :
+- 32 dans `scenarios` ;
+- 5 dans `scenarios_phase2` (S28-S32), séparés pour que la suite de tests actuelle reste verte. Le backend les charge avec `scenarios + scenarios_phase2` dès qu'il gère les clés d'entrée et d'attente décrites en tête du YAML.
+
+Le tableau du §2 est la lecture humaine du YAML. Le tableau du §2 en est la lecture humaine.
 Les valeurs du YAML ont été ajustées pour éviter toute égalité avec un seuil (rafales, vario, brise). Voir les notes du §5.
 
 ## 5. Notes pour l'implémentation des tests
@@ -126,3 +154,8 @@ Les valeurs du YAML ont été ajustées pour éviter toute égalité avec un seu
 9. **Rotation du vent** : mesurée entre déco + 300 m et le plafond utile, jamais depuis la brise de pente du déco.
 10. **Créneau** : `window.start ∈ [cible − 30 min, cible + 3 h]`. On ne déplace pas un vol de 14 h vers le matin ou le soir (S03).
 11. Les tests doivent viser le **moteur** (point d'entrée de l'évaluation d'un site), pas l'API HTTP, pour rester rapides et déterministes. Ajouter un test API de fumée sur S01.
+12. **Balise d'atterro (S28, S30)** : le poids se calcule sur Δt jusqu'à l'**heure d'arrivée** (créneau + durée), pas sur l'horizon. La tendance s'extrapole sur `min(Δt, 60)` min, plafonnée à + 15 km/h et jamais à la baisse. S28 n'est pas un no-go pour un advanced, car la valeur extrapolée reste sous 25 / 30 ; c'est la tendance seule qui le rend marginal.
+13. **Pas de balise d'atterro (S29)** : `NO_LANDING_BEACON` est une caution **non bloquante** pendant les heures de brise. Elle avance la bande marginale de l'atterro à 72 % et multiplie la confiance par 0,9, mais ne touche jamais au seuil de no-go.
+14. **Altitude inconnue (S30)** : le chargeur doit simuler un MNT indisponible (pas de `dem_elevation_m`). Avec un MNT disponible, le facteur serait 0,8 au lieu de 0,5 et le poids dépasserait 0,35.
+15. **Décollage libre (S31, S32)** : la difficulté du site vaut intermediate. Pour un beginner, toutes les raisons de rejet sont listées (`FREE_TAKEOFF` **et** `DETECTED_FIELD`), pas seulement la première.
+16. **Atterros non officiels** : `landing_policy` filtre d'abord, le niveau ensuite (CDC §12.7). En S32 le champ est exclu par la politique `include_community` : il n'apparaît dans aucun plan.

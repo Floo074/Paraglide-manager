@@ -55,6 +55,9 @@ class Finding:
     # courbe de sous-score spécifique (ex. finesse : r ≤ 0,75 → 100 ; 0,90 → 60 ; 0,95 → 40 ; 1 → 0)
     curve: Callable[[float], float] | None = None
     level_titles: dict[str, str] = field(default_factory=dict)
+    # niveau de risque imposé par niveau de pilote (§12.2 tendance : caution/danger selon le niveau) ;
+    # None pour un niveau = pas de risque ; "danger" = no-go à ce niveau
+    level_risk: dict[str, str | None] | None = None
 
     # --- évaluation par niveau ------------------------------------------------------------------
     def limit(self, level: str) -> float | None:
@@ -65,6 +68,8 @@ class Finding:
     def fails(self, level: str) -> bool:
         if self.absolute_nogo:
             return True
+        if self.level_risk is not None:
+            return self.level_risk.get(level) == "danger"
         if self.soft:
             return False
         if self.ratios is not None:
@@ -113,6 +118,8 @@ class Finding:
     def risk_level(self, level: str) -> str | None:
         if self.feasibility:
             return None
+        if self.level_risk is not None and not self.absolute_nogo:
+            return self.level_risk.get(level)
         if self.fails(level):
             return "danger"
         if self.caution or self.in_band(level):

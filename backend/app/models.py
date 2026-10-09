@@ -7,18 +7,21 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-Horizon = Literal["30m", "1h", "2h", "8h", "12h", "24h", "48h"]
+Horizon = Literal["15m", "30m", "1h", "2h", "8h", "12h", "24h", "48h"]
 Difficulty = Literal["beginner", "intermediate", "advanced", "expert"]
 ThermalPreference = Literal["required", "allowed", "avoid"]
 FlightType = Literal["local", "ridge_soaring", "cross_country"]
 Flyability = Literal["go", "marginal", "no_go"]
 RiskLevel = Literal["info", "caution", "danger"]
-SiteSource = Literal["ffvl", "paraglidingearth", "spotair", "fixture"]
+SiteSource = Literal["ffvl", "paraglidingearth", "spotair", "osm", "user", "fixture"]
+LandingKind = Literal["official", "community", "field"]
+LandingPolicy = Literal["official_only", "include_community", "include_fields"]
 BeaconSource = Literal["ffvl", "pioupiou", "fixture"]
 DataMode = Literal["live", "mock", "mixed"]
 SourceMode = Literal["live", "mock"]
 
 HORIZON_MINUTES: dict[str, int] = {
+    "15m": 15,
     "30m": 30,
     "1h": 60,
     "2h": 120,
@@ -111,6 +114,18 @@ class Site(_Model):
     source: SiteSource
     url: str | None = None
     associated_landing_ids: list[str] = Field(default_factory=list)
+    official: bool = True  # site officiel / référencé (FFVL, PGE validé, fixture)
+    landing_kind: LandingKind | None = None  # pour un atterrissage
+
+
+class BeaconTrend(_Model):
+    """Tendance sur l'historique récent d'une balise (§12.2)."""
+
+    window_min: float  # durée couverte par l'historique (ex. 60)
+    speed_change_kmh: float  # vent moyen actuel − vent moyen au début de la fenêtre
+    direction_change_deg: float  # rotation signée (+ = horaire)
+    gust_max_kmh: float | None  # rafale max sur la fenêtre
+    samples: int
 
 
 class Beacon(_Model):
@@ -126,6 +141,20 @@ class Beacon(_Model):
     temperature_c: float | None = None
     source: BeaconSource
     stale: bool
+    trend: BeaconTrend | None = None
+
+
+class StationReading(_Model):
+    """Balise rattachée à un site du plan (nowcasting, §12.1)."""
+
+    site_role: Literal["takeoff", "landing", "alternate_landing"]
+    site_id: str
+    beacon: Beacon
+    distance_km: float
+    altitude_diff_m: float  # balise − site (0 si l'altitude de la balise est inconnue : voir comment)
+    representative: bool
+    weight: float  # poids appliqué dans la correction (0..1)
+    comment: str
 
 
 class WindLevel(_Model):
@@ -294,6 +323,7 @@ class FlightPlan(_Model):
     thermals: ThermalAnalysis
     sounding: list[SoundingLevel]
     beacons_nearby: list[Beacon]
+    station_readings: list[StationReading] = Field(default_factory=list)
     airspaces: list[AirspaceWarning]
     risks: list[Risk]
     briefing: list[str]
@@ -312,6 +342,7 @@ class PlanFilters(_Model):
     flight_types: list[FlightType] | None = None
     max_results: int = Field(default=5, ge=1, le=20)
     wing_glide_ratio: float = Field(default=8.5, ge=4.0, le=14.0)
+    landing_policy: LandingPolicy = "official_only"
 
     @model_validator(mode="after")
     def _check(self) -> PlanFilters:

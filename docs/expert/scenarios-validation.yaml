@@ -22,6 +22,40 @@
 #   summary_explains_duration true → summary mentionne pourquoi la durée est plus courte que demandé
 #   no_route_intersects_classes  aucune AirspaceWarning intersects_route=true de ces classes
 # Clé d'entrée facultative : alternate_landings (même format que landing) = atterros de secours pour le cône de finesse.
+#
+# --- Phase 2 (CDC §12) : scénarios S28-S32, bloc `scenarios_phase2` en fin de fichier -------------------
+# Ils sont tenus hors de `scenarios` tant que le moteur ne gère pas l'horizon 15m, les balises d'atterro et
+# leur tendance, le décollage libre et les atterros non officiels : la suite de tests actuelle (qui ne lit
+# que `scenarios`) reste ainsi verte. Une fois le moteur prêt, le backend charge `scenarios + scenarios_phase2`.
+# Le format est celui des scénarios existants, avec les ajouts minimaux suivants.
+# Nouvelles clés d'entrée :
+#   beacons[].trend         {window_min, speed_change_kmh, direction_change_deg, gust_max_kmh, samples}
+#                           = Beacon.trend du contrat ; absente → trend null (tendance indisponible)
+#   beacons[].elevation_m   peut valoir null (altitude inconnue de la source, cas Pioupiou)
+#   beacons[].dem_elevation_m  altitude MNT imposée au point de la balise. Absente alors que elevation_m est null :
+#                           le chargeur simule un MNT INDISPONIBLE à ce point (ctx.terrain_at → None pour cette balise)
+#   mode                    classic (défaut) | custom_takeoff (= PlanRequest.mode)
+#   custom_takeoff          {name, lat, lon, elevation_m, orientations, slope_pct, aspect_deg} ; remplace `takeoff`
+#                           (site source "user", difficulty null). slope_pct = pente MNT moyenne sur 150 m dans la
+#                           ligne de pente, aspect_deg = direction vers laquelle la pente fait face : valeurs MNT
+#                           imposées, propres aux scénarios (en live : calculées sur le MNT)
+#   landing_candidates      en mode custom_takeoff, remplace landing / alternate_landings : atterros possibles
+#                           (format landing + champs ci-dessous) ; le moteur filtre (landing_policy, niveau,
+#                           critères CDC §12.7), choisit le principal et classe les autres
+#     landing_kind          official | community | field (= LandingKind)
+#     size_m                {length, width} ; slope_pct ; surface ; access (texte libre)
+#     community_usage       frequent | occasional | unknown
+#     clearances_m          {power_line, trees_buildings, water, road} : distance (m) du bord du terrain à
+#                           l'obstacle le plus proche ; null = rien dans un rayon de 500 m
+#   filters.landing_policy  official_only (défaut) | include_community | include_fields
+# Nouvelles clés `expect` (meilleur plan) :
+#   landing_kind                  kind de l'atterro principal (landing_analysis[0].kind / landing.landing_kind)
+#   landing_kinds_forbidden       aucun plan go/marginal n'utilise un atterro de ces kinds (principal ou secours)
+#   landing_warnings_contains     sous-chaîne (insensible à la casse) des warnings de landing_analysis[0]
+#   landing_beacon_representative true → station_readings contient une balise site_role=landing representative=true ;
+#                                 false → aucune
+#   landing_beacon_weight_max     weight de chaque balise site_role=landing representative ≤ valeur
+#   landing_beacon_comment_contains  sous-chaîne (insensible à la casse) du comment de cette balise
 
 sites:
   forclaz_takeoff: &forclaz_takeoff
@@ -71,6 +105,15 @@ sites:
     - {name: "Les Houches", lat: 45.892, lon: 6.800, elevation_m: 1000, big_valley: true}
     - {name: "Passy", lat: 45.9195, lon: 6.7055, elevation_m: 590, big_valley: true}
 
+  # Phase 2 (S31-S32) : décollage libre fictif sur une pente SE, et atterros candidats
+  rando_takeoff: &rando_takeoff
+    {name: "Alpage rando (fictif)", lat: 45.700, lon: 6.400, elevation_m: 1500, orientations: [ESE, SE, SSE], slope_pct: 40, aspect_deg: 135}
+  rando_official_far: &rando_official_far      # 15,2 km à l'W : hors de portée de plané
+    {name: "Atterro officiel éloigné (fictif)", lat: 45.700, lon: 6.205, elevation_m: 450, big_valley: true, landing_kind: official}
+  rando_field: &rando_field                    # 1,8 km au 150° ; critères minimaux respectés jusqu'au niveau intermediate
+    {name: "Pré de fauche (champ détecté, fictif)", lat: 45.6860, lon: 6.4116, elevation_m: 820, big_valley: false, landing_kind: field, size_m: {length: 170, width: 60}, slope_pct: 4, surface: "prairie", community_usage: unknown, access: "piste agricole", clearances_m: {power_line: 160, trees_buildings: 40, water: 400, road: 250}}
+  rando_community: &rando_community            # 1,6 km au 135°
+    {name: "Pré des parapentistes (communautaire, fictif)", lat: 45.6898, lon: 6.4146, elevation_m: 800, big_valley: false, landing_kind: community, size_m: {length: 200, width: 80}, slope_pct: 3, surface: "pré fauché", community_usage: frequent, access: "route et parking à 50 m", clearances_m: {power_line: 300, trees_buildings: 50, water: 500, road: 50}}
 weathers:
   w_s01: &w_s01
     takeoff_wind_kmh: 12
@@ -997,3 +1040,142 @@ scenarios:
     expect:
       flyability: no_go
       risk_codes: [NATIONAL_PARK]
+
+# =========================================================================================================
+# Phase 2 (CDC §12) : à charger avec `scenarios` dès que le moteur gère l'horizon 15m, les balises d'atterro
+# et leur tendance, le décollage libre et les atterros non officiels (voir l'en-tête).
+# =========================================================================================================
+scenarios_phase2:
+  - id: S28
+    title: "Forclaz dans 15 min : la brise forcit à l'atterro alors que le modèle reste calme"
+    reference_time: "2026-10-10T11:45:00Z"   # 13:45 légale
+    horizon: "15m"                # cible 12:00Z ; arrivée ≈ 12:25-12:45Z
+    filters: {difficulty: advanced, thermals: allowed, duration_min_minutes: 15, duration_max_minutes: 45, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather: &w_s28
+      takeoff_wind_kmh: 10
+      takeoff_wind_dir: 280
+      takeoff_gust_kmh: 14
+      landing_wind_kmh: 4         # modèle calme : × 1,3 (13-17 h légales) → 5,2, rafales 9,1
+      landing_wind_dir: 0
+      landing_gust_kmh: 7
+      winds_aloft: {1550: [10, 280], 2000: [12, 270], 3000: [18, 260]}
+      thermal_ceiling_m: 2000
+      cloud_base_m: 2300
+      thermal_strength_ms: 1.4
+      cape_j_kg: 50
+      lifted_index: 4
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 30
+      cloud_cover_low_pct: 10
+      temperature_c: 15
+      dew_point_c: 4
+      convection: {start: "10:00", end: "14:30"}
+    beacons:
+      - {name: "Balise Forclaz", lat: 45.8125, lon: 6.2455, elevation_m: 1250, wind_speed_kmh: 11, wind_gust_kmh: 15, wind_direction_deg: 285, age_min: 4, trend: {window_min: 60, speed_change_kmh: 1, direction_change_deg: 5, gust_max_kmh: 16, samples: 15}}
+      # +10 km/h en 1 h ; v_ext ≈ 12 + 10 × Δt/60 → 17-22 km/h (raf. 22-27) à l'arrivée : < 25 / 30 (advanced), ≥ 50 % du seuil
+      - {name: "Doussard atterro", lat: 45.7875, lon: 6.2235, elevation_m: 452, wind_speed_kmh: 12, wind_gust_kmh: 17, wind_direction_deg: 10, age_min: 3, trend: {window_min: 60, speed_change_kmh: 10, direction_change_deg: 20, gust_max_kmh: 17, samples: 15}}
+    expect:
+      flyability: marginal
+      risk_codes: [WIND_INCREASING]
+      landing_beacon_representative: true
+      risk_codes_forbidden: [NO_LANDING_BEACON, WIND_SHIFT, TAKEOFF_GUSTS, TAILWIND]
+
+  - id: S29
+    title: "Forclaz dans 15 min, aucune balise à l'atterro"
+    reference_time: "2026-10-10T11:45:00Z"
+    horizon: "15m"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 15, duration_max_minutes: 45, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      <<: *w_s28
+      landing_wind_kmh: 6         # × 1,3 → 7,8 (39 % de 20), rafales 13
+      landing_gust_kmh: 10
+    beacons:                      # balise du déco cohérente (× 1,1) ; rien à l'atterro
+      - {name: "Balise Forclaz", lat: 45.8125, lon: 6.2455, elevation_m: 1250, wind_speed_kmh: 11, wind_gust_kmh: 15, wind_direction_deg: 285, age_min: 4, trend: {window_min: 60, speed_change_kmh: 1, direction_change_deg: 5, gust_max_kmh: 16, samples: 15}}
+    expect:
+      flyability: go              # NO_LANDING_BEACON : caution NON bloquante (arrivée 14 h légales), jamais un no-go à lui seul
+      risk_codes: [NO_LANDING_BEACON]
+      landing_beacon_representative: false
+      confidence_max: 0.915       # 0,92 × 1,1 × 0,9 ≈ 0,911 ; sans le facteur atterro on aurait 0,92 à 0,95
+      risk_codes_forbidden: [WIND_INCREASING, LANDING_WIND, BEACON_MISMATCH]
+
+  - id: S30
+    title: "Forclaz dans 30 min : balise de l'atterro sans altitude connue"
+    reference_time: "2026-10-10T11:30:00Z"   # 13:30 légale
+    horizon: "30m"
+    filters: {difficulty: intermediate, thermals: allowed, duration_min_minutes: 15, duration_max_minutes: 45, flight_types: [local]}
+    takeoff: *forclaz_takeoff
+    landing: *doussard
+    weather:
+      <<: *w_s28
+      landing_wind_kmh: 6
+      landing_gust_kmh: 10
+    beacons:
+      - {name: "Balise Forclaz", lat: 45.8125, lon: 6.2455, elevation_m: 1250, wind_speed_kmh: 11, wind_gust_kmh: 15, wind_direction_deg: 285, age_min: 4, trend: {window_min: 60, speed_change_kmh: 1, direction_change_deg: 5, gust_max_kmh: 16, samples: 15}}
+      # elevation_m null et pas de dem_elevation_m → MNT indisponible : représentative grâce au nom « atterro » et à
+      # 0,36 km de l'atterro, f_alt_inconnue = 0,5 → weight = w(arrivée ≥ 30 min) × 0,5 ≤ 0,35
+      - {name: "Pioupiou Doussard atterro", lat: 45.7885, lon: 6.2250, elevation_m: null, wind_speed_kmh: 9, wind_gust_kmh: 13, wind_direction_deg: 5, age_min: 6, trend: {window_min: 60, speed_change_kmh: 1, direction_change_deg: 0, gust_max_kmh: 14, samples: 14}}
+    expect:
+      flyability: go
+      landing_beacon_representative: true
+      landing_beacon_weight_max: 0.35
+      landing_beacon_comment_contains: "altitude"
+      risk_codes_forbidden: [NO_LANDING_BEACON, BEACON_MISMATCH, WIND_INCREASING]
+
+  - id: S31
+    title: "Décollage libre (vol rando) pour un élève : seul un champ détecté est à portée"
+    reference_time: "2026-09-19T08:30:00Z"
+    horizon: "24h"                # cible 2026-09-20 08:30Z = 10:30 légale, avant la convection
+    mode: custom_takeoff
+    filters: {difficulty: beginner, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 30, flight_types: [local], landing_policy: include_fields}
+    custom_takeoff: *rando_takeoff
+    landing_candidates: [*rando_official_far, *rando_field]
+    weather: &w_s31
+      takeoff_wind_kmh: 8         # brise montante de face sur la pente SE
+      takeoff_wind_dir: 135
+      takeoff_gust_kmh: 12
+      landing_wind_kmh: 5
+      landing_wind_dir: 135
+      landing_gust_kmh: 8
+      winds_aloft: {1500: [8, 135], 1800: [10, 150], 2000: [12, 170], 3000: [18, 210]}
+      thermal_ceiling_m: 1900
+      cloud_base_m: null
+      thermal_strength_ms: 1.0
+      cape_j_kg: 30
+      lifted_index: 5
+      precipitation_mm_h: 0
+      precip_prev_3h_mm: 0
+      cloud_cover_pct: 10
+      cloud_cover_low_pct: 0
+      temperature_c: 12
+      dew_point_c: 3
+      convection: {start: "09:30", end: "15:00"}
+    expect:
+      flyability: no_go           # aucun plan : décollage libre interdit à l'élève, champ jamais proposé à ce niveau
+      risk_codes: [FREE_TAKEOFF, DETECTED_FIELD]
+      rejected_reason_contains: "décollage libre"
+
+  - id: S32
+    title: "Décollage libre (vol rando) pour un brevet confirmé : atterro communautaire à portée"
+    reference_time: "2026-09-19T08:30:00Z"
+    horizon: "24h"
+    mode: custom_takeoff
+    filters: {difficulty: advanced, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 30, flight_types: [local], landing_policy: include_community}
+    custom_takeoff: *rando_takeoff
+    # 1,6 km face au vent (8 km/h) : finesse de calcul 8,5 × 0,72 × 29/37 × 0,90 ≈ 4,3 ; requise 1600 / (1500 − 800 − 120) ≈ 2,8
+    landing_candidates: [*rando_official_far, *rando_community, *rando_field]   # le champ est exclu par landing_policy
+    weather: *w_s31
+    expect:
+      flyability: go
+      flight_type: local
+      landing_kind: community
+      landing_kinds_forbidden: [field]
+      landing_warnings_contains: "Non officiel"
+      difficulty_min: intermediate
+      difficulty_max: advanced
+      risk_codes: [FREE_TAKEOFF, UNOFFICIAL_LANDING]   # tous deux en info pour advanced
+      risk_codes_forbidden: [DETECTED_FIELD, GLIDE_MARGIN, TAILWIND, CROSSWIND, TAKEOFF_WIND]

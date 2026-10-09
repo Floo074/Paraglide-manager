@@ -1,12 +1,14 @@
 import { Check, ClipboardCopy, Phone, Radio, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Difficulty, FlightPlan, Risk } from "../../api/types";
-import { RISK_CODE_LABEL, RISK_LEVEL, SOURCE_LABEL, criterionLabel } from "../../config/labels";
+import { LANDING_KIND, RISK_CODE_LABEL, RISK_LEVEL, SOURCE_LABEL, criterionLabel } from "../../config/labels";
 import { landingLimits, type WindLimits } from "../../config/thresholds";
 import { copyToClipboard } from "../../utils/download";
 import { waypointTypeLabel } from "../../utils/exports";
 import { formatAge, formatAltitude, formatDuration, formatNumber, formatTime, formatVario } from "../../utils/format";
 import { haversineKm } from "../../utils/geo";
+import { landingKindOf } from "../../utils/landings";
+import { LandingKindBadge } from "../landing/LandingCandidates";
 import { loadJson, saveJson } from "../../utils/storage";
 import { RiskIcon } from "../common/RiskLine";
 import { sortRisks } from "../../utils/risks";
@@ -140,6 +142,7 @@ export function LandingBlock({ plan, level }: { plan: FlightPlan; level: Difficu
   const lim: WindLimits = landingLimits(level, plan.flight_type);
   const g = plan.glide;
   const ratio = g.available_ratio > 0 ? Math.min(1.2, g.required_ratio / g.available_ratio) : 1.2;
+  const kind = landingKindOf(plan.landing);
   return (
     <section className="block" aria-labelledby="b-landing">
       <h2 id="b-landing" className="block__title">
@@ -147,7 +150,9 @@ export function LandingBlock({ plan, level }: { plan: FlightPlan; level: Difficu
       </h2>
       <div className="landing-main">
         <div>
-          <div className="landing-main__name">{plan.landing.name}</div>
+          <div className="landing-main__name">
+            {plan.landing.name} <LandingKindBadge kind={kind} />
+          </div>
           <div className="small muted">
             {formatAltitude(plan.landing.elevation_m)} · arrivée vers {formatTime(land.time)}
           </div>
@@ -155,6 +160,11 @@ export function LandingBlock({ plan, level }: { plan: FlightPlan; level: Difficu
         <WindText speed={land.wind_10m.speed_kmh} gust={land.wind_10m.gust_kmh} dir={land.wind_10m.direction_deg} limits={lim} />
       </div>
       {plan.landing.restrictions ? <p className="small popup__warn">{plan.landing.restrictions}</p> : null}
+      {kind !== "official" ? (
+        <p className="alert alert--caution small" role="note">
+          {LANDING_KIND[kind].description} Repérage et autorisation du propriétaire à vérifier.
+        </p>
+      ) : null}
       <div className="glide">
         <div className="row row--between small">
           <span>
@@ -175,7 +185,9 @@ export function LandingBlock({ plan, level }: { plan: FlightPlan; level: Difficu
           <ul className="simple-list">
             {plan.alternate_landings.map((s) => (
               <li key={s.id}>
-                <span className="grow">{s.name}</span>
+                <span className="grow">
+                  {s.name} {landingKindOf(s) !== "official" ? <LandingKindBadge kind={landingKindOf(s)} /> : null}
+                </span>
                 <span className="small muted num">
                   {formatAltitude(s.elevation_m)} · {formatNumber(haversineKm(s, plan.landing), 1)} km de l'atterro
                 </span>

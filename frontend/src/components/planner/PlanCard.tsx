@@ -8,6 +8,8 @@ import { planTimes } from "../../utils/planTimes";
 import { RiskLine } from "../common/RiskLine";
 import { sortRisks } from "../../utils/risks";
 import { WindText } from "../common/WindText";
+import { LandingKindBadge } from "../landing/LandingCandidates";
+import { landingKindOf } from "../../utils/landings";
 import { FlyabilityBadge } from "../ui/Badges";
 
 /** Carte résumé d'un plan (ordre défini par l'expert : verdict, niveau, créneau, vent, plafond…). */
@@ -81,7 +83,13 @@ export function PlanCard({
           )}
         </span>
         <span>
-          <span className="muted">Atterro</span> {plan.landing.name}
+          <span className="muted">{plan.takeoff.source === "user" ? "Déco libre →" : "Atterro"}</span> {plan.landing.name}
+          {landingKindOf(plan.landing) !== "official" ? (
+            <>
+              {" "}
+              <LandingKindBadge kind={landingKindOf(plan.landing)} />
+            </>
+          ) : null}
         </span>
       </div>
       {topRisks.length ? (

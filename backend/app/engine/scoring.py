@@ -79,9 +79,10 @@ def confidence_factors(
     return disp, beacon, sig_v, sig_d
 
 
-def compute_confidence(horizon: str, disp: float, beacon: float) -> float:
+def compute_confidence(horizon: str, disp: float, beacon: float, landing_beacon: float = 1.0) -> float:
+    """§12.4 : min(0,95 ; base(horizon) × f_dispersion × f_balise_déco × f_balise_atterro)."""
     base = rules.HORIZON_BASE_CONFIDENCE[horizon]
-    conf = base * disp * beacon
+    conf = base * disp * beacon * landing_beacon
     return round(min(conf, rules.CONFIDENCE_MAX, base * 1.1), 3)
 
 

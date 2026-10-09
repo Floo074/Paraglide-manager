@@ -1,11 +1,23 @@
 """Fournisseurs de sites : fixtures (mock), ParaglidingEarth (libre), FFVL (clé), SpotAir (désactivé).
 
-ParaglidingEarth — structure réelle constatée (tests/fixtures/paraglidingearth_bbox_annecy.json) :
-`getBoundingBoxSites.php?north&south&east&west&limit&style=detailled` → GeoJSON FeatureCollection ;
-`properties` en chaînes : name, takeoff_altitude ("-1" si inconnue), N/NE/…/NW ("0" | "1" | "2"),
-paragliding, soaring, xc, thermals, pge_site_id, pge_link, takeoff_description, going_there,
-flight_rules, et un objet `landing` {landing_name, landing_lat, landing_lng, landing_altitude, …}
-(absent si pas d'atterro). Coordonnées GeoJSON [lon, lat].
+ParaglidingEarth — structure réelle constatée (tests/fixtures/paraglidingearth_bbox_annecy*.json) :
+`https://www.paraglidingearth.com/api/geojson/getBoundingBoxSites.php?north&south&east&west&limit&style=detailled`
+(UNIQUEMENT en https://www. : le domaine sans www et le http sont refusés par certains proxys) →
+GeoJSON FeatureCollection de DÉCOLLAGES (`place` = « paragliding takeoff ») ; `properties` toutes en
+chaînes : name, takeoff_altitude (« -1 » si inconnue), N/NE/…/NW (« 0 » non, « 1 » possible,
+« 2 » bon), paragliding, hanggliding, soaring, xc, thermals, pge_site_id, pge_link (http://…),
+ffvl_site_id (« 0 » si non lié à une fiche FFVL), takeoff_description, going_there, flight_rules,
+comments, weather, landing_lat/landing_lng (« » si absent) et un objet `landing`
+{landing_name, landing_lat, landing_lng, landing_altitude, landing_description} quand l'atterro est
+documenté. Coordonnées GeoJSON [lon, lat]. Pas d'atterro autonome dans cette API : un atterro PGE
+est toujours celui d'un déco (plusieurs décos peuvent partager le même atterro → dédoublonné).
+
+Statut « officiel » (contrat `Site.official` / `Site.landing_kind`, cahier §12.7) — PGE n'a pas de
+drapeau officiel ; règle retenue (à valider par l'expert) :
+- déco `official` si lié à une fiche FFVL (`ffvl_site_id` > 0) ou fiche complète (altitude connue ET
+  au moins une orientation notée), et pas de mot « sauvage / non officiel / interdit… » dans le nom ;
+- sinon fiche sommaire → `official = False` (site communautaire, à vérifier) ;
+- atterro documenté d'un déco officiel → `landing_kind = "official"`, sinon `"community"`.
 """
 
 from __future__ import annotations
@@ -25,6 +37,15 @@ from app.providers.fixture_data import fixture_sites_raw
 
 PGE_SECTORS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 CLOSED_WORDS = ("fermé", "ferme ", "closed", "interdit", "ancien", "forbidden")
+UNOFFICIAL_WORDS = ("sauvage", "non officiel", "non-officiel", "unofficial", "wild", "interdit", "forbidden")
+PGE_BASE_URL = "https://www.paraglidingearth.com"
+
+
+def site_extra(**fields) -> dict:
+    """Champs du contrat ajoutés au modèle `Site` au fil des versions (`official`, `landing_kind`) :
+    transmis seulement si le modèle les déclare (compatibilité avec une version antérieure du modèle)."""
+    known = getattr(Site, "model_fields", {})
+    return {k: v for k, v in fields.items() if k in known}
 
 
 def fixture_sites() -> tuple[list[Site], dict[str, SiteMeta]]:
@@ -33,7 +54,9 @@ def fixture_sites() -> tuple[list[Site], dict[str, SiteMeta]]:
     for raw in fixture_sites_raw():
         m = raw.get("meta") or {}
         data = {k: v for k, v in raw.items() if k != "meta"}
-        site = Site(source="fixture", **data)
+        is_landing = data.get("kind") in ("landing", "both")
+        defaults = site_extra(official=True, landing_kind="official" if is_landing else None)
+        site = Site(source="fixture", **{**defaults, **data})
         sites.append(site)
         meta[site.id] = SiteMeta(big_valley=m.get("big_valley"), top_landing=bool(m.get("top_landing")))
     return sites, meta
@@ -45,6 +68,15 @@ def _num(x) -> float | None:
     except (TypeError, ValueError):
         return None
     return v
+
+
+def _text(x) -> str | None:
+    """Texte PGE nettoyé (CRLF, espaces) ; None si vide."""
+    if x is None:
+        return None
+    t = str(x).replace("\r\n", "\n").replace("\r", "\n").strip()
+    t = re.sub(r"[ \t]+", " ", t)
+    return t or None
 
 
 def pge_orientations(props: dict) -> list[str]:
@@ -77,56 +109,110 @@ def _is_closed(name: str) -> bool:
     return any(w in n for w in CLOSED_WORDS)
 
 
+def _flag(props: dict, key: str) -> bool:
+    return str(props.get(key) or "0").strip() not in ("0", "", "false", "False", "None")
+
+
+def pge_official(props: dict, name: str, altitude: float | None, orientations: list[str]) -> bool:
+    """Déco PGE « référencé » (voir docstring du module) : fiche FFVL liée ou fiche complète."""
+    low = name.lower()
+    if any(w in low for w in UNOFFICIAL_WORDS):
+        return False
+    if (_num(props.get("ffvl_site_id")) or 0) > 0:
+        return True
+    return altitude is not None and altitude > 0 and bool(orientations)
+
+
 def parse_pge(data) -> tuple[list[Site], dict[str, SiteMeta]]:
-    if not isinstance(data, dict) or "features" not in data:
+    if not isinstance(data, dict) or not isinstance(data.get("features"), list):
         raise ProviderError("ParaglidingEarth : réponse sans 'features'")
     sites: list[Site] = []
     meta: dict[str, SiteMeta] = {}
+    seen: set[str] = set()
     for f in data["features"]:
+        if not isinstance(f, dict):
+            continue
         props = f.get("properties") or {}
         geom = f.get("geometry") or {}
         coords = geom.get("coordinates") or []
         if len(coords) < 2:
             continue
-        lon, lat = float(coords[0]), float(coords[1])
-        if str(props.get("paragliding", "1")) == "0":
+        lon, lat = _num(coords[0]), _num(coords[1])
+        if lat is None or lon is None or (lat, lon) == (0.0, 0.0):
             continue
-        pid = str(props.get("pge_site_id") or f.get("id"))
-        name = (props.get("name") or f"Site PGE {pid}").strip()
+        if not _flag(props, "paragliding") and "paragliding" in props:
+            continue  # site delta uniquement
+        pid = str(props.get("pge_site_id") or f.get("id") or f"{lat:.4f},{lon:.4f}")
+        if pid in seen:
+            continue  # même site renvoyé deux fois
+        seen.add(pid)
+        name = _text(props.get("name")) or f"Site PGE {pid}"
         alt = _num(props.get("takeoff_altitude"))
+        alt = alt if alt is not None and alt > 0 else None
+        orientations = pge_orientations(props)
+        official = pge_official(props, name, alt, orientations)
+        url = https_link(props.get("pge_link")) or f"{PGE_BASE_URL}/?site={pid}"
+        place = str(props.get("place") or "").lower()
+        kind = "landing" if "landing" in place and "takeoff" not in place else "takeoff"
         types = ["local"]
-        if str(props.get("soaring")) == "1":
+        if _flag(props, "soaring"):
             types.append("ridge_soaring")
-        if str(props.get("xc")) == "1":
+        if _flag(props, "xc"):
             types.append("cross_country")
         landing_ids: list[str] = []
-        ldg = props.get("landing") or {}
+        ldg = props.get("landing") if isinstance(props.get("landing"), dict) else {}
         llat = _num(ldg.get("landing_lat") or props.get("landing_lat"))
         llon = _num(ldg.get("landing_lng") or props.get("landing_lng"))
-        if llat is not None and llon is not None and (llat, llon) != (0.0, 0.0):
+        if kind == "takeoff" and llat is not None and llon is not None and (llat, llon) != (0.0, 0.0):
             lalt = _num(ldg.get("landing_altitude"))
             lid = f"pge:{pid}:landing"
-            lname = (ldg.get("landing_name") or "").strip() or f"Atterro de {name}"
+            lname = _text(ldg.get("landing_name")) or f"Atterro de {name}"
             sites.append(
                 Site(
-                    id=lid, name=lname, kind="landing", lat=llat, lon=llon,
+                    id=lid,
+                    name=lname,
+                    kind="landing",
+                    lat=llat,
+                    lon=llon,
                     elevation_m=lalt if lalt is not None and lalt > 0 else -1.0,
-                    orientations=[], difficulty=None, flight_types=[],
-                    description=(ldg.get("landing_description") or None), access=None, restrictions=None,
-                    status="unknown", source="paraglidingearth", url=https_link(props.get("pge_link")), associated_landing_ids=[],
-                )  # fmt: skip
+                    orientations=[],
+                    difficulty=None,
+                    flight_types=[],
+                    description=_text(ldg.get("landing_description")),
+                    access=None,
+                    restrictions=None,
+                    status="unknown",
+                    source="paraglidingearth",
+                    url=url,
+                    associated_landing_ids=[],
+                    **site_extra(official=official, landing_kind="official" if official else "community"),
+                )
             )
             landing_ids.append(lid)
         status = "closed" if _is_closed(name) else "unknown"
         sites.append(
             Site(
-                id=f"pge:{pid}", name=name, kind="takeoff", lat=lat, lon=lon,
-                elevation_m=alt if alt is not None and alt > 0 else -1.0,
-                orientations=pge_orientations(props), difficulty=None, flight_types=types,
-                description=(props.get("takeoff_description") or props.get("comments") or None),
-                access=(props.get("going_there") or None), restrictions=(props.get("flight_rules") or None),
-                status=status, source="paraglidingearth", url=https_link(props.get("pge_link")), associated_landing_ids=landing_ids,
-            )  # fmt: skip
+                id=f"pge:{pid}",
+                name=name,
+                kind=kind,
+                lat=lat,
+                lon=lon,
+                elevation_m=alt if alt is not None else -1.0,
+                orientations=orientations if kind == "takeoff" else [],
+                difficulty=None,
+                flight_types=types if kind == "takeoff" else [],
+                description=_text(props.get("takeoff_description")) or _text(props.get("comments")),
+                access=_text(props.get("going_there")),
+                restrictions=_text(props.get("flight_rules")),
+                status=status,
+                source="paraglidingearth",
+                url=url,
+                associated_landing_ids=landing_ids,
+                **site_extra(
+                    official=official,
+                    landing_kind=("official" if official else "community") if kind == "landing" else None,
+                ),
+            )
         )
         meta[f"pge:{pid}"] = SiteMeta()
     return sites, meta
@@ -134,10 +220,12 @@ def parse_pge(data) -> tuple[list[Site], dict[str, SiteMeta]]:
 
 class ParaglidingEarthSites:
     name = "ParaglidingEarth"
+    LIMIT = 500
 
     def __init__(self, client: httpx.AsyncClient, base_url: str):
         self.client = client
-        self.base_url = base_url.rstrip("/")
+        # https://www. obligatoire (le http et le domaine nu sont refusés par certains proxys)
+        self.base_url = https_link(base_url.rstrip("/")) or base_url
 
     async def fetch(self, bbox: tuple[float, float, float, float]) -> tuple[list[Site], dict[str, SiteMeta]]:
         min_lon, min_lat, max_lon, max_lat = bbox
@@ -146,8 +234,8 @@ class ParaglidingEarthSites:
             "south": f"{min_lat:.4f}",
             "east": f"{max_lon:.4f}",
             "west": f"{min_lon:.4f}",
-            "limit": "200",
-            "style": "detailled",
+            "limit": str(self.LIMIT),
+            "style": "detailled",  # sic (orthographe de l'API) : fiche complète avec l'atterro
         }
         data = await get_json(self.client, f"{self.base_url}/getBoundingBoxSites.php", params)
         return parse_pge(data)
@@ -157,7 +245,14 @@ class ParaglidingEarthSites:
 # FFVL (clé API requise — format non vérifié faute de clé : parseur défensif)
 # ---------------------------------------------------------------------------------------------
 def parse_ffvl_terrains(data) -> list[Site]:
-    items = data if isinstance(data, list) else (data.get("terrains") or data.get("data") or []) if isinstance(data, dict) else []
+    from app.geo import parse_orientations
+
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("terrains") or data.get("data") or []
+    else:
+        items = []
     out = []
     for it in items:
         lat = _num(it.get("latitude") or it.get("lat"))
@@ -166,18 +261,27 @@ def parse_ffvl_terrains(data) -> list[Site]:
             continue
         typ = str(it.get("site_type") or it.get("type") or "").lower()
         kind = "landing" if "atterr" in typ else "takeoff"
-        from app.geo import parse_orientations
-
         sid = str(it.get("suid") or it.get("id") or it.get("site_id"))
         out.append(
             Site(
-                id=f"ffvl:{sid}", name=str(it.get("toponym") or it.get("nom") or it.get("name") or f"FFVL {sid}"),
-                kind=kind, lat=lat, lon=lon, elevation_m=_num(it.get("altitude") or it.get("alt")) or -1.0,
+                id=f"ffvl:{sid}",
+                name=str(it.get("toponym") or it.get("nom") or it.get("name") or f"FFVL {sid}"),
+                kind=kind,
+                lat=lat,
+                lon=lon,
+                elevation_m=_num(it.get("altitude") or it.get("alt")) or -1.0,
                 orientations=parse_orientations(it.get("orientation") or it.get("orientations")),
-                difficulty=None, flight_types=["local"], description=it.get("description"),
-                access=it.get("acces") or it.get("access"), restrictions=it.get("consignes") or it.get("restrictions"),
-                status="open", source="ffvl", url=it.get("url"), associated_landing_ids=[],
-            )  # fmt: skip
+                difficulty=None,
+                flight_types=["local"],
+                description=it.get("description"),
+                access=it.get("acces") or it.get("access"),
+                restrictions=it.get("consignes") or it.get("restrictions"),
+                status="open",
+                source="ffvl",
+                url=it.get("url"),
+                associated_landing_ids=[],
+                **site_extra(official=True, landing_kind="official" if kind == "landing" else None),
+            )
         )
     return out
 
@@ -195,7 +299,9 @@ class FfvlSites:
             raise ProviderDisabled("clé FFVL absente")
         data = await get_json(self.client, self.api_url, {"base": "terrains", "mode": "json", "key": self.api_key})
         min_lon, min_lat, max_lon, max_lat = bbox
-        sites = [s for s in parse_ffvl_terrains(data) if min_lat <= s.lat <= max_lat and min_lon <= s.lon <= max_lon]
+        sites = [
+            s for s in parse_ffvl_terrains(data) if min_lat <= s.lat <= max_lat and min_lon <= s.lon <= max_lon
+        ]
         return sites, {}
 
 
@@ -238,10 +344,26 @@ def similar_names(a: str, b: str) -> bool:
     return difflib.SequenceMatcher(None, na, nb).ratio() >= 0.6
 
 
+def completeness(s: Site) -> int:
+    """Qualité d'une fiche (pour garder la plus complète de deux doublons d'une même source)."""
+    score = 0
+    score += 2 if getattr(s, "official", False) else 0
+    score += 1 if s.elevation_m > 0 else 0
+    score += 1 if s.orientations else 0
+    score += 1 if s.associated_landing_ids else 0
+    score += 1 if s.description else 0
+    return score
+
+
 def merge_sites(groups: list[list[Site]]) -> list[Site]:
-    """Fusion dédoublonnée (< 300 m et nom proche, ou < 100 m), en gardant la source prioritaire."""
-    all_sites = sorted((s for g in groups for s in g), key=lambda s: SOURCE_PRIORITY.get(s.source, 9))
+    """Fusion dédoublonnée (< 300 m et nom proche ou orientations communes, ou < 100 m), en gardant la
+    source prioritaire puis la fiche la plus complète ; les références d'atterros fusionnés sont
+    réécrites vers l'atterro conservé."""
+    all_sites = sorted(
+        (s for g in groups for s in g), key=lambda s: (SOURCE_PRIORITY.get(s.source, 9), -completeness(s))
+    )
     kept: list[Site] = []
+    alias: dict[str, str] = {}
     for s in all_sites:
         dup = None
         for k in kept:
@@ -254,14 +376,32 @@ def merge_sites(groups: list[list[Site]]) -> list[Site]:
                 break
         if dup is None:
             kept.append(s)
-        else:
-            # complète les champs manquants de la source prioritaire
-            for f in ("description", "access", "restrictions", "url"):
-                if getattr(dup, f) is None and getattr(s, f) is not None:
-                    setattr(dup, f, getattr(s, f))
-            for lid in s.associated_landing_ids:
-                if lid not in dup.associated_landing_ids:
-                    dup.associated_landing_ids.append(lid)
+            continue
+        alias[s.id] = dup.id
+        # complète les champs manquants de la fiche conservée
+        for f in ("description", "access", "restrictions", "url"):
+            if getattr(dup, f) is None and getattr(s, f) is not None:
+                setattr(dup, f, getattr(s, f))
+        if dup.elevation_m <= 0 < s.elevation_m:
+            dup.elevation_m = s.elevation_m
+        if not dup.orientations and s.orientations:
+            dup.orientations = list(s.orientations)
+        fields = getattr(type(dup), "model_fields", {})
+        if "official" in fields and getattr(s, "official", False) and not dup.official:
+            dup.official = True
+            if "landing_kind" in fields and dup.kind in ("landing", "both"):
+                dup.landing_kind = "official"
+        for lid in s.associated_landing_ids:
+            if lid not in dup.associated_landing_ids:
+                dup.associated_landing_ids.append(lid)
+    if alias:
+        for k in kept:
+            ids: list[str] = []
+            for lid in k.associated_landing_ids:
+                lid = alias.get(lid, lid)
+                if lid not in ids and lid != k.id:
+                    ids.append(lid)
+            k.associated_landing_ids = ids
     return kept
 
 
@@ -278,7 +418,8 @@ def associate_landings(sites: list[Site], max_glide: float = 6.0) -> None:
             ldg = by_id.get(lid)
             if ldg is None:
                 continue
-            if ldg.elevation_m > 0 and s.elevation_m > 0 and ldg.elevation_m > s.elevation_m and ldg.id != s.id and s.kind != "both":
+            higher = ldg.elevation_m > 0 and s.elevation_m > 0 and ldg.elevation_m > s.elevation_m
+            if higher and ldg.id != s.id and s.kind != "both":
                 continue  # atterro plus haut que le déco : erreur de données
             valid.append(lid)
         s.associated_landing_ids = valid

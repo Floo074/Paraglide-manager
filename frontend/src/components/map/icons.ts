@@ -1,6 +1,6 @@
 /** Icônes Leaflet (divIcon SVG) : décos avec secteurs, atterros, balises, waypoints, flèches de vent. */
 import L from "leaflet";
-import type { Beacon, Site, Waypoint } from "../../api/types";
+import type { Beacon, LandingKind, Site, Waypoint } from "../../api/types";
 import { compassToDeg, normalizeDeg } from "../../utils/units";
 import { formatAgeShort } from "../../utils/format";
 
@@ -146,4 +146,39 @@ export function handleIcon(kind: "center" | "radius"): L.DivIcon {
     iconSize: [22, 22],
     iconAnchor: [11, 11],
   });
+}
+
+const LANDING_KIND_FILL: Record<LandingKind, string> = { official: "#16a34a", community: "#2563eb", field: "#ea580c" };
+
+/** Atterro candidat : carré coloré par catégorie (officiel vert, communautaire bleu, champ orange), numéroté. */
+export function landingCandidateIcon(kind: LandingKind, rank: number, selected = false): L.DivIcon {
+  const s = selected ? 32 : 26;
+  const fill = LANDING_KIND_FILL[kind];
+  const dash = kind === "field" ? 'stroke-dasharray="3 2"' : "";
+  const html = `<svg width="${s}" height="${s}" viewBox="0 0 26 26" class="site-svg">
+    ${selected ? `<rect x="0.5" y="0.5" width="25" height="25" rx="7" fill="none" stroke="${fill}" stroke-width="1.5" opacity="0.7"/>` : ""}
+    <rect x="3" y="3" width="20" height="20" rx="5" fill="${fill}" stroke="#fff" stroke-width="2.2" ${dash}/>
+    <text x="13" y="17.3" text-anchor="middle" class="site-letter">${rank}</text>
+  </svg>`;
+  return L.divIcon({ html, className: `site-icon lc-icon${selected ? " site-icon--hl" : ""}`, iconSize: [s, s], iconAnchor: [s / 2, s / 2], popupAnchor: [0, -s / 2] });
+}
+
+/** Décollage libre : pastille « D » à anneau pointillé (+ secteurs si orientations connues). */
+export function freeTakeoffIcon(orientations: string[]): L.DivIcon {
+  const size = 52;
+  const c = size / 2;
+  const r0 = 11;
+  const r1 = c - 3;
+  const sectors = orientations
+    .map(compassToDeg)
+    .filter((d): d is number => d !== null)
+    .map((d) => `<path d="${wedge(c, c, r0, r1, d)}" />`)
+    .join("");
+  const html = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="site-svg free-takeoff-svg">
+    <circle cx="${c}" cy="${c}" r="${c - 1.5}" fill="rgba(124,58,237,0.12)" stroke="#7c3aed" stroke-width="2" stroke-dasharray="4 3"/>
+    <g class="sectors">${sectors}</g>
+    <circle cx="${c}" cy="${c}" r="${r0}" fill="#7c3aed" stroke="#fff" stroke-width="2"/>
+    <text x="${c}" y="${c + 4.2}" text-anchor="middle" class="site-letter">D</text>
+  </svg>`;
+  return L.divIcon({ html, className: "site-icon free-takeoff-icon", iconSize: [size, size], iconAnchor: [c, c], popupAnchor: [0, -c + 4] });
 }

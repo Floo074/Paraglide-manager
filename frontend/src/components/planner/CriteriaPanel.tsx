@@ -1,6 +1,7 @@
 import { Clock, Gauge, Plane, Sun, Target, Timer, Wind } from "lucide-react";
-import type { Difficulty, FlightType, Horizon, ThermalPreference, Zone } from "../../api/types";
-import { DIFFICULTIES, FLIGHT_TYPES, THERMAL_PREFS } from "../../config/labels";
+import type { ReactNode } from "react";
+import type { Difficulty, FlightType, Horizon, PlanMode, ThermalPreference, Zone } from "../../api/types";
+import { DIFFICULTIES, FLIGHT_TYPES, PLAN_MODE_OPTIONS, THERMAL_PREFS } from "../../config/labels";
 import { HORIZONS, targetTimeFromHorizon } from "../../utils/horizon";
 import { formatDayTime, formatTime } from "../../utils/format";
 import { ChipGroup, ChipMulti } from "../ui/Chips";
@@ -26,12 +27,15 @@ export function CriteriaPanel({
   zone,
   onZone,
   now,
+  placeSection,
 }: {
   criteria: Criteria;
   setCriteria: (c: Criteria) => void;
   zone: Zone;
   onZone: (z: Zone) => void;
   now: Date;
+  /** Remplace la section « Où ? » (décollage libre). */
+  placeSection?: ReactNode;
 }) {
   const set = <K extends keyof Criteria>(k: K, v: Criteria[K]) => setCriteria({ ...criteria, [k]: v });
   const ref = criteria.referenceTime ? new Date(criteria.referenceTime) : now;
@@ -39,13 +43,20 @@ export function CriteriaPanel({
 
   return (
     <div className="criteria">
-      <ZoneSection zone={zone} onZone={onZone} />
+      <ChipGroup<PlanMode>
+        label="Mode de recherche"
+        className="chips--fill chips--mode"
+        value={criteria.mode}
+        onChange={(v) => set("mode", v)}
+        options={PLAN_MODE_OPTIONS.map((m) => ({ value: m.value, label: m.label, sub: m.sub }))}
+      />
+      {placeSection ?? <ZoneSection zone={zone} onZone={onZone} />}
 
       <section className="field" aria-labelledby="f-horizon">
         <h3 className="field__label" id="f-horizon">
           <Clock size={16} aria-hidden /> Quand ?
           <span className="field__aside">
-            cible <strong>{formatDayTime(target, now)}</strong> <span className="faint">(heure locale)</span>
+            heure cible <strong className="num">{formatDayTime(target, now)}</strong> <span className="faint">(heure locale)</span>
           </span>
         </h3>
         <ChipGroup<Horizon>

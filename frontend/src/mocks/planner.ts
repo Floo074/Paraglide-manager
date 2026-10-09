@@ -11,7 +11,10 @@ import type {
   Difficulty,
   FlightPlan,
   FlightType,
+  CustomTakeoff,
   Horizon,
+  LandingCandidate,
+  LandingPolicy,
   PlanFilters,
   PlanRequest,
   PlanResponse,
@@ -28,12 +31,15 @@ import { bearingDeg, destinationPoint, distancePointToSegmentKm, haversineKm, po
 import { horizonToMinutes, isHorizon, targetTimeFromHorizon } from "../utils/horizon";
 import { formatDuration, formatTime, formatNumber } from "../utils/format";
 import { sunTimes } from "../utils/sun";
-import { angleDiff, compassToDeg, compassFr, degToCardinalFr, groundGlideRatio, normalizeDeg } from "../utils/units";
+import { COMPASS_16, angleDiff, compassToDeg, compassFr, degToCardinalFr, groundGlideRatio, normalizeDeg } from "../utils/units";
+import { formatSpeedTrend } from "../utils/beacons";
 import { validateZone, zoneContains } from "../utils/zone";
 import { MOCK_AIRSPACES } from "./airspaces";
 import { mockBeacons } from "./beacons";
 import { RULES, arrivalMargin, thresholdSubscore } from "./rules";
+import { FREE_TAKEOFF_CHECKS, UNOFFICIAL_WARNING, canBeMain, evaluateLanding, searchLandings, sortCandidates, userTakeoffSite, type LandingContext } from "./landings";
 import { mockSensitiveAreas } from "./sensitiveAreas";
+import { nowcastFrom, stationReadings } from "./stations";
 import { CROSS_TURNPOINTS, MOCK_SITES, MOCK_SITES_BY_ID, THERMAL_TRIGGERS } from "./sites";
 import { facingOf, hash01, scenarioFor, soundingAt, terrainAt, weatherAt } from "./weather";
 
@@ -333,6 +339,8 @@ interface BuildCtx {
   };
   horizon: Horizon;
   now: Date;
+  /** Décollage libre : point demandé, politique d'atterrissage et atterros trouvés (le 1er = principal). */
+  custom?: { takeoff: CustomTakeoff; policy: LandingPolicy; candidates: LandingCandidate[] };
 }
 
 function ploufMinutes(site: Site, landing: Site, time: Date, sunset: Date | null): number {
@@ -669,6 +677,8 @@ function scoreItems(ctx: BuildCtx, c: Conditions, _cand: Candidate, est: number,
 }
 
 const SAFETY = new Set(["takeoff_wind", "wind_aloft", "landing", "convective_stability"]);
+/** Risques « prudence » qui n'empêchent pas un GO (CDC §12.2 : NO_LANDING_BEACON blocks_go: false). */
+const NON_BLOCKING = new Set(["MOCK_DATA", "NO_LANDING_BEACON"]);
 
 function verdict(items: ScoreItem[], confidence: number, horizon: Horizon, risks: Risk[]): { score: number; flyability: FlightPlan["flyability"] } {
   const total = items.reduce((s, i) => s + i.score * i.weight, 0) / items.reduce((s, i) => s + i.weight, 0);
@@ -677,7 +687,7 @@ function verdict(items: ScoreItem[], confidence: number, horizon: Horizon, risks
   const V = RULES.verdict;
   if (risks.some((r) => r.level === "danger") || score < V.nogoMaxScore) return { score, flyability: "no_go" };
   const confOk = confidence >= V.goMinConfidenceRatio * RULES.horizonBaseConfidence[horizon];
-  if (score >= V.goMinScore && minSafety >= V.goMinSafety && confOk && !risks.some((r) => r.level === "caution" && r.code !== "MOCK_DATA"))
+  if (score >= V.goMinScore && minSafety >= V.goMinSafety && confOk && !risks.some((r) => r.level === "caution" && !NON_BLOCKING.has(r.code)))
     return { score, flyability: "go" };
   return { score, flyability: "marginal" };
 }
@@ -694,13 +704,47 @@ interface PlanKey {
   horizon: Horizon;
   filters: BuildCtx["filters"];
   rank: number;
+  /** Décollage libre : le point (sans le nom) et la politique d'atterrissage sont dans l'identifiant. */
+  custom?: { takeoff: CustomTakeoff; policy: LandingPolicy };
+}
+
+const POLICY_CODE: Record<LandingPolicy, string> = { official_only: "o", include_community: "c", include_fields: "f" };
+const CODE_POLICY: Record<string, LandingPolicy> = { o: "official_only", c: "include_community", f: "include_fields" };
+
+/** Jeton de site : "forclaz" (fixture) ou "u45.81234~6.24567~1250~0c00~c" (décollage libre). */
+function siteToken(k: PlanKey): string {
+  if (!k.custom) return k.siteId.replace(/^fixture:/, "");
+  const t = k.custom.takeoff;
+  let mask = 0;
+  for (const o of t.orientations ?? []) {
+    const i = COMPASS_16.indexOf(o.toUpperCase() as (typeof COMPASS_16)[number]);
+    if (i >= 0) mask |= 1 << i;
+  }
+  const elev = t.elevation_m !== undefined ? String(Math.round(t.elevation_m)) : "";
+  return `u${t.lat.toFixed(5)}~${t.lon.toFixed(5)}~${elev}~${mask ? mask.toString(16) : ""}~${POLICY_CODE[k.custom.policy]}`;
+}
+
+function parseUserToken(token: string): PlanKey["custom"] | null {
+  const m = /^u(-?\d+(?:\.\d+)?)~(-?\d+(?:\.\d+)?)~(\d*)~([0-9a-f]*)~([ocf])$/.exec(token);
+  if (!m) return null;
+  const mask = m[4] ? parseInt(m[4], 16) : 0;
+  const orientations = COMPASS_16.filter((_, i) => mask & (1 << i));
+  return {
+    takeoff: {
+      lat: Number(m[1]),
+      lon: Number(m[2]),
+      ...(m[3] ? { elevation_m: Number(m[3]) } : {}),
+      ...(orientations.length ? { orientations: [...orientations] } : {}),
+    },
+    policy: CODE_POLICY[m[5]!]!,
+  };
 }
 
 export function encodePlanId(k: PlanKey): string {
   const t = k.target.toISOString().replace(/[-:]/g, "").slice(0, 13);
   return [
     "demo",
-    k.siteId.replace(/^fixture:/, ""),
+    siteToken(k),
     VARIANT_CODE[k.variant],
     t,
     k.horizon,
@@ -720,8 +764,11 @@ export function decodePlanId(id: string): PlanKey | null {
   const variant = CODE_VARIANT[v];
   const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$/.exec(t);
   if (!variant || !m || !isHorizon(horizon) || !LEVELS.includes(diff as Difficulty) || !["required", "allowed", "avoid"].includes(th)) return null;
+  const custom = site.startsWith("u") ? parseUserToken(site) : undefined;
+  if (custom === null) return null;
   return {
-    siteId: `fixture:${site}`,
+    siteId: custom ? `user:${custom.takeoff.lat.toFixed(5)},${custom.takeoff.lon.toFixed(5)}` : `fixture:${site}`,
+    custom,
     variant,
     target: new Date(Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!)),
     horizon,
@@ -736,6 +783,24 @@ export function decodePlanId(id: string): PlanKey | null {
   };
 }
 
+// ───────────────────────────── atterros évalués ─────────────────────────────
+
+function landingCtx(ctx: BuildCtx, arrivalAfterMin?: number): LandingContext {
+  return { takeoff: ctx.site, level: ctx.filters.difficulty, glide: ctx.filters.wing_glide_ratio, time: ctx.target, arrivalAfterMin };
+}
+
+/** landing_analysis : l'atterro principal en premier, puis les autres candidats évalués (triés). */
+function landingAnalysisFor(ctx: BuildCtx, landing: Site, alternates: Site[], est: number): LandingCandidate[] {
+  const lc = landingCtx(ctx, est);
+  if (ctx.custom) {
+    const main = ctx.custom.candidates.find((c) => c.site.id === landing.id) ?? evaluateLanding(landing, lc).candidate;
+    return [main, ...ctx.custom.candidates.filter((c) => c.site.id !== landing.id)];
+  }
+  const main = evaluateLanding(landing, lc).candidate;
+  const others = sortCandidates(alternates.map((a) => evaluateLanding(a, lc).candidate), ctx.filters.difficulty);
+  return [main, ...others];
+}
+
 // ───────────────────────────── assemblage d'un plan ─────────────────────────────
 
 function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Difficulty, rank: number): FlightPlan {
@@ -748,7 +813,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   const pts = route.builder.pts;
   const landingWind = c.landingWx.wind_10m;
   const finesseAir = filters.wing_glide_ratio * RULES.glideK[level];
-  const alternates = nearbyLandings(pts, landing);
+  const alternates = ctx.custom ? ctx.custom.candidates.slice(1, 4).map((c) => c.site) : nearbyLandings(pts, landing);
   // Finesse requise = PIRE cas (CDC, règle backend) : (a) déco → atterro principal à l'altitude du déco,
   // (b) chaque point de route à son altitude prévue → atterro identifié le plus proche.
   const legRatio = (from: P3, to: Site) => {
@@ -787,6 +852,22 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   // règle expert : posé avant = min(fin du créneau + durée, coucher du soleil)
   const landBefore = new Date(Math.min(end.getTime() + est * MIN, c.sunset ? c.sunset.getTime() : Infinity));
 
+  // balises rattachées (déco à l'heure cible, atterros à l'heure d'arrivée)
+  const horizonMin = horizonToMinutes(horizon);
+  const beacons = nearbyBeacons(site, now);
+  const minutesToTarget = (target.getTime() - now.getTime()) / MIN;
+  const readings = stationReadings(
+    [
+      { role: "takeoff", site, forecast: c.wx, minutesAhead: minutesToTarget },
+      { role: "landing", site: landing, forecast: c.landingWx, minutesAhead: minutesToTarget + est },
+      ...alternates.map((a) => ({ role: "alternate_landing" as const, site: a, forecast: c.landingWx, minutesAhead: minutesToTarget + est })),
+    ],
+    [...beacons, ...mockBeacons(now).filter((b) => !beacons.some((x) => x.id === b.id) && [landing, ...alternates].some((l) => haversineKm(b, l) <= 5))],
+    now,
+  );
+  const repTakeoff = readings.filter((r) => r.site_role === "takeoff" && r.representative);
+  const repLanding = readings.filter((r) => r.site_role === "landing" && r.representative);
+
   // risques
   const checks = checkLevel(level, site, c, new Date(target.getTime() + est * MIN));
   const risks: Risk[] = [];
@@ -805,7 +886,51 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   if (c.wx.thermal_strength_ms > 2 && cand.thermal_usage !== "none") risks.push({ code: "STRONG_THERMALS", level: "info", title: "Thermiques soutenus", detail: `Vario ≈ ${formatNumber(c.wx.thermal_strength_ms, 1, 1)} m/s (pics ≈ ${formatNumber(c.wx.thermal_strength_ms * 2, 0)} m/s) : air turbulent près du relief.` });
   if (c.thermals.overdevelopment_risk !== "low") risks.push({ code: "OVERDEVELOPMENT", level: c.thermals.overdevelopment_risk === "high" ? "caution" : "info", title: `Surdéveloppement ${c.thermals.overdevelopment_risk === "high" ? "probable" : "possible"} dans la journée`, detail: "Surveiller les cumulus qui gonflent ; être posé avant les premières averses." });
   if (site.restrictions) risks.push({ code: site.status === "restricted" ? "SITE_RESTRICTED" : "SITE_RESTRICTED", level: site.status === "restricted" ? "caution" : "info", title: "Consignes du site", detail: site.restrictions });
-  if (horizonToMinutes(horizon) <= 120) risks.push({ code: "STALE_BEACONS", level: "info", title: "Vérifier les balises au déco", detail: "Moyenne et rafales sur 10 min, comparer déco et atterro avant de décoller." });
+  if (horizonMin <= 120) risks.push({ code: "STALE_BEACONS", level: "info", title: "Vérifier les balises au déco", detail: "Moyenne et rafales sur 10 min, comparer déco et atterro avant de décoller." });
+  if (horizonMin <= 120 && repLanding.length === 0) {
+    const legalHour = Number(new Intl.DateTimeFormat("fr-FR", { hour: "numeric", hour12: false, timeZone: "Europe/Paris" }).format(new Date(target.getTime() + est * MIN)));
+    risks.push({
+      code: "NO_LANDING_BEACON",
+      level: legalHour >= 12 && legalHour < 18 ? "caution" : "info",
+      title: "Pas de balise représentative à l'atterro",
+      detail: "Vent d'atterro estimé par le modèle (brise comprise) : regarde la manche à air et les drapeaux en vol, ou demande le vent par radio à un pilote posé.",
+    });
+  }
+  for (const r of [...repTakeoff, ...repLanding]) {
+    const t = r.beacon.trend;
+    if (!t || horizonMin > 120) continue;
+    const inc = (t.speed_change_kmh * 60) / Math.max(1, t.window_min);
+    if (inc >= 6) {
+      const where = r.site_role === "takeoff" ? "au déco" : "à l'atterro";
+      risks.push({
+        code: "WIND_INCREASING",
+        level: inc >= 10 ? "danger" : "caution",
+        title: `Vent qui forcit ${where} : ${formatSpeedTrend(t)}`,
+        detail: `${r.beacon.name} : la moyenne sur 10 min augmente ; ${r.site_role === "takeoff" ? "décoller tôt ou attendre l'accalmie" : "la brise forcit, arriver haut et prévoir une approche face au vent"}.`,
+      });
+    }
+  }
+  if (site.source === "user") {
+    risks.push({
+      code: "FREE_TAKEOFF",
+      level: level === "beginner" ? "danger" : level === "intermediate" ? "caution" : "info",
+      title: "Décollage libre (hors site officiel)",
+      detail: `Contrôles obligatoires : ${FREE_TAKEOFF_CHECKS.join(" ")}`,
+    });
+  }
+  const landingKind = landing.landing_kind ?? (landing.official ? "official" : "community");
+  if (landingKind !== "official") {
+    risks.push({
+      code: landingKind === "field" ? "DETECTED_FIELD" : "UNOFFICIAL_LANDING",
+      level: landingKind === "field" ? "danger" : level === "intermediate" ? "caution" : "info",
+      title: landingKind === "field" ? `Atterro principal = champ détecté : ${landing.name}` : `Atterro non officiel : ${landing.name}`,
+      detail: UNOFFICIAL_WARNING[landingKind],
+    });
+  }
+  const fieldAlt = alternates.filter((a) => a.landing_kind === "field");
+  if (fieldAlt.length) {
+    risks.push({ code: "DETECTED_FIELD", level: "caution", title: `Secours sur champ détecté : ${fieldAlt.map((a) => a.name).join(", ")}`, detail: UNOFFICIAL_WARNING.field });
+  }
   const order = { danger: 0, caution: 1, info: 2 } as const;
   risks.sort((a, b) => order[a.level] - order[b.level]);
 
@@ -820,9 +945,10 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     timeline.push(weatherAt(site.lat, site.lon, site.elevation_m, t, { facingDeg: facingOf(site.orientations), key: site.id }));
   }
   const takeoffWx = { ...c.wx };
-  const beacons = nearbyBeacons(site, now);
-  if (horizonToMinutes(horizon) <= 120 && beacons.length) {
-    takeoffWx.nowcast_correction = { beacon_ids: beacons.slice(0, 2).map((b) => b.id), wind_speed_bias_kmh: 1.5, wind_direction_bias_deg: -6 };
+  const landingWxOut = { ...c.landingWx };
+  if (horizonMin <= 120) {
+    takeoffWx.nowcast_correction = nowcastFrom(repTakeoff, c.wx);
+    landingWxOut.nowcast_correction = nowcastFrom(repLanding, c.landingWx);
   }
 
   const durationTxt = formatDuration(est);
@@ -845,7 +971,28 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
           ? `Vol local en thermique (≈ ${formatNumber(c.wx.thermal_strength_ms, 1, 1)} m/s) autour du déco, ${durationTxt}, en restant dans le cône de finesse de ${landing.name}.`
           : `Plouf de ${durationTxt} en air ${c.wx.thermal_strength_ms > 1 ? "thermique" : "calme"} jusqu'à ${landing.name}.`;
 
+  const beaconLine = (role: "takeoff" | "landing") => {
+    const r = (role === "takeoff" ? repTakeoff : repLanding)[0];
+    if (!r) return null;
+    const b = r.beacon;
+    const speed = b.wind_speed_kmh;
+    if (speed === null) return null;
+    const dir = b.wind_direction_deg !== null ? `${degToCardinalFr(b.wind_direction_deg)} ` : "";
+    const trend = b.trend ? `, tendance ${formatSpeedTrend(b.trend)}` : "";
+    return `${role === "takeoff" ? "déco" : "atterro"} ${dir}${Math.round(speed)} km/h${b.wind_gust_kmh !== null ? ` (raf. ${Math.round(b.wind_gust_kmh)})` : ""}${trend}`;
+  };
+  const beaconBullet = (() => {
+    if (horizonMin > 60) return null;
+    const parts = [beaconLine("takeoff"), beaconLine("landing")].filter(Boolean);
+    const ages = [...repTakeoff, ...repLanding].map((r) => Math.round((now.getTime() - new Date(r.beacon.observed_at).getTime()) / MIN));
+    const head = parts.length ? `Balises (il y a ${Math.min(...ages)} min) : ${parts.join(" ; ")}.` : "Balises : aucune balise représentative au déco ni à l'atterro.";
+    return repLanding.length ? head : `${head} Pas de balise à l'atterro : regarde la manche à air et les drapeaux en vol, ou demande le vent par radio à un pilote posé.`;
+  })();
+  const freeTakeoffText = site.source === "user" ? ` Décollage libre : ${FREE_TAKEOFF_CHECKS.join(" ")}` : "";
+  const landingWarnText = landingKind !== "official" ? ` ${UNOFFICIAL_WARNING[landingKind]}` : "";
+
   const briefing = [
+    ...(beaconBullet ? [beaconBullet] : []),
     `⚠ DÉMONSTRATION — ${flyTxt} pour ${difficultyLabel(planLevel).toLowerCase()} (difficulté estimée), confiance ${Math.round(confidence * 100)} %. Données synthétiques : ne pas utiliser pour voler.`,
     `Créneau : décoller entre ${fmtT(start)} et ${fmtT(end)}, être posé avant ${fmtT(landBefore)}${c.sunset ? ` (coucher du soleil ${fmtT(c.sunset)})` : ""}.`,
     `Situation : ${sc.label.toLowerCase()}.`,
@@ -853,9 +1000,9 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     conv.convection_start
       ? `Aérologie : thermiques de ${fmtT(new Date(conv.convection_start))} à ${conv.convection_end ? fmtT(new Date(conv.convection_end)) : "?"}, pic vers ${conv.peak_time ? fmtT(new Date(conv.peak_time)) : "?"} (≈ ${formatNumber(conv.peak_strength_ms, 1, 1)} m/s) ; plafond utile ${fmtAlt(c.ceiling)}${c.wx.cloud_base_m ? `, base des cumulus ${fmtAlt(c.wx.cloud_base_m)}` : ", thermiques bleus"} ; surdéveloppement ${c.overdev === "low" ? "peu probable" : c.overdev === "moderate" ? "possible" : "probable"}.`
       : "Aérologie : pas de convection exploitable, air calme.",
-    `Décollage : orientations ${site.orientations.map(compassFr).join(", ")} ; ${technique}.${site.restrictions ? ` Consignes : ${site.restrictions}` : ""}`,
+    `Décollage : orientations ${site.orientations.map(compassFr).join(", ")} ; ${technique}.${site.restrictions && site.source !== "user" ? ` Consignes : ${site.restrictions}` : ""}${freeTakeoffText}`,
     `Itinéraire : ${route.waypoints.filter((w) => w.type !== "takeoff").map((w) => w.name).join(" → ")} → ${landing.name} (${formatNumber(route.distanceKm, 1)} km).${route.decision.length ? " Points de décision : " + route.decision.join(" ") : ""}`,
-    `Atterrissage : ${landing.name} (${fmtAlt(landing.elevation_m)}), approche face au ${degToCardinalFr(landingWind.direction_deg)}, PTU côté sous le vent ; finesse requise ${formatNumber(glide.required_ratio, 1)} pour ${formatNumber(glide.available_ratio, 1)} de finesse de calcul.`,
+    `Atterrissage : ${landing.name} (${fmtAlt(landing.elevation_m)}), approche face au ${degToCardinalFr(landingWind.direction_deg)}, PTU côté sous le vent ; finesse requise ${formatNumber(glide.required_ratio, 1)} pour ${formatNumber(glide.available_ratio, 1)} de finesse de calcul.${landingWarnText}`,
     airspaces.length
       ? `Espaces aériens : ${airspaces.map((a) => `${a.name} (${a.airspace_class}, plancher ${fmtAlt(a.floor_m)}, à ${formatNumber(a.min_distance_km, 1)} km)`).join(" ; ")}. Vérifier NOTAM / SUP AIP.`
       : "Espaces aériens : rien à moins de 8 km de la route (vérifier NOTAM / SUP AIP).",
@@ -876,7 +1023,15 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     "Contrôle final au déco : attaches, casque, suspentes, voile, vent et espace devant libres",
   ];
 
-  const id = encodePlanId({ siteId: site.id, variant: cand.variant, target, horizon, filters, rank });
+  const id = encodePlanId({
+    siteId: site.id,
+    variant: cand.variant,
+    target,
+    horizon,
+    filters,
+    rank,
+    custom: ctx.custom ? { takeoff: ctx.custom.takeoff, policy: ctx.custom.policy } : undefined,
+  });
   for (const a of alternates) {
     route.waypoints.push({ name: a.name, lat: a.lat, lon: a.lon, altitude_m: a.elevation_m, type: "alternate_landing", radius_m: 200, eta_min: null, note: "Atterrissage de secours identifié" });
   }
@@ -910,16 +1065,18 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     takeoff: site,
     landing,
     alternate_landings: alternates,
+    landing_analysis: landingAnalysisFor(ctx, landing, alternates, est),
     waypoints: route.waypoints,
     route: { type: "LineString", coordinates: route.builder.coordinates() },
     distance_km: Math.round(route.distanceKm * 10) / 10,
     est_duration_min: est,
     max_altitude_m: Math.round(Math.max(...pts.map((p) => p.alt))),
     glide,
-    weather: { takeoff: takeoffWx, landing: c.landingWx, timeline },
+    weather: { takeoff: takeoffWx, landing: landingWxOut, timeline },
     thermals: c.thermals,
     sounding: soundingAt(site.lat, site.lon, target),
     beacons_nearby: beacons,
+    station_readings: readings,
     airspaces,
     risks,
     briefing,
@@ -958,6 +1115,30 @@ function normalizeFilters(f: PlanFilters): BuildCtx["filters"] {
 
 const formatReason = (f: Finding) => (f.code ? `[${f.code}] ${f.text}` : f.text);
 
+/** Décollage libre : refus au niveau élève, recherche des atterros, atterro principal compatible avec le niveau. */
+function customLandings(
+  site: Site,
+  takeoff: CustomTakeoff,
+  policy: LandingPolicy,
+  filters: BuildCtx["filters"],
+  target: Date,
+): { reason: string } | { custom: NonNullable<BuildCtx["custom"]>; warnings: string[] } {
+  if (filters.difficulty === "beginner") return { reason: "[FREE_TAKEOFF] Décollage libre jamais proposé au niveau élève : choisis un site officiel encadré." };
+  const search = searchLandings({ takeoff: site, level: filters.difficulty, glide: filters.wing_glide_ratio, time: target }, policy);
+  const main = search.candidates.find((c) => canBeMain(c.kind, filters.difficulty));
+  if (!main) {
+    return {
+      reason: search.candidates.length
+        ? "[GLIDE_MARGIN] Aucun atterro principal utilisable à ton niveau dans le cône de finesse (seulement des secours non officiels)"
+        : "[GLIDE_MARGIN] Aucun atterrissage atteignable avec la marge de sécurité depuis ce point",
+    };
+  }
+  return {
+    custom: { takeoff, policy, candidates: [main, ...search.candidates.filter((c) => c !== main)] },
+    warnings: search.warnings,
+  };
+}
+
 /** Simulation de POST /api/plans. */
 export function mockPlans(req: PlanRequest, now: Date = new Date()): PlanResponse {
   const zoneError = validateZone(req.zone);
@@ -970,24 +1151,45 @@ export function mockPlans(req: PlanRequest, now: Date = new Date()): PlanRespons
   const types = new Set<FlightType>(req.filters.flight_types?.length ? req.filters.flight_types : ["local", "ridge_soaring", "cross_country"]);
   const maxResults = clamp(req.filters.max_results ?? 5, 1, 20);
 
-  const takeoffs = MOCK_SITES.filter((s) => (s.kind === "takeoff" || s.kind === "both") && zoneContains(req.zone, s));
+  const customMode = req.mode === "custom_takeoff";
+  const ct = req.custom_takeoff;
+  if (customMode && (!ct || !Number.isFinite(ct.lat) || !Number.isFinite(ct.lon)))
+    throw new ApiError(422, "Point de décollage requis en mode décollage libre.", [{ loc: ["body", "custom_takeoff"], msg: "Value error, custom_takeoff requis si mode = custom_takeoff" }]);
+  const policy: LandingPolicy = customMode ? (req.filters.landing_policy ?? "official_only") : "official_only";
+  const takeoffs = customMode
+    ? [userTakeoffSite(ct!)]
+    : MOCK_SITES.filter((s) => (s.kind === "takeoff" || s.kind === "both") && zoneContains(req.zone, s));
   const warnings: string[] = [
     "Démo hors-ligne : données synthétiques (météo, sites, balises, espaces aériens approximatifs). Ne pas utiliser pour voler.",
   ];
+  if (customMode) warnings.push("Décollage libre : contrôles obligatoires sur place (autorisation, reconnaissance à pied, manche à air, atterro repéré).");
   if (horizonToMinutes(req.horizon) >= 1440) warnings.push("Horizon long : tendance seulement, créneaux arrondis à l'heure. À reconfirmer la veille et le matin.");
-  if (takeoffs.length === 0)
+  if (takeoffs.length === 0 && !customMode)
     warnings.push("Aucun décollage de démonstration dans cette zone. Essayez Annecy, Chamonix, Saint-Hilaire, Saint-André, la Dune du Pilat, le Puy de Dôme ou Millau.");
 
   const candidates: { plan: FlightPlan; siteId: string }[] = [];
   const rejected: PlanResponse["rejected"] = [];
 
   for (const site of takeoffs) {
-    const landing = site.associated_landing_ids.map((id) => MOCK_SITES_BY_ID[id]).find((s): s is Site => !!s);
+    let landing: Site | undefined;
+    let custom: BuildCtx["custom"];
+    if (site.source === "user") {
+      const found = customLandings(site, ct!, policy, filters, target);
+      if ("reason" in found) {
+        rejected.push({ site, reasons: [found.reason] });
+        continue;
+      }
+      custom = found.custom;
+      landing = custom.candidates[0]!.site;
+      for (const w of found.warnings) if (!warnings.includes(w)) warnings.push(w);
+    } else {
+      landing = site.associated_landing_ids.map((id) => MOCK_SITES_BY_ID[id]).find((s): s is Site => !!s);
+    }
     if (!landing) {
       rejected.push({ site, reasons: [site.status === "closed" ? "[SITE_CLOSED] Site fermé" : "Aucun atterrissage officiel associé connu"] });
       continue;
     }
-    const ctx: BuildCtx = { site, landing, target, filters, horizon: req.horizon, now };
+    const ctx: BuildCtx = { site, landing, target, filters, horizon: req.horizon, now, custom };
     const c0 = computeConditions(site, landing, target, 30);
     const base = checkLevel(filters.difficulty, site, c0, new Date(target.getTime() + 30 * MIN));
     const absolute = base.nogo.filter((f) => ["SITE_CLOSED", "RAIN", "THUNDERSTORM", "OVERDEVELOPMENT", "LOW_CLOUD_BASE", "LEE_SIDE", "SUNSET"].includes(f.code));
@@ -1067,10 +1269,18 @@ function withRank(plan: FlightPlan, rank: number): FlightPlan {
 /** Simulation de GET /api/plans/{id} : le plan de démo est recalculé depuis son identifiant. */
 export function mockPlanById(id: string, now: Date = new Date()): FlightPlan {
   const key = decodePlanId(id);
-  const site = key ? MOCK_SITES_BY_ID[key.siteId] : undefined;
-  const landing = site?.associated_landing_ids.map((x) => MOCK_SITES_BY_ID[x]).find((s): s is Site => !!s);
+  const site = key?.custom ? userTakeoffSite(key.custom.takeoff) : key ? MOCK_SITES_BY_ID[key.siteId] : undefined;
+  let landing: Site | undefined;
+  let custom: BuildCtx["custom"];
+  if (key?.custom && site) {
+    const found = customLandings(site, key.custom.takeoff, key.custom.policy, key.filters, key.target);
+    if ("custom" in found) {
+      custom = found.custom;
+      landing = custom.candidates[0]!.site;
+    }
+  } else landing = site?.associated_landing_ids.map((x) => MOCK_SITES_BY_ID[x]).find((s): s is Site => !!s);
   if (!key || !site || !landing) throw new ApiError(404, "Plan de vol introuvable (expiré ou identifiant invalide).");
-  const ctx: BuildCtx = { site, landing, target: key.target, filters: key.filters, horizon: key.horizon, now };
+  const ctx: BuildCtx = { site, landing, target: key.target, filters: key.filters, horizon: key.horizon, now, custom };
   const c0 = computeConditions(site, landing, key.target, 30);
   const { list } = candidatesFor(ctx, c0, key.filters.difficulty);
   const cand =

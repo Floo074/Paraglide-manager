@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type L from "leaflet";
 import { getAirspaces, getSensitiveAreas } from "../../api/client";
-import type { Difficulty, FlightPlan, ForecastGridResponse, GridLayer } from "../../api/types";
+import type { Beacon, Difficulty, FlightPlan, ForecastGridResponse, GridLayer } from "../../api/types";
 import { BASE_LAYERS, DEFAULT_BASE_LAYER, KK7, type BaseLayerId } from "../../config/map";
 import { useAsync } from "../../hooks/useAsync";
 import { usePersistentState } from "../../hooks/usePersistentState";
@@ -12,7 +12,10 @@ import { BeaconMarkers } from "../map/BeaconMarkers";
 import { FitTo, InvalidateOnResize } from "../map/FitTo";
 import { LayersMenu, ZoomButtons } from "../map/MapControls";
 import { MapShell } from "../map/MapShell";
+import { LandingCandidateMarkers } from "../map/LandingLayers";
 import { GlideRangeLayer, RouteLayer, WaypointMarkers } from "../map/PlanLayers";
+import { PioupiouAttribution, StationReadingsLayer } from "../map/StationLayers";
+import { hasPioupiou } from "../../utils/beacons";
 import { GridLegend, WeatherGridLayer } from "../map/WeatherGrid";
 import { WEATHER_LAYERS, WIND_ALTITUDE_OPTIONS, type WeatherLayerChoice } from "../map/weatherLayers";
 import { ALTITUDE_STOPS, interpolateStops } from "../../utils/colors";
@@ -24,8 +27,10 @@ interface Overlays {
   beacons: boolean;
   glide: boolean;
   kk7: boolean;
+  /** Atterros candidats de l'analyse (absent des préférences mémorisées avant cette option). */
+  candidates?: boolean;
 }
-const DEFAULTS: Overlays = { airspaces: true, sensitive: true, beacons: true, glide: true, kk7: false };
+const DEFAULTS: Overlays = { airspaces: true, sensitive: true, beacons: true, glide: true, kk7: false, candidates: true };
 const isBase = (v: unknown): v is BaseLayerId => BASE_LAYERS.some((b) => b.id === v);
 const isOverlays = (v: unknown): v is Overlays => !!v && typeof v === "object" && "glide" in (v as object);
 
@@ -74,6 +79,16 @@ export function PlanMap({ plan, level, now }: { plan: FlightPlan; level: Difficu
     setGridLoading(loading);
   }, []);
 
+  // balises proches + balises rattachées au plan (sans doublon)
+  const beacons = useMemo(() => {
+    const m = new Map<string, Beacon>();
+    for (const b of plan.beacons_nearby) m.set(b.id, b);
+    for (const r of plan.station_readings) if (!m.has(r.beacon.id)) m.set(r.beacon.id, r.beacon);
+    return [...m.values()];
+  }, [plan]);
+  const showCandidates = ov.candidates !== false;
+  const drawnLandings = useMemo(() => new Set([plan.landing.id, ...plan.alternate_landings.map((s) => s.id)]), [plan]);
+
   const alts = plan.route.coordinates.map((c) => c[2]);
   const minAlt = Math.min(...alts);
   const maxAlt = Math.max(...alts);
@@ -101,7 +116,14 @@ export function PlanMap({ plan, level, now }: { plan: FlightPlan; level: Difficu
                   { id: "glide", label: "Rayons de plané vers les atterros", checked: ov.glide, onChange: (v) => setOv({ ...ov, glide: v }) },
                   { id: "airspaces", label: "Espaces aériens", checked: ov.airspaces, onChange: (v) => setOv({ ...ov, airspaces: v }) },
                   { id: "sensitive", label: "Zones sensibles (faune, parcs)", checked: ov.sensitive, onChange: (v) => setOv({ ...ov, sensitive: v }) },
-                  { id: "beacons", label: "Balises proches", checked: ov.beacons, onChange: (v) => setOv({ ...ov, beacons: v }) },
+                  { id: "beacons", label: "Balises (celles du plan entourées)", checked: ov.beacons, onChange: (v) => setOv({ ...ov, beacons: v }) },
+                  {
+                    id: "candidates",
+                    label: "Autres atterros évalués",
+                    checked: showCandidates,
+                    disabled: plan.landing_analysis.length <= 1,
+                    onChange: (v) => setOv({ ...ov, candidates: v }),
+                  },
                   {
                     id: "kk7",
                     label: "Hotspots thermiques KK7",
@@ -143,7 +165,10 @@ export function PlanMap({ plan, level, now }: { plan: FlightPlan; level: Difficu
         {ov.glide ? <GlideRangeLayer plan={plan} /> : null}
         <RouteLayer plan={plan} />
         <WaypointMarkers plan={plan} />
-        {ov.beacons ? <BeaconMarkers beacons={plan.beacons_nearby} level={level} now={now} /> : null}
+        {showCandidates ? <LandingCandidateMarkers candidates={plan.landing_analysis} skipIds={drawnLandings} /> : null}
+        {ov.beacons ? <StationReadingsLayer plan={plan} /> : null}
+        {ov.beacons ? <BeaconMarkers beacons={beacons} level={level} now={now} /> : null}
+        <PioupiouAttribution active={ov.beacons && hasPioupiou(beacons)} />
       </MapShell>
       <div className="wx-controls">
         <label className="field-row">

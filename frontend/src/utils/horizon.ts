@@ -7,6 +7,7 @@ export interface HorizonOption {
 }
 
 export const HORIZONS: HorizonOption[] = [
+  { value: "15m", label: "15 min", minutes: 15 },
   { value: "30m", label: "30 min", minutes: 30 },
   { value: "1h", label: "1 h", minutes: 60 },
   { value: "2h", label: "2 h", minutes: 120 },
@@ -27,10 +28,19 @@ export function horizonToMinutes(h: Horizon): number {
 }
 
 /**
- * Heure cible = heure de référence + horizon, arrondie au pas de prévision (1 h par défaut,
- * arrondi au plus proche, comme le backend). stepMinutes = 0 désactive l'arrondi.
+ * Pas de prévision utilisé pour arrondir l'heure cible : 15 min pour l'horizon « 15 min »
+ * (AROME HD au quart d'heure ; sinon l'arrondi à l'heure pourrait tomber AVANT maintenant),
+ * 1 h au-delà.
  */
-export function targetTimeFromHorizon(reference: Date, horizon: Horizon, stepMinutes = 60): Date {
+export function forecastStepMinutes(horizon: Horizon): number {
+  return horizon === "15m" ? 15 : 60;
+}
+
+/**
+ * Heure cible = heure de référence + horizon, arrondie au pas de prévision (au plus proche, comme
+ * le backend : 15 min pour « 15 min », 1 h sinon). stepMinutes = 0 désactive l'arrondi.
+ */
+export function targetTimeFromHorizon(reference: Date, horizon: Horizon, stepMinutes = forecastStepMinutes(horizon)): Date {
   const raw = reference.getTime() + horizonToMinutes(horizon) * 60_000;
   if (stepMinutes <= 0) return new Date(raw);
   const step = stepMinutes * 60_000;
@@ -40,4 +50,16 @@ export function targetTimeFromHorizon(reference: Date, horizon: Horizon, stepMin
 /** Pour un nowcasting (balises), le backend corrige les prévisions jusqu'à 2 h. */
 export function isNowcastHorizon(h: Horizon): boolean {
   return horizonToMinutes(h) <= 120;
+}
+
+/** Horizon « au déco » (≤ 1 h) : les balises en direct passent en tête de la fiche. */
+export function isOnSiteHorizon(h: Horizon): boolean {
+  return horizonToMinutes(h) <= 60;
+}
+
+/** Horizon de la liste le plus proche d'un délai en minutes (au moins « 15 min »). */
+export function nearestHorizon(minutes: number): Horizon {
+  let best = HORIZONS[0]!;
+  for (const h of HORIZONS) if (Math.abs(h.minutes - minutes) < Math.abs(best.minutes - minutes)) best = h;
+  return best.value;
 }

@@ -21,7 +21,7 @@ from app.meteo.profile import VerticalProfile
 from app.meteo.snapshot import iso
 from app.meteo.thermals import HourAnalysis
 from app.meteo.types import HourData, LevelData
-from app.models import HORIZON_MINUTES, Beacon, CircleZone, LatLon, PlanFilters, PlanResponse, Site
+from app.models import HORIZON_MINUTES, Beacon, BeaconTrend, CircleZone, LatLon, PlanFilters, PlanResponse, Site
 from app.providers.fixture_data import fixture_relief
 from app.providers.synthetic_terrain import terrain_elevation
 
@@ -146,6 +146,8 @@ def _analysis(
 
 
 def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
+    if spec.get("mode", "classic") != "classic":
+        raise NotImplementedError(f"mode {spec['mode']!r} (décollage libre) pas encore géré par le chargeur de scénarios")
     ref = _parse_time(spec["reference_time"])
     horizon = spec["horizon"]
     target = ref + timedelta(minutes=HORIZON_MINUTES[horizon])
@@ -212,18 +214,24 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
     }  # fmt: skip
     beacons: list[Beacon] = []
     ages: dict[str, float] = {}
+    beacon_dem: dict[str, float] = {}
     for i, b in enumerate(spec.get("beacons") or []):
         age = float(b.get("age_min", 5))
         bid = f"scenario:beacon{i}"
+        trend = b.get("trend")
         beacons.append(
             Beacon(
                 id=bid, name=b["name"], lat=float(b["lat"]), lon=float(b["lon"]), elevation_m=b.get("elevation_m"),
                 observed_at=iso(ref - timedelta(minutes=age)), wind_speed_kmh=b.get("wind_speed_kmh"),
                 wind_gust_kmh=b.get("wind_gust_kmh"), wind_direction_deg=b.get("wind_direction_deg"),
                 temperature_c=b.get("temperature_c"), source="fixture", stale=age > 30,
+                trend=BeaconTrend(**trend) if trend else None,
             )  # fmt: skip
         )
         ages[bid] = age
+        # altitude inconnue (null) : MNT imposé par `dem_elevation_m`, sinon MNT indisponible à ce point (CDC §12.1)
+        if b.get("elevation_m") is None and b.get("dem_elevation_m") is not None:
+            beacon_dem[bid] = float(b["dem_elevation_m"])
     airspaces = [
         Airspace(
             name=a["name"], airspace_class=str(a["airspace_class"]), type=str(a.get("type", a["airspace_class"])),
@@ -260,6 +268,7 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
         terrain=terrain_elevation,
         mock=False,
         exact_inputs=True,
+        beacon_dem_m=beacon_dem,
     )
     return ctx, filters
 

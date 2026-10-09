@@ -12,7 +12,13 @@ appel du 08/10/2026) :
 - `boundary_layer_height` et `lifted_index` : null pour ces 3 modèles (calculés par nous) ;
 - heures en GMT au format « 2026-10-08T00:00 » ; vent en km/h avec `wind_speed_unit=kmh` ;
 - `elevation=<alt>` : Open-Meteo ramène T2m à l'altitude demandée (indispensable en montagne) ;
-- quota journalier : 429 « Daily API request limit exceeded » (repli mock en mode auto).
+- quota journalier : 429 « Daily API request limit exceeded » (repli mock en mode auto) ; le
+  corps JSON `{"error": true, "reason": …}` est repris tel quel dans le message d'erreur ;
+- `hourly_units` : « km/h » pour les vents (contrôlé : conversion si l'unité diffère), « undefined »
+  pour une variable non fournie par le modèle.
+Coût : Open-Meteo compte une requête de plus de 10 variables comme plusieurs appels (≈ variables / 10
+par point) : la requête complète (61 variables) pèse au moins 6 appels par point, davantage si les
+modèles sont comptés séparément — d'où le 429 « Daily API request limit exceeded » du 08/10/2026.
 """
 
 from __future__ import annotations
@@ -95,32 +101,75 @@ def build_params(
     return params
 
 
+# conversion vers km/h selon `hourly_units` (on demande wind_speed_unit=kmh, mais on vérifie)
+_WIND_FACTORS = {"km/h": 1.0, "kmh": 1.0, "m/s": 3.6, "ms": 3.6, "kn": 1.852, "mp/h": 1.609344, "mph": 1.609344}
+
+
+def _key(h: dict, var: str, model: str, single: bool) -> str:
+    """Nom de la variable dans la réponse : suffixée par le modèle s'il y en a plusieurs."""
+    suffixed = f"{var}_{model}"
+    if single and suffixed not in h:
+        return var
+    return suffixed
+
+
 def _get(h: dict, var: str, model: str, single: bool, i: int):
-    key = var if single else f"{var}_{model}"
-    arr = h.get(key)
+    arr = h.get(_key(h, var, model, single))
     if arr is None or i >= len(arr):
         return None
     return arr[i]
 
 
+def _wind_factor(units: dict, key: str) -> float:
+    u = units.get(key)
+    if u is None:
+        return 1.0
+    f = _WIND_FACTORS.get(str(u).strip().lower())
+    if f is None:
+        if str(u) == "undefined":
+            return 1.0
+        raise ProviderError(f"Open-Meteo : unité de vent inattendue pour {key} : {u!r}")
+    return f
+
+
+def _times(loc: dict) -> list[datetime]:
+    """Horodatages UTC (on demande timezone=GMT ; `utc_offset_seconds` est appliqué par sécurité)."""
+    h = loc.get("hourly") or {}
+    offset = timedelta(seconds=int(loc.get("utc_offset_seconds") or 0))
+    out = []
+    for ts in h.get("time") or []:
+        t = datetime.fromisoformat(ts)
+        if t.tzinfo is None:
+            t = (t - offset).replace(tzinfo=UTC)
+        out.append(t.astimezone(UTC))
+    return out
+
+
 def parse_location(loc: dict, models: list[str]) -> list[ModelSeries]:
     """Une localisation de la réponse → une série par modèle (heures sans donnée ignorées)."""
     h = loc.get("hourly") or {}
-    times = h.get("time") or []
+    units = loc.get("hourly_units") or {}
+    times = _times(loc)
     if not times:
         raise ProviderError("réponse Open-Meteo sans 'hourly.time'")
     single = len(models) == 1
     out: list[ModelSeries] = []
     for m in models:
+        wind_f = {
+            v: _wind_factor(units, _key(h, v, m, single))
+            for v in ("wind_speed_10m", "wind_gusts_10m", *(f"wind_speed_{p}hPa" for p in REQUEST_LEVELS))
+        }
         hours: list[HourData] = []
-        for i, ts in enumerate(times):
+        for i, t in enumerate(times):
             t2 = _get(h, "temperature_2m", m, single, i)
             if t2 is None:
-                continue  # hors échéance du modèle
-            t = datetime.fromisoformat(ts).replace(tzinfo=UTC)
+                continue  # hors échéance du modèle (valeurs null en bout d'horizon)
             hd = HourData(time=t)
             for var in SURFACE_VARS:
-                setattr(hd, var, _get(h, var, m, single, i))
+                val = _get(h, var, m, single, i)
+                if val is not None and var in wind_f:
+                    val = val * wind_f[var]
+                setattr(hd, var, val)
             if hd.dew_point_2m is None:
                 rh = _get(h, "relative_humidity_2m", m, single, i)
                 if rh is not None:
@@ -140,7 +189,8 @@ def parse_location(loc: dict, models: list[str]) -> list[ModelSeries]:
                 ws = _get(h, f"wind_speed_{p}hPa", m, single, i)
                 wd = _get(h, f"wind_direction_{p}hPa", m, single, i)
                 if tp is None or z is None or ws is None or wd is None:
-                    continue
+                    continue  # niveau non fourni par ce modèle (AROME HD : aucun ; ECMWF : ni 950, 900, 800)
+                ws = ws * wind_f[f"wind_speed_{p}hPa"]
                 rh = _get(h, f"relative_humidity_{p}hPa", m, single, i)
                 td = dew_point_from_rh(tp, rh) if rh is not None else tp - 10.0
                 levels.append(LevelData(float(p), float(z), float(tp), float(td), float(ws), float(wd)))
@@ -162,9 +212,11 @@ def parse_location(loc: dict, models: list[str]) -> list[ModelSeries]:
 def parse_forecast_response(
     data, points: list[tuple[float, float, float | None]], models: list[str], fetched_at: datetime, url: str
 ) -> list[PointForecast]:
-    locs = data if isinstance(data, list) else [data]
     if isinstance(data, dict) and data.get("error"):
         raise ProviderError(f"Open-Meteo : {data.get('reason')}")
+    locs = data if isinstance(data, list) else [data]
+    if not all(isinstance(x, dict) for x in locs):
+        raise ProviderError("Open-Meteo : réponse inattendue (ni objet ni liste d'objets)")
     if len(locs) != len(points):
         raise ProviderError(f"Open-Meteo : {len(locs)} localisations reçues pour {len(points)} demandées")
     out = []
@@ -219,6 +271,9 @@ class OpenMeteoForecast:
 
 
 def parse_elevation_response(data, n: int) -> list[float]:
+    """`{"elevation": [m, …]}` (MNT Copernicus 90 m), même ordre que les coordonnées demandées."""
+    if isinstance(data, dict) and data.get("error"):
+        raise ProviderError(f"Open-Meteo Elevation : {data.get('reason')}")
     if not isinstance(data, dict) or "elevation" not in data:
         raise ProviderError("réponse Elevation sans champ 'elevation'")
     vals = data["elevation"]
@@ -246,6 +301,15 @@ class OpenMeteoElevation:
             data = await get_json(self.client, self.url, params)
             out += parse_elevation_response(data, len(chunk))
         return out
+
+
+def series_summary(pf: PointForecast) -> str:
+    """Résumé lisible : heures et niveaux de pression disponibles par modèle (diagnostic, check_sources)."""
+    parts = []
+    for ms in pf.models:
+        n_lv = max((len(h.levels) for h in ms.hours), default=0)
+        parts.append(f"{ms.model} {len(ms.hours)} h/{n_lv} niv.")
+    return ", ".join(parts)
 
 
 def day_range(target: datetime) -> tuple[datetime, datetime]:

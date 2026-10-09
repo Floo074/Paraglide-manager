@@ -41,14 +41,16 @@ export function ChipMulti<T extends string>({
   values,
   onChange,
   label,
+  className = "",
 }: {
   options: ChipOption<T>[];
   values: T[];
   onChange: (v: T[]) => void;
   label: string;
+  className?: string;
 }) {
   return (
-    <div className="chips" role="group" aria-label={label}>
+    <div className={`chips ${className}`} role="group" aria-label={label}>
       {options.map((o) => {
         const on = values.includes(o.value);
         return (

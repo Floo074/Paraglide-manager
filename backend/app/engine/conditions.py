@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.engine import rules
 from app.engine.context import DataContext, PointTimeline
-from app.geo import angle_diff, haversine_km, sector_to_deg, signed_angle_diff, wind_components, wind_from_components
+from app.engine.stations import StationNowcast, breeze_factor, fuse, station_nowcast
+from app.geo import angle_diff, sector_to_deg, wind_components, wind_from_components
 from app.meteo.solar import solar_local_hour, sunrise_sunset
 from app.meteo.thermals import HourAnalysis
-from app.models import Beacon, Site
+from app.models import Site
 
 PARIS = ZoneInfo("Europe/Paris")
 
@@ -72,21 +73,9 @@ def lee_angle(direction: float, orientations: list[str]) -> float:
 
 
 @dataclass(slots=True)
-class Nowcast:
-    beacon_ids: list[str]
-    speed_bias_kmh: float
-    dir_bias_deg: float
-    weight: float
-    max_gust_kmh: float | None
-    mismatch: bool
-    coherent: bool
-    details: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
 class TakeoffWind:
     time: datetime
-    speed_kmh: float
+    speed_kmh: float  # vent RETENU (fusion balises + extrapolation de tendance, jamais à la baisse)
     direction_deg: float
     gust_kmh: float
     model_speed_kmh: float
@@ -95,8 +84,10 @@ class TakeoffWind:
     crest_speed_kmh: float
     crest_direction_deg: float
     angle: WindAngle
-    nowcast: Nowcast | None
+    nowcast: StationNowcast | None
     hour: HourAnalysis
+    fused_speed_kmh: float = 0.0  # fusion modèle + balise, avant extrapolation de la tendance
+    fused_gust_kmh: float = 0.0
 
 
 def model_takeoff_wind(a: HourAnalysis, elevation_m: float) -> tuple[float, float, float]:
@@ -112,101 +103,52 @@ def model_takeoff_wind(a: HourAnalysis, elevation_m: float) -> tuple[float, floa
     return v, d, gust
 
 
-def compute_nowcast(
-    ctx: DataContext, site: Site, timeline: PointTimeline, t: datetime, model_v: float, model_d: float
-) -> Nowcast | None:
-    horizon_min = (ctx.target_time - ctx.reference_time).total_seconds() / 60.0
-    weight_h = rules.HORIZON_BEACON_WEIGHT.get(ctx.horizon, 0.0)
-    if weight_h <= 0 or horizon_min > rules.NOWCAST_MAX_HORIZON_MIN + 1:
-        return None
-    used: list[tuple[Beacon, float, float, float]] = []  # beacon, w, dv, dd
-    gusts: list[float] = []
-    details: list[str] = []
-    a = timeline.at(t)
-    for b in ctx.beacons:
-        if b.stale or b.wind_speed_kmh is None or b.wind_direction_deg is None:
-            continue
-        d_km = haversine_km(site.lat, site.lon, b.lat, b.lon)
-        if d_km > rules.BEACON_MAX_DISTANCE_KM:
-            continue
-        b_elev = b.elevation_m if b.elevation_m is not None else ctx.terrain_at(b.lat, b.lon)
-        w = 1.0
-        if b_elev is None or abs(b_elev - site.elevation_m) > rules.BEACON_MAX_ALT_DIFF_M:
-            w *= 0.5
-        age = ctx.beacon_ages_min.get(b.id, 0.0)
-        w *= max(0.1, 1.0 - age / rules.BEACON_STALE_MIN)
-        # vent modèle à l'altitude de la balise
-        if b_elev is not None and abs(b_elev - site.elevation_m) > 50:
-            mv, md = a.profile.wind(b_elev)
-        else:
-            mv, md = model_v, model_d
-        dv = b.wind_speed_kmh - mv
-        dd = signed_angle_diff(b.wind_direction_deg, md) if b.wind_speed_kmh >= rules.CALM_WIND_KMH else 0.0
-        used.append((b, w, dv, dd))
-        if b.wind_gust_kmh is not None:
-            gusts.append(b.wind_gust_kmh)
-        details.append(
-            f"{b.name} : {b.wind_speed_kmh:.0f} km/h ({b.wind_gust_kmh or 0:.0f} en rafales) du "
-            f"{_dir_label(b.wind_direction_deg)} contre {mv:.0f} km/h du {_dir_label(md)} prévus"
-        )
-    if not used:
-        return None
-    sw = sum(w for _, w, _, _ in used)
-    dv = sum(w * x for _, w, x, _ in used) / sw
-    dd = sum(w * x for _, w, _, x in used) / sw
-    dv = max(-rules.NOWCAST_MAX_SPEED_BIAS_KMH, min(rules.NOWCAST_MAX_SPEED_BIAS_KMH, dv))
-    dd = max(-rules.NOWCAST_MAX_DIR_BIAS_DEG, min(rules.NOWCAST_MAX_DIR_BIAS_DEG, dd))
-    mismatch = abs(dv) > rules.BEACON_CONTRADICTION_KMH or abs(dd) > rules.BEACON_CONTRADICTION_DEG
-    coherent = abs(dv) < rules.BEACON_COHERENT_KMH and abs(dd) < rules.BEACON_COHERENT_DEG
-    return Nowcast(
-        beacon_ids=[b.id for b, *_ in used],
-        speed_bias_kmh=dv,
-        dir_bias_deg=dd,
-        weight=weight_h,
-        max_gust_kmh=max(gusts) if gusts else None,
-        mismatch=mismatch,
-        coherent=coherent,
-        details=details,
-    )
-
-
 def takeoff_wind(ctx: DataContext, site: Site, timeline: PointTimeline, t: datetime) -> TakeoffWind:
+    """Vent retenu au déco à l'instant t (début du créneau) : modèle à l'altitude du déco, corrigé par les balises
+    rattachées au déco (poids selon Δt = t − reference_time, §12.1) et la tendance (§12.2)."""
     a = timeline.at(t)
     mv, md, mg = model_takeoff_wind(a, site.elevation_m)
-    v, d, g = mv, md, mg
-    nc = compute_nowcast(ctx, site, timeline, t, mv, md)
-    if nc is not None:
-        v = max(0.0, mv + nc.weight * nc.speed_bias_kmh)
-        d = (md + nc.weight * nc.dir_bias_deg) % 360.0
-        g = max(v, mg * (v / mv) if mv > 1 else v * rules.GUST_FACTOR_DEFAULT)
-        if nc.max_gust_kmh is not None and ctx.horizon in rules.BEACON_GUST_HORIZONS:
-            g = max(g, nc.max_gust_kmh)
+    nc = station_nowcast(ctx, site, "takeoff", timeline, t)
+    fv, d, fg, v, g = fuse(nc, mv, md, mg, ctx.horizon)
     cv, cd = a.profile.wind(site.elevation_m + rules.CREST_CHECK_ABOVE_TAKEOFF_M)
     angle = wind_angle(v, d, site.orientations)
-    return TakeoffWind(t, v, d, g, mv, md, mg, cv, cd, angle, nc, a)
+    return TakeoffWind(t, v, d, g, mv, md, mg, cv, cd, angle, nc, a, fv, fg)
 
 
 @dataclass(slots=True)
 class LandingWind:
     time: datetime
-    speed_kmh: float
+    speed_kmh: float  # vent RETENU à l'arrivée (brise + balises de l'atterro + tendance)
     direction_deg: float
     gust_kmh: float
     breeze_factor: float
     hour: HourAnalysis
+    model_speed_kmh: float = 0.0  # modèle × brise, sans balise
+    model_direction_deg: float = 0.0
+    model_gust_kmh: float = 0.0
+    fused_speed_kmh: float = 0.0
+    fused_gust_kmh: float = 0.0
+    nowcast: StationNowcast | None = None
 
 
-def landing_wind(timeline: PointTimeline, t: datetime, big_valley: bool) -> LandingWind:
+def landing_wind(
+    timeline: PointTimeline,
+    t: datetime,
+    big_valley: bool,
+    ctx: DataContext | None = None,
+    landing: Site | None = None,
+    role: str = "landing",
+) -> LandingWind:
+    """Vent à l'atterro à l'heure d'arrivée t : modèle × facteur de brise (§4.3), corrigé par les balises de
+    l'atterro (poids selon Δt = arrivée − reference_time) puis par la tendance (§12.1-12.2)."""
     a = timeline.at(t)
-    factor = 1.0
-    lh = legal_time(t).hour + legal_time(t).minute / 60.0
-    h0, h1 = rules.VALLEY_BREEZE_HOURS_LEGAL
-    if big_valley:
-        if h0 <= lh < h1:
-            factor = rules.VALLEY_BREEZE_AFTERNOON_FACTOR
-        elif any(r0 <= lh < r1 for r0, r1 in rules.VALLEY_BREEZE_RAMP_HOURS_LEGAL):
-            factor = rules.VALLEY_BREEZE_RAMP_FACTOR
-    return LandingWind(t, a.wind_speed_kmh * factor, a.wind_direction_deg, a.wind_gust_kmh * factor, factor, a)
+    factor = breeze_factor(t, big_valley)
+    mv, md, mg = a.wind_speed_kmh * factor, a.wind_direction_deg, a.wind_gust_kmh * factor
+    nc = None
+    if ctx is not None and landing is not None:
+        nc = station_nowcast(ctx, landing, role, timeline, t, big_valley)
+    fv, d, fg, v, g = fuse(nc, mv, md, mg, ctx.horizon if ctx is not None else "")
+    return LandingWind(t, v, d, g, factor, a, mv, md, mg, fv, fg, nc)
 
 
 def vector_mean(winds: list[tuple[float, float]]) -> tuple[float, float]:

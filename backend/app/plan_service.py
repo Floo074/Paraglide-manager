@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from app.cache import TTLCache
+from app.engine import rules
 from app.engine.context import DataContext, ReliefPoint, SiteMeta
 from app.engine.planner import evaluate_sites
 from app.geo import expand_bbox, haversine_km
@@ -38,6 +39,15 @@ def parse_reference(s: str | None) -> datetime:
 def round_hour(t: datetime) -> datetime:
     base = t.replace(minute=0, second=0, microsecond=0)
     return base + timedelta(hours=1) if t.minute >= 30 else base
+
+
+def round_target(t: datetime, horizon: str) -> datetime:
+    """Heure cible arrondie au pas de prévision : l'heure (modèles horaires), ou 15 min pour les horizons ≤ 1 h,
+    où le vent retenu vient surtout des balises (nowcasting, pas de 15 min, CDC §12.5)."""
+    if horizon in rules.NOWCAST_WINDOW_START_MIN:
+        q = round((t.minute * 60 + t.second) / 900.0)
+        return t.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=15 * q)
+    return round_hour(t)
 
 
 def in_zone(zone: BBoxZone | CircleZone, lat: float, lon: float) -> bool:
@@ -100,6 +110,7 @@ class PlanService:
                 timelines[s.id] = build_timeline(pf, None, start, end)
         beacons, ages, brefs = await self.data.beacons(expand_bbox(bbox, 15), at=ref)
         refs += brefs
+        beacon_dem = await self.data.beacon_dem(beacons)  # altitude MNT des balises sans altitude (Pioupiou)
         airspaces, arefs = await self.data.airspaces(expand_bbox(bbox, 20), terrain if terrain_real else None)
         refs += arefs
         areas, srefs = await self.data.sensitive_areas(expand_bbox(bbox, 10))
@@ -139,14 +150,25 @@ class PlanService:
             terrain_is_real=terrain_real,
             mock=mock_weather,
             warnings=warnings,
+            beacon_dem_m=beacon_dem,
         )
-        plans, rejected, warns, _ = evaluate_sites(ctx, req.filters, _dedupe_refs(refs))
+        sources = _dedupe_refs(refs)
+        plans, rejected, warns, _ = evaluate_sites(ctx, req.filters, sources)
+        # tendance 1 h (archive Pioupiou) des balises rattachées aux plans retenus, puis réévaluation : la
+        # tendance modifie le vent retenu, les risques et le verdict (CDC §12.2)
+        ids = trend_candidates(plans)
+        if ids:
+            trends = await self.data.beacon_trends(ids)
+            if trends:
+                ctx.beacons = [b.model_copy(update={"trend": trends[b.id]}) if b.id in trends else b for b in ctx.beacons]
+                ctx.station_cache.clear()
+                plans, rejected, warns, _ = evaluate_sites(ctx, req.filters, sources)
         for p in plans:
             self.plans.set(p.id, p)
         return PlanResponse(
             request_id=str(uuid.uuid4()),
             generated_at=iso(datetime.now(UTC)),
-            target_time=iso(round_hour(target)),
+            target_time=iso(round_target(target, req.horizon)),
             horizon=req.horizon,
             zone=req.zone,
             data_mode=data_mode,
@@ -154,6 +176,24 @@ class PlanService:
             rejected=rejected,
             warnings=list(dict.fromkeys(warns)),
         )
+
+
+def trend_candidates(plans: list[FlightPlan], limit: int = 10) -> list[str]:
+    """Balises Pioupiou rattachées (déco, atterro, secours) aux plans retenus, sans tendance : représentatives et
+    rôles déco/atterro d'abord ; au plus `limit` (un appel /v1/archive chacune)."""
+    scored: list[tuple[tuple, str]] = []
+    for rank, p in enumerate(plans):
+        for r in p.station_readings:
+            b = r.beacon
+            if b.source != "pioupiou" or b.stale or b.trend is not None or b.wind_speed_kmh is None:
+                continue
+            role = {"takeoff": 0, "landing": 0, "alternate_landing": 1}[r.site_role]
+            scored.append(((not r.representative, role, rank, r.distance_km), b.id))
+    out: list[str] = []
+    for _, bid in sorted(scored):
+        if bid not in out:
+            out.append(bid)
+    return out[:limit]
 
 
 def _dedupe_refs(refs: list[SourceRef]) -> list[SourceRef]:
