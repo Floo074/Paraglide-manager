@@ -117,6 +117,13 @@ class Site(_Model):
     official: bool = True  # site officiel / référencé (FFVL, PGE validé, fixture)
     landing_kind: LandingKind | None = None  # pour un atterrissage
 
+    @model_validator(mode="after")
+    def _landing_kind(self) -> Site:
+        # un atterrissage porte toujours son kind (contrat) : déduit de `official` quand la source ne le donne pas
+        if self.kind in ("landing", "both") and self.landing_kind is None:
+            self.landing_kind = "official" if self.official else "community"
+        return self
+
 
 class BeaconTrend(_Model):
     """Tendance sur l'historique récent d'une balise (§12.2)."""
@@ -297,6 +304,38 @@ class PlanLinks(_Model):
     xctsk: str
 
 
+class SizeM(_Model):
+    length: float
+    width: float
+
+
+class ArrivalWind(_Model):
+    speed_kmh: float
+    direction_deg: float
+    gust_kmh: float
+
+
+class LandingCandidate(_Model):
+    """Atterro candidat évalué depuis un décollage (CDC §12.7)."""
+
+    site: Site  # site.landing_kind renseigné ; source "osm" pour un champ détecté
+    kind: LandingKind
+    use: Literal["main", "alternate"] = "main"  # usage permis à ce niveau : principal possible / secours seulement
+    score: float  # 0..100
+    required_glide_ratio: float  # finesse sol nécessaire depuis le déco (vent compris)
+    available_glide_ratio: float  # finesse de calcul retenue (prudente, facteur du kind compris)
+    arrival_height_m: float  # hauteur estimée à l'arrivée au-dessus de l'atterro
+    size_m: SizeM | None = None
+    slope_pct: float | None = None
+    surface: str | None = None
+    obstacles: list[str] = Field(default_factory=list)
+    wind_at_arrival: ArrivalWind | None = None
+    community_usage: Literal["frequent", "occasional", "unknown"] = "unknown"
+    access: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
 class FlightPlan(_Model):
     id: str
     rank: int
@@ -313,6 +352,7 @@ class FlightPlan(_Model):
     takeoff: Site
     landing: Site
     alternate_landings: list[Site]
+    landing_analysis: list[LandingCandidate] = Field(default_factory=list)  # triés, le 1er = landing
     waypoints: list[Waypoint]
     route: RouteGeometry
     distance_km: float
@@ -353,11 +393,61 @@ class PlanFilters(_Model):
         return self
 
 
+class CustomTakeoff(_Model):
+    """Décollage libre (vol rando…) : point cliqué ; altitude et orientations déduites du MNT si absentes."""
+
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    elevation_m: float | None = Field(default=None, ge=-100, le=9000)
+    orientations: list[str] | None = None
+    name: str | None = Field(default=None, max_length=80)
+
+    @field_validator("orientations")
+    @classmethod
+    def _orientations(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        out: list[str] = []
+        fr = {"O": "W", "NO": "NW", "SO": "SW", "ONO": "WNW", "OSO": "WSW", "NNO": "NNW", "SSO": "SSW"}
+        for raw in v:
+            sec = fr.get(str(raw).strip().upper(), str(raw).strip().upper())
+            if sec not in COMPASS_16:
+                raise ValueError(f"orientation inconnue : {raw!r} (rose 16 points : N, NNE, …, NNW)")
+            if sec not in out:
+                out.append(sec)
+        return out or None
+
+
 class PlanRequest(_Model):
     zone: Zone
     horizon: Horizon
     reference_time: str | None = None
     filters: PlanFilters
+    mode: Literal["classic", "custom_takeoff"] = "classic"  # classic = déco ET atterro officiels
+    custom_takeoff: CustomTakeoff | None = None  # requis si mode = "custom_takeoff"
+
+    @model_validator(mode="after")
+    def _check_mode(self) -> PlanRequest:
+        if self.mode == "custom_takeoff" and self.custom_takeoff is None:
+            raise ValueError("custom_takeoff est requis quand mode = « custom_takeoff »")
+        return self
+
+
+class LandingsAnalyzeRequest(_Model):
+    takeoff: CustomTakeoff
+    horizon: Horizon
+    reference_time: str | None = None
+    wing_glide_ratio: float = Field(default=8.5, ge=4.0, le=14.0)
+    difficulty: Difficulty
+    landing_policy: LandingPolicy = "official_only"
+
+
+class LandingsAnalyzeResponse(_Model):
+    takeoff: Site  # source "user"
+    target_time: str
+    glide_cone: dict  # GeoJSON Polygon : zone atteignable avec marge, vent compris
+    candidates: list[LandingCandidate]  # triés par score (atterros utilisables à ce niveau)
+    warnings: list[str]
 
 
 class RejectedSite(_Model):

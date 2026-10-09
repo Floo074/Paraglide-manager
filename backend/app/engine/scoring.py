@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
+from itertools import pairwise
 
 from app.engine import rules
 from app.engine.findings import Finding
@@ -40,7 +41,7 @@ def glide_subscore(r: float) -> float:
     pts = rules.GLIDE_RATIO_SUBSCORE
     if r <= pts[0][0]:
         return pts[0][1]
-    for (r0, s0), (r1, s1) in zip(pts, pts[1:], strict=False):
+    for (r0, s0), (r1, s1) in pairwise(pts):
         if r <= r1:
             return s0 + (s1 - s0) * (r - r0) / (r1 - r0)
     return 0.0
@@ -103,7 +104,9 @@ def thermal_match_subscore(pref: str, vario: float, thermal_used: bool, level: s
         if lo <= vario <= hi:
             return 100.0, f"vario {vario:.1f} m/s idéal pour ton niveau"
         if vario < lo:
-            return linear(vario, rules.REQUIRED_THERMAL_MIN_MS, 40, lo, 100), f"thermiques un peu faibles ({vario:.1f} m/s)"
+            return linear(
+                vario, rules.REQUIRED_THERMAL_MIN_MS, 40, lo, 100
+            ), f"thermiques un peu faibles ({vario:.1f} m/s)"
         return linear(vario, hi, 100, thr, 40), f"thermiques forts pour ton niveau ({vario:.1f} m/s)"
     if pref == "avoid":
         if vario <= 0.5:

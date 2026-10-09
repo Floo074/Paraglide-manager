@@ -10,6 +10,7 @@ from __future__ import annotations
 import bisect
 import math
 from dataclasses import dataclass
+from itertools import pairwise
 
 from app.geo import wind_components, wind_from_components
 from app.meteo.thermo import std_pressure_hpa
@@ -212,7 +213,7 @@ class VerticalProfile:
         pts = self.points
         if pts[0].t <= t_c:
             return pts[0].z
-        for a, b in zip(pts, pts[1:], strict=False):
+        for a, b in pairwise(pts):
             if a.t > t_c >= b.t:
                 return a.z + (a.t - t_c) / (a.t - b.t) * (b.z - a.z)
         last = pts[-1]

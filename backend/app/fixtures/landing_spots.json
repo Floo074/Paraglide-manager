@@ -1,0 +1,116 @@
+{
+  "_comment": "Atterros communautaires et champs candidats de DÉMONSTRATION (mode démo / repli hors-ligne uniquement). Positions approximatives choisies sur des fonds de vallée réels (Annecy-Talloires, Doussard-Montmin, Chamonix, Grésivaudan) ; tailles, pentes, obstacles et usages sont FICTIFS : ces terrains ne doivent jamais servir à voler. Format : CDC §12.7 et en-tête de docs/expert/scenarios-validation.yaml (clearances_m : distance du bord du terrain à l'obstacle le plus proche ; null = rien dans un rayon de 500 m ; clé absente = non cartographié). axis_deg = orientation du grand axe (0-180). approach_obstacles : obstacles au-delà d'un bout du terrain (cap depuis le centre, hauteur, distance au bord).",
+  "spots": [
+    {
+      "id": "demo:vesonne",
+      "name": "Pré de Vesonne (communautaire, démo)",
+      "lat": 45.8338, "lon": 6.2168, "elevation_m": 500,
+      "landing_kind": "community", "community_usage": "frequent",
+      "size_m": {"length": 180, "width": 70}, "axis_deg": 20, "slope_pct": 4,
+      "surface": "pré fauché", "access": "route et parking à 40 m",
+      "clearances_m": {"power_line": 220, "trees_buildings": 45, "water": 350, "road": 40},
+      "clearance_bearings": {"power_line": 100, "trees_buildings": 300, "water": 270, "road": 250}
+    },
+    {
+      "id": "demo:angon-granges",
+      "name": "Champ des Granges d'Angon (champ détecté, démo)",
+      "lat": 45.8245, "lon": 6.2142, "elevation_m": 480,
+      "landing_kind": "field",
+      "size_m": {"length": 165, "width": 58}, "axis_deg": 30, "slope_pct": 3,
+      "surface": "prairie", "access": "chemin agricole à 60 m",
+      "clearances_m": {"power_line": 175, "trees_buildings": 35, "water": 190, "road": 60},
+      "clearance_bearings": {"power_line": 120, "trees_buildings": 210, "water": 280, "road": 270},
+      "approach_obstacles": [{"bearing_deg": 210, "height_m": 20, "distance_m": 70, "label": "forêt"}]
+    },
+    {
+      "id": "demo:verthier",
+      "name": "Prairie de Giez-Verthier (champ détecté, démo)",
+      "lat": 45.7740, "lon": 6.2420, "elevation_m": 465,
+      "landing_kind": "field",
+      "size_m": {"length": 210, "width": 90}, "axis_deg": 0, "slope_pct": 2,
+      "surface": "prairie", "access": "route à 80 m",
+      "clearances_m": {"power_line": null, "trees_buildings": 60, "water": 400, "road": 80},
+      "clearance_bearings": {"trees_buildings": 90, "water": 300, "road": 180}
+    },
+    {
+      "id": "demo:montmin-granges",
+      "name": "Pré des Granges de Montmin (communautaire, démo)",
+      "lat": 45.8072, "lon": 6.2585, "elevation_m": 1060,
+      "landing_kind": "community", "community_usage": "occasional",
+      "size_m": {"length": 140, "width": 45}, "axis_deg": 150, "slope_pct": 9,
+      "surface": "alpage", "access": "route du col à 35 m",
+      "clearances_m": {"power_line": 260, "trees_buildings": 30, "water": null, "road": 35},
+      "clearance_bearings": {"power_line": 30, "trees_buildings": 240, "road": 60}
+    },
+    {
+      "id": "demo:chevaline",
+      "name": "Pré de Chevaline (communautaire, démo)",
+      "lat": 45.7505, "lon": 6.2085, "elevation_m": 530,
+      "landing_kind": "community", "community_usage": "frequent",
+      "size_m": {"length": 200, "width": 75}, "axis_deg": 170, "slope_pct": 3,
+      "surface": "pré fauché", "access": "parking à 100 m",
+      "clearances_m": {"power_line": 300, "trees_buildings": 40, "water": 250, "road": 90},
+      "clearance_bearings": {"power_line": 60, "trees_buildings": 270, "water": 300, "road": 90}
+    },
+    {
+      "id": "demo:bossons",
+      "name": "Pré des Bossons (champ détecté, démo)",
+      "lat": 45.9062, "lon": 6.8378, "elevation_m": 1010,
+      "landing_kind": "field",
+      "size_m": {"length": 190, "width": 62}, "axis_deg": 55, "slope_pct": 5,
+      "surface": "prairie", "access": "route à 50 m",
+      "clearances_m": {"power_line": 135, "trees_buildings": 32, "water": 120, "road": 50},
+      "clearance_bearings": {"power_line": 330, "trees_buildings": 150, "water": 320, "road": 330}
+    },
+    {
+      "id": "demo:taconnaz",
+      "name": "Pré de Taconnaz, Les Houches (communautaire, démo)",
+      "lat": 45.8978, "lon": 6.8148, "elevation_m": 1005,
+      "landing_kind": "community", "community_usage": "frequent",
+      "size_m": {"length": 170, "width": 60}, "axis_deg": 60, "slope_pct": 4,
+      "surface": "pré fauché", "access": "parking à 30 m",
+      "clearances_m": {"power_line": 210, "trees_buildings": 40, "water": 160, "road": 30},
+      "clearance_bearings": {"power_line": 330, "trees_buildings": 140, "water": 320, "road": 330}
+    },
+    {
+      "id": "demo:argentiere",
+      "name": "Prairie d'Argentière (champ détecté, démo)",
+      "lat": 45.9768, "lon": 6.9265, "elevation_m": 1245,
+      "landing_kind": "field",
+      "size_m": {"length": 150, "width": 48}, "axis_deg": 40, "slope_pct": 6,
+      "surface": "prairie", "access": "route à 120 m",
+      "clearances_m": {"power_line": 105, "trees_buildings": 28, "water": 90, "road": 120},
+      "clearance_bearings": {"power_line": 300, "trees_buildings": 130, "water": 310, "road": 310}
+    },
+    {
+      "id": "demo:crolles",
+      "name": "Champ de Crolles (champ détecté, démo)",
+      "lat": 45.2905, "lon": 5.8965, "elevation_m": 235,
+      "landing_kind": "field",
+      "size_m": {"length": 300, "width": 120}, "axis_deg": 40, "slope_pct": 1,
+      "surface": "terre agricole (cultures possibles)", "access": "chemin agricole à 70 m",
+      "clearances_m": {"power_line": 200, "trees_buildings": 40, "water": 140, "road": 70},
+      "clearance_bearings": {"power_line": 130, "trees_buildings": 310, "water": 120, "road": 300}
+    },
+    {
+      "id": "demo:lumbin-sud",
+      "name": "Pré sud de Lumbin (communautaire, démo)",
+      "lat": 45.2985, "lon": 5.9160, "elevation_m": 238,
+      "landing_kind": "community", "community_usage": "frequent",
+      "size_m": {"length": 220, "width": 90}, "axis_deg": 35, "slope_pct": 1,
+      "surface": "pré fauché", "access": "parking à 50 m",
+      "clearances_m": {"power_line": 260, "trees_buildings": 45, "water": 220, "road": 50},
+      "clearance_bearings": {"power_line": 140, "trees_buildings": 300, "water": 120, "road": 300}
+    },
+    {
+      "id": "demo:la-terrasse-nord",
+      "name": "Pré nord de La Terrasse (communautaire, démo)",
+      "lat": 45.3292, "lon": 5.9262, "elevation_m": 244,
+      "landing_kind": "community", "community_usage": "occasional",
+      "size_m": {"length": 160, "width": 55}, "axis_deg": 30, "slope_pct": 2,
+      "surface": "prairie", "access": "route à 90 m",
+      "clearances_m": {"power_line": 140, "trees_buildings": 35, "water": 300, "road": 90},
+      "clearance_bearings": {"power_line": 120, "trees_buildings": 280, "water": 120, "road": 290}
+    }
+  ]
+}

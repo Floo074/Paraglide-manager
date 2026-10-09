@@ -180,7 +180,13 @@ class PioupiouBeacons:
 
 def parse_ffvl_beacons(data, now: datetime) -> list[Beacon]:
     """Format FFVL non vérifié (pas de clé) : parseur défensif sur les noms de champs usuels."""
-    items = data if isinstance(data, list) else (data.get("balises") or data.get("data") or []) if isinstance(data, dict) else []
+    items = (
+        data
+        if isinstance(data, list)
+        else (data.get("balises") or data.get("data") or [])
+        if isinstance(data, dict)
+        else []
+    )
     out = []
     for it in items:
         try:
@@ -191,7 +197,7 @@ def parse_ffvl_beacons(data, now: datetime) -> list[Beacon]:
         observed = _parse_time(str(it.get("date") or it.get("dateReleve") or "").replace(" ", "T"))
         if observed is None:
             continue
-        def f(*keys):
+        def f(*keys, it=it):
             for k in keys:
                 if it.get(k) not in (None, ""):
                     try:
@@ -207,7 +213,7 @@ def parse_ffvl_beacons(data, now: datetime) -> list[Beacon]:
                 wind_speed_kmh=f("vitesseVentMoy"), wind_gust_kmh=f("vitesseVentMax"),
                 wind_direction_deg=f("directVentMoy", "directVentInst"), temperature_c=f("temperature"),
                 source="ffvl", stale=(now - observed) > timedelta(minutes=rules.BEACON_STALE_MIN),
-            )  # fmt: skip
+            )
         )
     return out
 
@@ -223,7 +229,9 @@ class FfvlBeacons:
     async def fetch_all(self) -> list[Beacon]:
         if not self.api_key:
             raise ProviderDisabled("clé FFVL absente")
-        data = await get_json(self.client, self.api_url, {"base": "balises", "r": "list", "mode": "json", "key": self.api_key})
+        data = await get_json(
+            self.client, self.api_url, {"base": "balises", "r": "list", "mode": "json", "key": self.api_key}
+        )
         return parse_ffvl_beacons(data, datetime.now(UTC))
 
 
@@ -242,7 +250,7 @@ class FixtureBeacons:
             h = int(hashlib.sha256(f"{raw['id']}{at:%Y%m%d%H}".encode()).hexdigest()[:4], 16)
             age = float(raw.get("stale_minutes", 2 + h % 12))
             observed = at - timedelta(minutes=age)
-            ground = raw.get("elevation_m") or terrain_elevation(raw["lat"], raw["lon"])
+            ground = raw.get("elevation_m") or raw.get("dem_elevation_m") or terrain_elevation(raw["lat"], raw["lon"])
             hour0 = observed.replace(minute=0, second=0, microsecond=0)
             hour = self.weather.hour(raw["lat"], raw["lon"], ground, hour0)
             bias = raw.get("bias") or {}
@@ -257,17 +265,21 @@ class FixtureBeacons:
             trend = None
             if age <= rules.BEACON_STALE_MIN:
                 trend = BeaconTrend(
-                    window_min=60.0, speed_change_kmh=round(speed - pspeed, 1),
-                    direction_change_deg=round(signed_angle_diff(direction, pdir), 1) if min(speed, pspeed) >= 3 else 0.0,
-                    gust_max_kmh=round(max(gust, pgust), 1), samples=12,
-                )  # fmt: skip
+                    window_min=60.0,
+                    speed_change_kmh=round(speed - pspeed, 1),
+                    direction_change_deg=round(signed_angle_diff(direction, pdir), 1)
+                    if min(speed, pspeed) >= 3
+                    else 0.0,
+                    gust_max_kmh=round(max(gust, pgust), 1),
+                    samples=12,
+                )
             out.append(
                 Beacon(
                     id=raw["id"], name=raw["name"], lat=raw["lat"], lon=raw["lon"], elevation_m=raw.get("elevation_m"),
                     observed_at=iso(observed), wind_speed_kmh=round(speed, 1), wind_gust_kmh=round(gust, 1),
                     wind_direction_deg=round(direction), temperature_c=hour.temperature_2m, source="fixture",
                     stale=age > rules.BEACON_STALE_MIN, trend=trend,
-                )  # fmt: skip
+                )
             )
             ages[raw["id"]] = age
         return out, ages
@@ -292,3 +304,8 @@ def nearest(beacons: list[Beacon], lat: float, lon: float, radius_km: float) -> 
         (b for b in beacons if haversine_km(lat, lon, b.lat, b.lon) <= radius_km),
         key=lambda b: haversine_km(lat, lon, b.lat, b.lon),
     )
+
+
+def fixture_beacon_dem() -> dict[str, float]:
+    """Altitude « MNT » simulée des balises de démonstration sans altitude (`dem_elevation_m` des fixtures)."""
+    return {r["id"]: float(r["dem_elevation_m"]) for r in fixture_beacons_raw() if r.get("dem_elevation_m") is not None}

@@ -24,6 +24,7 @@ import hashlib
 import math
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 
 from app.geo import wind_components, wind_from_components
 from app.meteo.solar import clear_sky_ghi, cloud_attenuation, solar_local_hour, sun_elevation_deg, sunrise_sunset
@@ -315,7 +316,7 @@ class SyntheticWeather:
 
         # --- grandeurs dérivées « modèle » ---------------------------------------------------
         freezing = None
-        for lv_a, lv_b in zip(levels, levels[1:], strict=False):
+        for lv_a, lv_b in pairwise(levels):
             if lv_a.temperature_c > 0 >= lv_b.temperature_c:
                 freezing = lv_a.height_m + lv_a.temperature_c / (lv_a.temperature_c - lv_b.temperature_c) * (
                     lv_b.height_m - lv_a.height_m

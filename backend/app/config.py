@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     http_timeout_s: float = 5.0
     # après un échec live en mode auto, on ne retente pas la source pendant ce délai
     live_retry_after_s: float = 120.0
+    # quota journalier atteint (HTTP 429 « Daily API request limit ») : suspension maximale entre deux essais
+    quota_block_max_s: float = 3600.0
 
     # --- Open-Meteo (libre, sans clé) ---
     open_meteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
@@ -49,6 +51,11 @@ class Settings(BaseSettings):
 
     # --- Biodiv'Sports (zones sensibles faune, libre) ---
     biodivsports_url: str = "https://biodiv-sports.fr/api/v2"
+
+    # --- OpenStreetMap / Overpass (champs candidats, atterros vol libre, obstacles) ---
+    # désactivé par défaut : overpass-api.de n'est pas joignable depuis tous les environnements (proxy)
+    overpass_enabled: bool = False
+    overpass_url: str = "https://overpass-api.de/api/interpreter"
 
     # --- Fichiers OpenAir locaux (espaces aériens sans clé) ---
     airspace_openair_dir: Path = BACKEND_DIR / "data" / "airspaces"

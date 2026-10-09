@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from app.engine import rules
 from app.engine.conditions import dir_label, fmt_hm
-from app.engine.stations import Attachment, coherence_text, trend_label
+from app.engine.stations import Attachment, coherence_text, duration_fr, trend_label
 from app.meteo.thermals import thermal_quality_label
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -24,7 +24,7 @@ VERDICT_LABEL = {"go": "GO", "marginal": "MARGINAL", "no_go": "NO-GO"}
 
 
 def duration_label(minutes: float) -> str:
-    m = int(round(minutes))
+    m = round(minutes)
     if m < 60:
         return f"{m} min"
     h, r = divmod(m, 60)
@@ -59,7 +59,42 @@ def summary(c: Candidate) -> str:
     s += "."
     if c.duration_note:
         s += " " + c.duration_note
+    if c.takeoff.source == "user":
+        s += " Décollage libre hors site officiel : contrôles terrain obligatoires."
+    kind = c.landing.landing_kind or "official"
+    if kind != "official" and c.landing.id != c.takeoff.id:
+        s += f" Atterro {KIND_SHORT[kind]} : repérage et autorisation du propriétaire à vérifier."
     return s
+
+
+KIND_SHORT = {
+    "official": "officiel",
+    "community": "communautaire (non officiel)",
+    "field": "champ détecté (non officiel)",
+}
+
+
+def _free_takeoff_lines(c: Candidate, tech: str) -> list[str]:
+    """Bloc Décollage d'un décollage libre (§12.6) : avertissement en tête, lecture du MNT, contrôles obligatoires."""
+    ft = c.free_terrain
+    t = c.takeoff
+    orient = ", ".join(t.orientations) or "orientation inconnue"
+    if ft is not None and ft.measured:
+        src = "MNT imposé" if ft.source == "scenario" else ("MNT de démonstration" if ft.source == "demo"
+                                                             else "MNT Copernicus 90 m")  # fmt: skip
+        terrain = f"pente {ft.slope_pct:.0f} % orientée {dir_label(ft.aspect_deg)} ({src})"
+    else:
+        terrain = "pente et orientation non mesurées (MNT indisponible)"
+    if ft is not None and ft.profile_ok is True:
+        profile = "profil de l'axe dégagé sur 300 m d'après le MNT"
+    elif ft is not None and ft.profile_ok is False:
+        profile = f"profil de l'axe : {ft.profile_detail}"
+    else:
+        profile = "profil de l'axe non contrôlé : à vérifier à pied"
+    head = (f"{rules.FREE_TAKEOFF['warning']} Point : {t.name} ({t.elevation_m:.0f} m, {terrain}, "
+            f"axe {orient}), {profile} ; {tech}.")  # fmt: skip
+    checks = " ".join(f"({i}) {x}" for i, x in enumerate(rules.FREE_TAKEOFF["mandatory_checks"], 1))
+    return [head, f"Contrôles obligatoires avant de gonfler : {checks}"]
 
 
 def briefing(c: Candidate) -> list[str]:
@@ -90,20 +125,34 @@ def briefing(c: Candidate) -> list[str]:
     a = c.takeoff_wind.hour
     v3, d3 = a.profile.wind(3000)
     v15, d15 = a.profile.wind(1500)
-    sky = "ciel dégagé" if a.cloud_cover_pct < 20 else ("ciel partiellement nuageux" if a.cloud_cover_pct < 70 else "ciel très nuageux")
-    stab = "masse d'air stable" if a.cape_j_kg < 300 else ("masse d'air instable" if a.cape_j_kg >= 800 else "instabilité modérée")
+    sky = (
+        "ciel dégagé"
+        if a.cloud_cover_pct < 20
+        else ("ciel partiellement nuageux" if a.cloud_cover_pct < 70 else "ciel très nuageux")
+    )
+    stab = (
+        "masse d'air stable"
+        if a.cape_j_kg < 300
+        else ("masse d'air instable" if a.cape_j_kg >= 800 else "instabilité modérée")
+    )
     out.append(
         f"Situation : flux de {dir_label(d3)} {v3:.0f} km/h à 3000 m ({dir_label(d15)} {v15:.0f} km/h à 1500 m), "
         f"{sky} ({a.cloud_cover_pct:.0f} %), {stab} (CAPE {a.cape_j_kg:.0f} J/kg)."
     )
     # 4. vent
     tw = c.takeoff_wind
-    wind_to = "nul (< 5 km/h)" if tw.angle.calm else f"{dir_label(tw.direction_deg)} {tw.speed_kmh:.0f} km/h, rafales {tw.gust_kmh:.0f}"
+    wind_to = (
+        "nul (< 5 km/h)"
+        if tw.angle.calm
+        else f"{dir_label(tw.direction_deg)} {tw.speed_kmh:.0f} km/h, rafales {tw.gust_kmh:.0f}"
+    )
     aloft = ", ".join(
-        f"{z} m : {dir_label(a.profile.wind(z)[1])} {a.profile.wind(z)[0]:.0f}" for z in (1500, 2000, 3000) if z > c.takeoff.elevation_m - 200
+        f"{z} m : {dir_label(a.profile.wind(z)[1])} {a.profile.wind(z)[0]:.0f}"
+        for z in (1500, 2000, 3000)
+        if z > c.takeoff.elevation_m - 200
     )
     lw = c.landing_wind
-    breeze = " (brise de vallée incluse ×{:.2f})".format(lw.breeze_factor) if lw.breeze_factor > 1 else ""
+    breeze = f" (brise de vallée incluse ×{lw.breeze_factor:.2f})" if lw.breeze_factor > 1 else ""
     out.append(
         f"Vent : au déco {wind_to} ; en altitude {aloft} km/h ; à l'atterro vers {fmt_hm(lw.time)} "
         f"{dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f}{breeze}."
@@ -114,8 +163,10 @@ def briefing(c: Candidate) -> list[str]:
     cw = c.convection
     if cw.start and cw.end:
         thermo = (
-            f"Aérologie : thermiques de {fmt_hm(cw.start)} à {fmt_hm(cw.end)} (pic vers {fmt_hm(cw.peak) if cw.peak else '—'}), "
-            f"vario moyen {c.vario:.1f} m/s ({thermal_quality_label(c.vario)}), plafond utile {round_alt(c.usable, c.horizon)} m"
+            f"Aérologie : thermiques de {fmt_hm(cw.start)} à {fmt_hm(cw.end)} (pic vers "
+            f"{fmt_hm(cw.peak) if cw.peak else '—'}), "
+            f"vario moyen {c.vario:.1f} m/s ({thermal_quality_label(c.vario)}), plafond utile "
+            f"{round_alt(c.usable, c.horizon)} m"
         )
     else:
         thermo = f"Aérologie : pas de convection exploitable prévue (vario {c.vario:.1f} m/s)"
@@ -123,17 +174,22 @@ def briefing(c: Candidate) -> list[str]:
         thermo += f", base des cumulus {round_alt(a.cloud_base_m, c.horizon)} m"
     elif cw.start:
         thermo += ", thermiques bleus (pas de cumulus)"
-    thermo += f", risque de surdéveloppement {dict(low='faible', moderate='modéré', high='élevé')[cw.overdevelopment_risk]}"
+    thermo += (
+        f", risque de surdéveloppement {dict(low='faible', moderate='modéré', high='élevé')[cw.overdevelopment_risk]}"
+    )
     if cw.overdevelopment_time and cw.overdevelopment_risk != "low":
         thermo += f" (vers {fmt_hm(cw.overdevelopment_time)})"
     out.append(thermo + ".")
     # 6. décollage
     tech = "gonflage face voile conseillé" if tw.speed_kmh >= 12 else "gonflage dos voile possible"
     orient = ", ".join(c.takeoff.orientations) or "orientation inconnue"
-    deco = f"Décollage : {c.takeoff.name} ({c.takeoff.elevation_m:.0f} m, orienté {orient}), {tech}."
-    if c.takeoff.restrictions:
-        deco += f" Consigne du site : {c.takeoff.restrictions}"
-    out.append(deco)
+    if c.takeoff.source == "user":
+        out += _free_takeoff_lines(c, tech)
+    else:
+        deco = f"Décollage : {c.takeoff.name} ({c.takeoff.elevation_m:.0f} m, orienté {orient}), {tech}."
+        if c.takeoff.restrictions:
+            deco += f" Consigne du site : {c.takeoff.restrictions}"
+        out.append(deco)
     # 7. itinéraire
     tps = [w for w in c.route.waypoints if w.type in ("turnpoint", "thermal_trigger")]
     if tps:
@@ -151,12 +207,19 @@ def briefing(c: Candidate) -> list[str]:
         if lw.speed_kmh >= rules.CALM_WIND_KMH
         else "vent faible : approche dans l'axe du terrain, PTU côté déco"
     )
-    land = f"Atterrissage : {c.landing.name} ({c.landing.elevation_m:.0f} m), {approach}"
+    kind = c.landing.landing_kind or "official"
+    kind_txt = f", {KIND_SHORT[kind]}" if kind != "official" and c.landing.id != c.takeoff.id else ""
+    land = f"Atterrissage : {c.landing.name} ({c.landing.elevation_m:.0f} m{kind_txt}), {approach}"
     if c.alternates:
-        land += " ; secours : " + ", ".join(a_.name for a_ in c.alternates[:3])
+        land += " ; secours : " + ", ".join(
+            a_.name + (f" ({KIND_SHORT[a_.landing_kind]})" if a_.landing_kind not in (None, "official") else "")
+            for a_ in c.alternates[:3]
+        )
     land += "."
     if c.landing.restrictions:
         land += f" Consigne : {c.landing.restrictions}"
+    if c.landing_warnings:  # avertissements obligatoires d'un atterro non officiel (§12.7)
+        land += " " + " ".join(c.landing_warnings)
     out.append(land)
     # 9. espaces aériens et zones sensibles
     near = [w for w in c.airspaces if w.min_distance_km <= 5.0]
@@ -164,25 +227,33 @@ def briefing(c: Candidate) -> list[str]:
         out.append(
             "Espaces aériens : "
             + " ; ".join(
-                f"{w.name} (classe {w.airspace_class}, {w.floor_m:.0f}-{w.ceiling_m:.0f} m) à {w.min_distance_km:.1f} km"
+                f"{w.name} (classe {w.airspace_class}, {w.floor_m:.0f}-{w.ceiling_m:.0f} m) à "
+                f"{w.min_distance_km:.1f} km"
                 + (" — TRAVERSÉ" if w.intersects_route else "")
                 for w in near[:4]
             )
-            + f". Plafond retenu {c.max_alt:.0f} m (FL115 ≈ {rules.FL115_M_STANDARD:.0f} m). Vérifier NOTAM / SUP AIP / AZBA."
+            + f". Plafond retenu {c.max_alt:.0f} m (FL115 ≈ {rules.FL115_M_STANDARD:.0f} m). Vérifier NOTAM / SUP AIP "
+              f"/ AZBA."
         )
     else:
-        out.append(f"Espaces aériens : rien à moins de 5 km de la route ; plafond retenu {c.max_alt:.0f} m. Vérifier NOTAM.")
+        out.append(f"Espaces aériens : rien à moins de 5 km de la route ; plafond retenu {c.max_alt:.0f} m. Vérifier "
+                   f"NOTAM.")
     for r in c.risks:
         if r.code in ("SENSITIVE_AREA", "NATIONAL_PARK"):
             out.append(f"Zone sensible : {r.detail}")
     # 10. risques du jour
-    specific = [r for r in c.risks if r.level in ("caution", "danger") and r.code not in ("SENSITIVE_AREA", "NATIONAL_PARK", "MOCK_DATA")]
+    specific = [
+        r
+        for r in c.risks
+        if r.level in ("caution", "danger") and r.code not in ("SENSITIVE_AREA", "NATIONAL_PARK", "MOCK_DATA")
+    ]
     if specific:
         out.append("Risques du jour : " + " ; ".join(f"{r.title}" for r in specific[:6]) + ".")
     # 11. logistique & sécurité
     out.append(
         f"Sécurité : radio vol libre {rules.RADIO_FREQ_MHZ} MHz, urgence {rules.EMERGENCY_NUMBER} "
-        f"(position déco {c.takeoff.lat:.4f}, {c.takeoff.lon:.4f}) ; prévenir le chauffeur / un proche de la route et de l'heure de retour"
+        f"(position déco {c.takeoff.lat:.4f}, {c.takeoff.lon:.4f}) ; prévenir le chauffeur / un proche de la route et "
+        f"de l'heure de retour"
         + (f" ; coucher du soleil {fmt_hm(c.sunset)}." if c.sunset else ".")
     )
     if c.takeoff.access:
@@ -193,12 +264,16 @@ def briefing(c: Candidate) -> list[str]:
 def _reading_short(a: Attachment, landing: bool) -> str:
     b = a.beacon
     g = f" (raf. {b.wind_gust_kmh:.0f})" if b.wind_gust_kmh is not None else ""
-    txt = f"{dir_label(b.wind_direction_deg) + ' ' if b.wind_direction_deg is not None else ''}{b.wind_speed_kmh:.0f} km/h{g}"
+    d = f"{dir_label(b.wind_direction_deg)} " if b.wind_direction_deg is not None else ""
+    txt = f"{d}{b.wind_speed_kmh:.0f} km/h{g}"
     tl = trend_label(b)
     if tl != "tendance indisponible":
         txt += f", {tl}"
         t = b.trend
-        if t is not None and t.speed_change_kmh * 60.0 / t.window_min > rules.TREND_1H["wind_increase_kmh_per_h"]["caution"]:
+        if (
+            t is not None
+            and t.speed_change_kmh * 60.0 / t.window_min > rules.TREND_1H["wind_increase_kmh_per_h"]["caution"]
+        ):
             txt += ", la brise forcit" if landing else ", le vent forcit"
     coh = coherence_text(a)
     if coh:
@@ -226,23 +301,27 @@ def beacons_line(c: Candidate) -> str:
         txt = f"atterro ({a.beacon.name}) {_reading_short(a, True)}"
         te = nc_l.trend
         if te is not None and te.v_ext is not None:
-            txt += (f" : environ {te.v_ext:.0f} km/h (raf. {te.g_ext:.0f}) attendus à ton arrivée vers {fmt_hm(lw.time)}, "
+            txt += (f" : environ {te.v_ext:.0f} km/h (raf. {te.g_ext:.0f}) attendus à ton arrivée vers "
+                    f"{fmt_hm(lw.time)}, "
                     f"alors que le modèle en prévoit {lw.model_speed_kmh:.0f}")  # fmt: skip
         parts.append(txt)
     conf = f"confiance réduite ({c.confidence * 100:.0f} %)"
     if not parts:
         return (
-            f"Pas de balise représentative au déco ni à l'atterro ({nearest_reading_text_safe(c)}) : vent estimé par le "
-            f"modèle seul, {conf}. Regarde la manche à air de l'atterro avant de décoller, ou demande le vent par radio."
+            f"Pas de balise représentative au déco ni à l'atterro ({nearest_reading_text_safe(c)}) : vent estimé "
+            f"par le "
+            f"modèle seul, {conf}. Regarde la manche à air de l'atterro avant de décoller, ou demande le vent par "
+            f"radio."
         )
-    line = f"Balises (il y a {max(ages):.0f} min) : " + " ; ".join(parts) + "."
+    line = f"Balises (il y a {duration_fr(max(ages))}) : " + " ; ".join(parts) + "."
     if not has_to:
         line += " Pas de balise représentative au déco : vent du déco estimé par le modèle seul."
     if not has_l:
         breeze = ", brise comprise" if lw.breeze_factor > 1 else ""
         line += (
             f" Pas de balise à l'atterro ({nearest_reading_text_safe(c)}) : vent d'arrivée estimé par le modèle seul "
-            f"(environ {lw.model_speed_kmh:.0f} km/h{breeze}), {conf}. Regarde la manche à air de l'atterro avant de décoller."
+            f"(environ {lw.model_speed_kmh:.0f} km/h{breeze}), {conf}. Regarde la manche à air de l'atterro avant de "
+            f"décoller."
         )
     return line
 
@@ -269,5 +348,11 @@ def checklist(c: Candidate) -> list[str]:
         "Contrôle final au déco (PRÉVOL) : attaches, casque, suspentes, voile, vent et espace devant libres.",
     ]
     if c.horizon in rules.NOWCAST_WINDOW_START_MIN:  # §12.5
-        items.insert(1, "Regarder la manche à air de l'atterro avant de décoller (jumelles), ou demander le vent par radio.")
+        items.insert(1, "Regarder la manche à air de l'atterro avant de décoller (jumelles), ou demander le vent par "
+                        "radio.")
+    if any((s.landing_kind or "official") != "official" for s in [c.landing, *c.alternates] if s.id != c.takeoff.id):
+        items.insert(0, "Atterro non officiel : repéré en vol (survol à 150 m au moins), autorisation du propriétaire, "
+                        "cultures, bétail, clôtures et lignes vérifiés ; une autre option gardée.")
+    if c.takeoff.source == "user":  # §12.6 : contrôles obligatoires du décollage libre, en tête
+        items[:0] = [f"Décollage libre — {x}" for x in rules.FREE_TAKEOFF["mandatory_checks"]]
     return items

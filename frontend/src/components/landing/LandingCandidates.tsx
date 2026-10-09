@@ -85,6 +85,11 @@ export function LandingCandidateCard({
           <span className="lc-card__title">{c.site.name}</span>
           <span className="lc-card__tags">
             <LandingKindBadge kind={c.kind} />
+            {c.use === "alternate" ? (
+              <span className="badge badge--marginal" title="À ton niveau, ce terrain ne peut servir que d'atterrissage de secours (pas d'atterro principal).">
+                Secours uniquement
+              </span>
+            ) : null}
             {label ? <span className="badge badge--info">{label}</span> : null}
           </span>
         </span>
@@ -142,6 +147,10 @@ export function LandingCandidateCard({
             <div>
               <dt>Surface</dt>
               <dd>{c.surface ?? "inconnue"}</dd>
+            </div>
+            <div>
+              <dt>Usage à ton niveau</dt>
+              <dd>{c.use === "main" ? "atterro principal possible" : "secours uniquement"}</dd>
             </div>
             <div>
               <dt>Usage communautaire</dt>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 
 import numpy as np
 import shapely
@@ -29,7 +30,9 @@ class Projector:
         key = id(g)
         if key not in self._cache:
             kx, ky, lon0, lat0 = self.proj.kx, self.proj.ky, self.proj.lon0, self.proj.lat0
-            self._cache[key] = shapely.transform(g, lambda c: np.column_stack(((c[:, 0] - lon0) * kx, (c[:, 1] - lat0) * ky)))
+            self._cache[key] = shapely.transform(
+                g, lambda c: np.column_stack(((c[:, 0] - lon0) * kx, (c[:, 1] - lat0) * ky))
+            )
         return self._cache[key]
 
     def _xy(self, x, y, z=None):
@@ -236,7 +239,7 @@ def route_height_violation(
     """La route passe-t-elle dans la zone à moins de `min_height` m au-dessus du terrain ?"""
     g = proj.geom(area.geometry)
     pts = [(lat, lon, alt) for lon, lat, alt in coords]
-    for (la1, lo1, a1), (la2, lo2, a2) in zip(pts, pts[1:], strict=False):
+    for (la1, lo1, a1), (la2, lo2, a2) in pairwise(pts):
         p1, p2 = proj.point(la1, lo1), proj.point(la2, lo2)
         seg_len = p1.distance(p2)
         n = max(1, int(seg_len / step_km))
@@ -313,7 +316,9 @@ def route_sensitive_conflict(
         if not proj.geom(area.geometry).intersects(line):
             continue
         h = area.min_height_agl_m or (
-            rules.PARK_MIN_HEIGHT_AGL_M if area.kind == "national_park_core" else rules.SENSITIVE_AREA_DEFAULT_HEIGHT_AGL_M
+            rules.PARK_MIN_HEIGHT_AGL_M
+            if area.kind == "national_park_core"
+            else rules.SENSITIVE_AREA_DEFAULT_HEIGHT_AGL_M
         )
         if route_height_violation(ctx, proj, area, coords, h):
             out.append((area, h))

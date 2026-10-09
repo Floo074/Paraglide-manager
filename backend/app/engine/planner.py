@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from itertools import pairwise
 
-from app.engine import rules
+from app.engine import free_takeoff, rules
 from app.engine.airspace import (
     AirspaceResult,
     Projector,
@@ -34,6 +35,13 @@ from app.engine.conditions import (
 )
 from app.engine.context import DataContext, PointTimeline
 from app.engine.findings import Finding, max_level, smallest_passing_level
+from app.engine.landings import (
+    LandingSelection,
+    big_valley,
+    candidates_for_plan,
+    landing_kind_findings,
+    select_landings,
+)
 from app.engine.routing import (
     GlideCheck,
     Route,
@@ -42,17 +50,7 @@ from app.engine.routing import (
     build_plouf,
     build_ridge,
     glide_to,
-)
-from app.engine.stations import (
-    StationNowcast,
-    landing_band_start,
-    landing_confidence_factor,
-    nearest_unattached,
-    no_landing_beacon_finding,
-    reading_comment,
-    site_attachments,
-    station_nowcast,
-    trend_findings,
+    landing_kind_of,
 )
 from app.engine.scoring import (
     CRITERION_LABEL_FR,
@@ -66,6 +64,18 @@ from app.engine.scoring import (
     thermal_match_subscore,
     verdict,
 )
+from app.engine.stations import (
+    StationNowcast,
+    duration_fr,
+    landing_band_start,
+    landing_confidence_factor,
+    nearest_unattached,
+    no_landing_beacon_finding,
+    reading_comment,
+    station_nowcast,
+    trend_findings,
+)
+from app.engine.terrain import TakeoffTerrain
 from app.geo import angle_diff, haversine_km
 from app.meteo.snapshot import iso, snapshot_from_analysis, sounding_from_analysis
 from app.meteo.thermals import ConvectionWindow, HourAnalysis, convection_window
@@ -89,7 +99,13 @@ from app.models import (
 )
 
 LEVELS = rules.LEVELS
-VARIANT_TYPE = {"plouf": "local", "restitution": "local", "local_thermal": "local", "ridge": "ridge_soaring", "xc": "cross_country"}
+VARIANT_TYPE = {
+    "plouf": "local",
+    "restitution": "local",
+    "local_thermal": "local",
+    "ridge": "ridge_soaring",
+    "xc": "cross_country",
+}
 NON_BLOCKING_CAUTIONS = {"MOCK_DATA", "ALTITUDE_LIMIT", "ACCESS_TIME", *rules.NON_BLOCKING_CAUTIONS_ADD}
 ALL_CODES_ORDER = ["danger", "caution", "info"]
 
@@ -132,6 +148,12 @@ class Candidate:
     window_start: datetime | None = None
     window_end: datetime | None = None
     airspaces: list[AirspaceWarning] = field(default_factory=list)
+    glide_wind: tuple[float, float] = (0.0, 0.0)
+    wing: float = 8.5
+    free_terrain: TakeoffTerrain | None = None  # décollage libre (§12.6)
+    landing_sel: LandingSelection | None = None  # candidats évalués (décollage libre)
+    policy: str = "official_only"
+    landing_warnings: list[str] = field(default_factory=list)  # avertissements de l'atterro (briefing)
 
     @property
     def flight_type(self) -> str:
@@ -205,7 +227,8 @@ def takeoff_wind_findings(tw: TakeoffWind, site: Site, ridge: bool, solar_h: flo
                 value=g, limits=dict(gust_lim))
     )  # fmt: skip
     f.append(
-        Finding("TAKEOFF_GUSTS", "Écart rafales / vent moyen", f"Écart rafale − moyenne de {spread:.0f} km/h (air turbulent).",
+        Finding("TAKEOFF_GUSTS", "Écart rafales / vent moyen", f"Écart rafale − moyenne de {spread:.0f} km/h (air "
+                                                               f"turbulent).",
                 criterion="takeoff_wind", value=spread, limits=dict(spread_lim))
     )  # fmt: skip
     if v >= rules.GUST_FACTOR_MIN_MEAN_KMH:
@@ -214,26 +237,53 @@ def takeoff_wind_findings(tw: TakeoffWind, site: Site, ridge: bool, solar_h: flo
                     value=g / v, limits=dict(rules.GUST_FACTOR_MAX), soft=True, blocks_go=False)
         )  # fmt: skip
     # absolus §3 #9
-    if v > rules.NOGO["takeoff_wind_abs_kmh"] or g > rules.NOGO["takeoff_gust_abs_kmh"] or spread > rules.GUST_SPREAD_ABS_MAX_KMH:
+    if (
+        v > rules.NOGO["takeoff_wind_abs_kmh"]
+        or g > rules.NOGO["takeoff_gust_abs_kmh"]
+        or spread > rules.GUST_SPREAD_ABS_MAX_KMH
+    ):
         code = "TAKEOFF_WIND" if v > rules.NOGO["takeoff_wind_abs_kmh"] else "TAKEOFF_GUSTS"
-        f.append(Finding(code, "Vent au déco hors limites (tous niveaux)", f"Vent au déco {wdesc} : hors limites.", absolute_nogo=True))
+        f.append(
+            Finding(
+                code,
+                "Vent au déco hors limites (tous niveaux)",
+                f"Vent au déco {wdesc} : hors limites.",
+                absolute_nogo=True,
+            )
+        )
     ang = tw.angle
     if not ang.calm:
         if ang.category == "cross":
             f.append(
                 Finding("CROSSWIND", "Vent de travers au déco",
-                        f"Vent {ang.ecart_deg:.0f}° hors de l'axe du déco (orientations {', '.join(site.orientations)}).",
+                        f"Vent {ang.ecart_deg:.0f}° hors de l'axe du déco (orientations "
+                        f"{', '.join(site.orientations)}).",
                         criterion="takeoff_wind", value=ang.ecart_deg,
                         limits=dict(rules.RIDGE["max_angle_deg"] if ridge else rules.CROSSWIND_ANGLE_MAX_DEG))
             )  # fmt: skip
             f.append(
-                Finding("CROSSWIND", "Composante de travers", f"Composante de travers {ang.cross_component_kmh:.0f} km/h.",
-                        criterion="takeoff_wind", value=ang.cross_component_kmh, limits=dict(rules.CROSSWIND_COMPONENT_MAX_KMH))
-            )  # fmt: skip
+                Finding(
+                    "CROSSWIND",
+                    "Composante de travers",
+                    f"Composante de travers {ang.cross_component_kmh:.0f} km/h.",
+                    criterion="takeoff_wind",
+                    value=ang.cross_component_kmh,
+                    limits=dict(rules.CROSSWIND_COMPONENT_MAX_KMH),
+                )
+            )
         elif ang.category == "tail":
             if ridge:
-                f.append(Finding("TAILWIND", "Vent arrière : pas de soaring possible", "Vent arrière sur la pente.", feasibility=True,
-                                 value=0.0, limits={lv: 1.0 for lv in LEVELS}, kind="min"))  # fmt: skip
+                f.append(
+                    Finding(
+                        "TAILWIND",
+                        "Vent arrière : pas de soaring possible",
+                        "Vent arrière sur la pente.",
+                        feasibility=True,
+                        value=0.0,
+                        limits={lv: 1.0 for lv in LEVELS},
+                        kind="min",
+                    )
+                )
             f.append(
                 Finding("TAILWIND", "Vent arrière au déco",
                         f"Vent arrière de {ang.tail_component_kmh:.0f} km/h ({dir_label(tw.direction_deg)}) au déco.",
@@ -241,19 +291,27 @@ def takeoff_wind_findings(tw: TakeoffWind, site: Site, ridge: bool, solar_h: flo
                         limits={lv: float(x) for lv, x in rules.TAILWIND_MAX_KMH.items()}, band=False)
             )  # fmt: skip
             f.append(
-                Finding("TAILWIND", "Vent arrière au déco", f"Vent arrière de {ang.tail_component_kmh:.0f} km/h : décollage délicat.",
+                Finding("TAILWIND", "Vent arrière au déco", f"Vent arrière de {ang.tail_component_kmh:.0f} km/h : "
+                                                            f"décollage délicat.",
                         caution=True)
             )  # fmt: skip
             f.append(
-                Finding("CROSSWIND", "Composante de travers", f"Composante de travers {ang.cross_component_kmh:.0f} km/h.",
-                        criterion="takeoff_wind", value=ang.cross_component_kmh, limits=dict(rules.CROSSWIND_COMPONENT_MAX_KMH))
-            )  # fmt: skip
+                Finding(
+                    "CROSSWIND",
+                    "Composante de travers",
+                    f"Composante de travers {ang.cross_component_kmh:.0f} km/h.",
+                    criterion="takeoff_wind",
+                    value=ang.cross_component_kmh,
+                    limits=dict(rules.CROSSWIND_COMPONENT_MAX_KMH),
+                )
+            )
     # dévent / faux calme (§3 #8)
     lee = lee_angle(tw.crest_direction_deg, site.orientations)
     crest = f"vent de {tw.crest_speed_kmh:.0f} km/h du {dir_label(tw.crest_direction_deg)} au niveau des crêtes"
     if lee > rules.LEE_ANGLE_DEG and tw.crest_speed_kmh >= rules.NOGO["lee_wind_at_crest_kmh"]:
         f.append(Finding("LEE_SIDE", "Dévent : déco sous le vent",
-                         f"Dévent : {crest}, opposé à l'axe du déco — rotors et faux calme, même si le vent au déco semble favorable.",
+                         f"Dévent : {crest}, opposé à l'axe du déco — rotors et faux calme, même si le vent au déco "
+                         f"semble favorable.",
                          absolute_nogo=True))  # fmt: skip
     elif lee > rules.LEE_ANGLE_DEG and tw.crest_speed_kmh >= rules.LEE_WIND_CAUTION_KMH:
         f.append(Finding("LEE_SIDE", "Vent météo opposé au déco", f"Dévent possible : {crest}.", caution=True))
@@ -261,10 +319,13 @@ def takeoff_wind_findings(tw: TakeoffWind, site: Site, ridge: bool, solar_h: flo
         f.append(Finding("CROSSWIND", "Vent météo de travers", f"Vent météo de travers : {crest}.", caution=True))
     # déco E passé à l'ombre (§4.3 bascule)
     if site.orientations and all(o in ("NE", "ENE", "E", "ESE") for o in site.orientations):
-        syn_e = tw.crest_speed_kmh >= rules.EAST_FACE_SYNOPTIC_EXEMPT_KMH and angle_diff(tw.crest_direction_deg, 90) <= 45
+        syn_e = (
+            tw.crest_speed_kmh >= rules.EAST_FACE_SYNOPTIC_EXEMPT_KMH and angle_diff(tw.crest_direction_deg, 90) <= 45
+        )
         if solar_h > rules.EAST_FACE_SHADE_SOLAR_H and not syn_e:
             f.append(Finding("LEE_SIDE", "Déco passé à l'ombre",
-                             "Déco orienté est passé à l'ombre après 12h30 solaire : brise descendante, vent arrière probable.",
+                             "Déco orienté est passé à l'ombre après 12h30 solaire : brise descendante, vent arrière "
+                             "probable.",
                              absolute_nogo=True))  # fmt: skip
     return f
 
@@ -294,19 +355,31 @@ def aloft_findings(
                 criterion="wind_aloft", ratios=ratios)
     )  # fmt: skip
     if vmax >= rules.NOGO["wind_any_level_kmh"]:
-        out.append(Finding("STRONG_WIND_ALOFT", "Vent fort en altitude", f"{vmax:.0f} km/h vers {vmax_z:.0f} m : no-go.", absolute_nogo=True))
+        out.append(Finding("STRONG_WIND_ALOFT", "Vent fort en altitude", f"{vmax:.0f} km/h vers {vmax_z:.0f} m : "
+                                                                         f"no-go.", absolute_nogo=True))
     elif vmax >= rules.WIND_ANY_LEVEL_CAUTION_KMH:
-        out.append(Finding("STRONG_WIND_ALOFT", "Vent soutenu en altitude", f"{vmax:.0f} km/h vers {vmax_z:.0f} m.", caution=True))
+        out.append(
+            Finding(
+                "STRONG_WIND_ALOFT", "Vent soutenu en altitude", f"{vmax:.0f} km/h vers {vmax_z:.0f} m.", caution=True
+            )
+        )
     v3000 = a.profile.wind(3000.0)[0]
     if alt >= rules.MOUNTAIN_MIN_TAKEOFF_M and v3000 >= rules.NOGO["wind_3000m_mountain_kmh"]:
-        out.append(Finding("STRONG_WIND_ALOFT", "Vent très fort à 3000 m",
-                           f"{v3000:.0f} km/h à 3000 m : la turbulence descend sur les reliefs.", absolute_nogo=True))  # fmt: skip
+        out.append(
+            Finding(
+                "STRONG_WIND_ALOFT",
+                "Vent très fort à 3000 m",
+                f"{v3000:.0f} km/h à 3000 m : la turbulence descend sur les reliefs.",
+                absolute_nogo=True,
+            )
+        )
     # gradient déco → déco + 1000 m (sur la tranche atteinte)
     z_top = min(alt + 1000.0, max(top, alt + 300.0))
     v0 = a.profile.wind(alt)[0]
     v1 = a.profile.wind(z_top)[0]
     out.append(
-        Finding("WIND_GRADIENT", "Gradient de vent", f"Le vent passe de {v0:.0f} à {v1:.0f} km/h entre {alt:.0f} et {z_top:.0f} m.",
+        Finding("WIND_GRADIENT", "Gradient de vent", f"Le vent passe de {v0:.0f} à {v1:.0f} km/h entre {alt:.0f} et "
+                                                     f"{z_top:.0f} m.",
                 criterion="wind_aloft", value=abs(v1 - v0), limits=dict(rules.GRADIENT_MAX_KMH_PER_1000M))
     )  # fmt: skip
     # cisaillement local (Δ vitesse sur 300 m)
@@ -334,12 +407,16 @@ def aloft_findings(
     v7, d7 = a.profile.wind(3000.0)
     for region, sector in rules.FOEHN_SECTORS_DEG.items():
         if _in_region(site.lat, site.lon, region) and _in_sector(d7, sector):
-            dry = (a.rh700_pct is not None and a.rh700_pct < rules.FOEHN_DRY_RH_PCT) or (a.temperature_c - a.dew_point_c > 12)
+            dry = (a.rh700_pct is not None and a.rh700_pct < rules.FOEHN_DRY_RH_PCT) or (
+                a.temperature_c - a.dew_point_c > 12
+            )
             if v7 >= rules.NOGO["foehn_700hpa_kmh"]:
-                out.append(Finding("FOEHN", "Foehn", f"Flux de {dir_label(d7)} {v7:.0f} km/h à 700 hPa en travers de la crête principale : foehn, rotors et rafales en vallée.",
+                out.append(Finding("FOEHN", "Foehn", f"Flux de {dir_label(d7)} {v7:.0f} km/h à 700 hPa en travers de "
+                                                     f"la crête principale : foehn, rotors et rafales en vallée.",
                                    absolute_nogo=True))  # fmt: skip
             elif v7 >= rules.FOEHN_CAUTION_700HPA_KMH and dry:
-                out.append(Finding("FOEHN", "Tendance foehn", f"Flux de {dir_label(d7)} {v7:.0f} km/h à 700 hPa, air sec : tendance foehn.",
+                out.append(Finding("FOEHN", "Tendance foehn", f"Flux de {dir_label(d7)} {v7:.0f} km/h à 700 hPa, air "
+                                                              f"sec : tendance foehn.",
                                    caution=True))  # fmt: skip
     return out
 
@@ -355,26 +432,36 @@ def landing_findings(lw: LandingWind, landing: Site, end: datetime, band_start: 
     nc = lw.nowcast
     src = ""
     if nc is not None and nc.has_representative:
-        src = f" ; balise{'s' if len(nc.representative) > 1 else ''} de l'atterro prise{'s' if len(nc.representative) > 1 else ''} en compte (poids {nc.weight * 100:.0f} %)"
+        pl = "s" if len(nc.representative) > 1 else ""
+        src = f" ; balise{pl} de l'atterro prise{pl} en compte (poids {nc.weight * 100:.0f} %)"
         if nc.trend is not None and nc.trend.v_ext is not None:
             src += f", tendance extrapolée ({nc.trend.v_ext:.0f} km/h, raf. {nc.trend.g_ext:.0f})"
     out.append(
         Finding("LANDING_WIND", "Vent à l'atterrissage",
-                f"Vent à {landing.name} vers {fmt_hm(end)} : {dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} km/h{breeze_txt}{src}.",
+                f"Vent à {landing.name} vers {fmt_hm(end)} : {dir_label(lw.direction_deg)} {lw.speed_kmh:.0f} "
+                f"km/h{breeze_txt}{src}.",
                 criterion="landing", value=lw.speed_kmh, limits=dict(lw_lim), band=not breeze, band_start=band_start)
     )  # fmt: skip
     out.append(
-        Finding("LANDING_WIND", "Rafales à l'atterrissage", f"Rafales {lw.gust_kmh:.0f} km/h à {landing.name}{breeze_txt}.",
+        Finding("LANDING_WIND", "Rafales à l'atterrissage", f"Rafales {lw.gust_kmh:.0f} km/h à "
+                                                            f"{landing.name}{breeze_txt}.",
                 criterion="landing", value=lw.gust_kmh, limits=dict(lg_lim), band=not breeze, band_start=band_start)
     )  # fmt: skip
     if lw.speed_kmh > rules.LANDING_WIND_ABS_MAX_KMH or lw.gust_kmh > rules.LANDING_GUST_ABS_MAX_KMH:
-        out.append(Finding("LANDING_WIND", "Vent à l'atterrissage hors limites",
-                           f"{lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} à {landing.name} : no-go.", absolute_nogo=True))  # fmt: skip
+        out.append(
+            Finding(
+                "LANDING_WIND",
+                "Vent à l'atterrissage hors limites",
+                f"{lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} à {landing.name} : no-go.",
+                absolute_nogo=True,
+            )
+        )
     if breeze:
         # VALLEY_BREEZE : info sous 80 % du seuil, caution entre 80 et 100 % (le no-go reste LANDING_WIND)
         ratios = {lv: min(1.0, max(lw.speed_kmh / lw_lim[lv], lw.gust_kmh / lg_lim[lv])) for lv in LEVELS}
         if abs(lw.speed_kmh - lw.model_speed_kmh) >= 1.0 or abs(lw.gust_kmh - lw.model_gust_kmh) >= 1.0:
-            txt = (f"modèle × {lw.breeze_factor:.2f} = {lw.model_speed_kmh:.0f} km/h (rafales {lw.model_gust_kmh:.0f}), "
+            txt = (f"modèle × {lw.breeze_factor:.2f} = {lw.model_speed_kmh:.0f} km/h (rafales "
+                   f"{lw.model_gust_kmh:.0f}), "
                    f"vent retenu avec la balise de l'atterro : {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f}")
         else:
             txt = f"{lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} (×{lw.breeze_factor:.2f} sur le modèle)"
@@ -389,13 +476,19 @@ def landing_findings(lw: LandingWind, landing: Site, end: datetime, band_start: 
 def regional_wind_findings(site: Site, landing_hour: HourAnalysis) -> list[Finding]:
     out: list[Finding] = []
     v, d = landing_hour.wind_speed_kmh, landing_hour.wind_direction_deg
-    for region, sector, name in (("bise", rules.BISE_SECTOR_DEG, "Bise"), ("mistral", rules.MISTRAL_SECTOR_DEG, "Mistral")):
+    for region, sector, name in (
+        ("bise", rules.BISE_SECTOR_DEG, "Bise"),
+        ("mistral", rules.MISTRAL_SECTOR_DEG, "Mistral"),
+    ):
         if _in_region(site.lat, site.lon, region) and _in_sector(d, sector):
             if v >= rules.NOGO["regional_wind_ground_kmh"]:
-                out.append(Finding("REGIONAL_WIND", f"{name} forte", f"{name} {v:.0f} km/h en vallée : no-go dans la zone d'influence.",
+                out.append(Finding("REGIONAL_WIND", f"{name} forte", f"{name} {v:.0f} km/h en vallée : no-go dans la "
+                                                                     f"zone d'influence.",
                                    absolute_nogo=True))  # fmt: skip
             elif v >= rules.REGIONAL_WIND_CAUTION_KMH:
-                out.append(Finding("REGIONAL_WIND", f"{name} sensible", f"{name} {v:.0f} km/h en vallée.", caution=True))
+                out.append(
+                    Finding("REGIONAL_WIND", f"{name} sensible", f"{name} {v:.0f} km/h en vallée.", caution=True)
+                )
     return out
 
 
@@ -407,7 +500,8 @@ def landing_nowcast_findings(ctx: DataContext, lw: LandingWind, landing: Site, e
     if nc is not None and nc.has_representative and nc.mismatch:
         out.append(Finding("BEACON_MISMATCH", "Balises en désaccord avec la prévision",
                            "À l'atterro, la balise contredit le modèle : " + " ; ".join(nc.details[:2])
-                           + f". Vent retenu à l'arrivée : {lw.speed_kmh:.0f} km/h (modèle seul : {lw.model_speed_kmh:.0f}).",
+                           + f". Vent retenu à l'arrivée : {lw.speed_kmh:.0f} km/h (modèle seul : "
+                             f"{lw.model_speed_kmh:.0f}).",
                            caution=True))  # fmt: skip
     nb = no_landing_beacon_finding(ctx, nc, landing, end, lw.model_speed_kmh)
     if nb is not None:
@@ -425,36 +519,54 @@ def cloud_precip_findings(
     win = tl.between(start - timedelta(hours=1), start + timedelta(hours=1))
     pmax = max([h.precipitation_mm_h for h in win] + [ltl.at(end).precipitation_mm_h])
     if pmax >= rules.NOGO["precip_mm_h"]:
-        out.append(Finding("RAIN", "Pluie", f"Précipitations prévues ({pmax:.1f} mm/h) sur le créneau.", absolute_nogo=True))
+        out.append(
+            Finding("RAIN", "Pluie", f"Précipitations prévues ({pmax:.1f} mm/h) sur le créneau.", absolute_nogo=True)
+        )
     elif pmax >= rules.PRECIP_CAUTION_MM_H:
-        out.append(Finding("RAIN", "Averses possibles", f"Faibles précipitations possibles ({pmax:.2f} mm/h).", caution=True))
+        out.append(
+            Finding("RAIN", "Averses possibles", f"Faibles précipitations possibles ({pmax:.2f} mm/h).", caution=True)
+        )
     prev = [h for h in tl.hours if start - timedelta(hours=3) <= h.time < start]
     prev_sum = sum(h.precipitation_mm_h for h in prev)
     if prev_sum >= rules.NOGO["precip_prev_3h_mm"]:
         out.append(Finding("RAIN", "Pluie dans les 3 h précédentes",
-                           f"{prev_sum:.1f} mm de pluie dans les 3 h avant le déco : aile mouillée (risque de parachutale), sol froid.",
+                           f"{prev_sum:.1f} mm de pluie dans les 3 h avant le déco : aile mouillée (risque de "
+                           f"parachutale), sol froid.",
                            absolute_nogo=True))  # fmt: skip
     # base des nuages / brouillard au déco
     base = a.cloud_base_m
     if base is not None and base < alt + rules.NOGO["cloud_base_min_above_takeoff_m"]:
-        out.append(Finding("LOW_CLOUD_BASE", "Base des nuages au déco", f"Base des cumulus vers {base:.0f} m : déco dans ou sous le nuage.",
+        out.append(Finding("LOW_CLOUD_BASE", "Base des nuages au déco", f"Base des cumulus vers {base:.0f} m : déco "
+                                                                        f"dans ou sous le nuage.",
                            absolute_nogo=True))  # fmt: skip
     elif base is not None and base < alt + rules.CLOUD_BASE_CAUTION_ABOVE_TAKEOFF_M:
-        out.append(Finding("LOW_CLOUD_BASE", "Base basse", f"Base des cumulus vers {base:.0f} m : peu de marge au-dessus du déco.",
+        out.append(Finding("LOW_CLOUD_BASE", "Base basse", f"Base des cumulus vers {base:.0f} m : peu de marge "
+                                                           f"au-dessus du déco.",
                            caution=True))  # fmt: skip
-    if a.cloud_cover_low_pct >= rules.LOW_CLOUD_NOGO_PCT and (base is None or base < alt + rules.LOW_CLOUD_NOGO_ABOVE_TAKEOFF_M) and a.temperature_c - a.dew_point_c < 4:
-        out.append(Finding("LOW_CLOUD_BASE", "Nuages bas", f"Couverture nuageuse basse {a.cloud_cover_low_pct:.0f} % au niveau du déco.",
+    if (
+        a.cloud_cover_low_pct >= rules.LOW_CLOUD_NOGO_PCT
+        and (base is None or base < alt + rules.LOW_CLOUD_NOGO_ABOVE_TAKEOFF_M)
+        and a.temperature_c - a.dew_point_c < 4
+    ):
+        out.append(Finding("LOW_CLOUD_BASE", "Nuages bas", f"Couverture nuageuse basse {a.cloud_cover_low_pct:.0f} % "
+                                                           f"au niveau du déco.",
                            absolute_nogo=True))  # fmt: skip
     if a.temperature_c - a.dew_point_c < rules.SPREAD_T_TD_NOGO_C:
-        out.append(Finding("LOW_CLOUD_BASE", "Brouillard au déco", f"T − Td = {a.temperature_c - a.dew_point_c:.1f} °C au déco : brouillard / nuage.",
+        out.append(Finding("LOW_CLOUD_BASE", "Brouillard au déco", f"T − Td = {a.temperature_c - a.dew_point_c:.1f} °C "
+                                                                   f"au déco : brouillard / nuage.",
                            absolute_nogo=True))  # fmt: skip
     la = ltl.at(end)
-    if la.temperature_c - la.dew_point_c < rules.SPREAD_T_TD_NOGO_C and la.cloud_cover_low_pct >= rules.LOW_CLOUD_NOGO_PCT:
+    if (
+        la.temperature_c - la.dew_point_c < rules.SPREAD_T_TD_NOGO_C
+        and la.cloud_cover_low_pct >= rules.LOW_CLOUD_NOGO_PCT
+    ):
         out.append(Finding("LOW_CLOUD_BASE", "Stratus / brouillard sur l'atterro",
-                           f"Atterro {landing.name} dans le stratus (T − Td = {la.temperature_c - la.dew_point_c:.1f} °C, nuages bas {la.cloud_cover_low_pct:.0f} %).",
+                           f"Atterro {landing.name} dans le stratus (T − Td = {la.temperature_c - la.dew_point_c:.1f} "
+                           f"°C, nuages bas {la.cloud_cover_low_pct:.0f} %).",
                            absolute_nogo=True))  # fmt: skip
     if a.cloud_cover_midhigh_pct >= rules.MIDHIGH_CLOUD_CAUTION_PCT and a.cloud_cover_pct >= 80:
-        out.append(Finding("FRONT", "Voile nuageux épais", "Couverture moyenne/haute ≥ 80 % : thermiques coupés, dégradation possible.",
+        out.append(Finding("FRONT", "Voile nuageux épais", "Couverture moyenne/haute ≥ 80 % : thermiques coupés, "
+                                                           "dégradation possible.",
                            caution=True))  # fmt: skip
     return out
 
@@ -471,7 +583,8 @@ def convective_findings(
         li = h.lifted_index if h.lifted_index is not None else 5.0
         if (h.cape_j_kg >= cs["cape"] and li <= cs["li"]) or h.cape_j_kg >= rules.NOGO["cape_absolute"]:
             out.append(Finding("THUNDERSTORM", "Risque d'orage",
-                               f"CAPE {h.cape_j_kg:.0f} J/kg et LI {li:.0f} vers {fmt_hm(h.time)} : risque d'orage pendant ou juste après le vol.",
+                               f"CAPE {h.cape_j_kg:.0f} J/kg et LI {li:.0f} vers {fmt_hm(h.time)} : risque d'orage "
+                               f"pendant ou juste après le vol.",
                                absolute_nogo=True))  # fmt: skip
             sub = 0.0
             break
@@ -479,15 +592,21 @@ def convective_findings(
         for h in storm_hours:
             li = h.lifted_index if h.lifted_index is not None else 5.0
             if h.cape_j_kg >= rules.CAPE_CAUTION["cape"] and li <= rules.CAPE_CAUTION["li"]:
-                out.append(Finding("THUNDERSTORM", "Instabilité modérée", f"CAPE {h.cape_j_kg:.0f} J/kg, LI {li:.0f} : averses possibles en fin de créneau.",
+                out.append(Finding("THUNDERSTORM", "Instabilité modérée", f"CAPE {h.cape_j_kg:.0f} J/kg, LI {li:.0f} : "
+                                                                          f"averses possibles en fin de créneau.",
                                    caution=True))  # fmt: skip
                 sub = min(sub, 40.0)
                 break
     conv_hours = tl.between(start, end + timedelta(hours=rules.CONVECTIVE_PRECIP_CHECK_AFTER_LANDING_H))
     for h in conv_hours:
-        if h.time > end and h.precipitation_mm_h >= rules.NOGO["precip_mm_h"] and h.cape_j_kg >= rules.CAPE_CAUTION["cape"]:
+        if (
+            h.time > end
+            and h.precipitation_mm_h >= rules.NOGO["precip_mm_h"]
+            and h.cape_j_kg >= rules.CAPE_CAUTION["cape"]
+        ):
             out.append(Finding("THUNDERSTORM", "Averses orageuses après le vol",
-                               f"Précipitations convectives ({h.precipitation_mm_h:.1f} mm/h) vers {fmt_hm(h.time)}, moins de 2 h après l'atterrissage.",
+                               f"Précipitations convectives ({h.precipitation_mm_h:.1f} mm/h) vers {fmt_hm(h.time)}, "
+                               f"moins de 2 h après l'atterrissage.",
                                absolute_nogo=True))  # fmt: skip
             sub = 0.0
             break
@@ -495,18 +614,31 @@ def convective_findings(
     od = cw.overdevelopment_time
     if cw.overdevelopment_risk == "high":
         if od is not None and end > od:
-            out.append(Finding("OVERDEVELOPMENT", "Vol après l'heure de surdéveloppement",
-                               f"Surdéveloppement attendu vers {fmt_hm(od)} : le vol se termine trop tard.", absolute_nogo=True))  # fmt: skip
+            out.append(
+                Finding(
+                    "OVERDEVELOPMENT",
+                    "Vol après l'heure de surdéveloppement",
+                    f"Surdéveloppement attendu vers {fmt_hm(od)} : le vol se termine trop tard.",
+                    absolute_nogo=True,
+                )
+            )
             sub = 0.0
         else:
             out.append(Finding("OVERDEVELOPMENT", "Journée à surdéveloppement",
-                               f"Risque de surdéveloppement élevé{(' vers ' + fmt_hm(od)) if od else ''} : vols du matin courts uniquement.",
+                               f"Risque de surdéveloppement élevé{(' vers ' + fmt_hm(od)) if od else ''} : vols du "
+                               f"matin courts uniquement.",
                                caution=True))  # fmt: skip
             sub = min(sub, 35.0)
     elif cw.overdevelopment_risk == "moderate":
         if od is not None and start <= od <= end + timedelta(hours=rules.OVERDEV_MODERATE_WINDOW_AFTER_LANDING_H):
-            out.append(Finding("OVERDEVELOPMENT", "Surdéveloppement possible",
-                               f"Surdéveloppement possible vers {fmt_hm(od)} : être posé au plus tard 1 h avant.", caution=True))  # fmt: skip
+            out.append(
+                Finding(
+                    "OVERDEVELOPMENT",
+                    "Surdéveloppement possible",
+                    f"Surdéveloppement possible vers {fmt_hm(od)} : être posé au plus tard 1 h avant.",
+                    caution=True,
+                )
+            )
             sub = min(sub, 50.0)
         else:
             sub = min(sub, 75.0)
@@ -533,6 +665,8 @@ class TakeoffData:
     sunrise: datetime | None
     sunset: datetime | None
     site_findings: list[Finding]
+    free: TakeoffTerrain | None = None
+    sel: LandingSelection | None = None
 
 
 def _landing_caps(td: TakeoffData, start: datetime, thermal: bool) -> tuple[datetime, str]:
@@ -541,15 +675,24 @@ def _landing_caps(td: TakeoffData, start: datetime, thermal: bool) -> tuple[date
         caps.append((td.sunset, "coucher du soleil"))
     if thermal:
         if td.cw.end is not None:
-            caps.append((td.cw.end + timedelta(minutes=rules.XC_LANDING_AFTER_CONVECTION_END_MIN), "fin des thermiques"))
+            caps.append(
+                (td.cw.end + timedelta(minutes=rules.XC_LANDING_AFTER_CONVECTION_END_MIN), "fin des thermiques")
+            )
         if td.sunset:
-            caps.append((td.sunset - timedelta(minutes=rules.LANDING_BEFORE_SUNSET_MIN), "30 min avant le coucher du soleil"))
+            caps.append((td.sunset - timedelta(minutes=rules.LANDING_BEFORE_SUNSET_MIN), "30 min avant le coucher du "
+                                                                                         "soleil"))
     od = td.cw.overdevelopment_time
     if od is not None and td.cw.overdevelopment_risk != "low":
-        caps.append((od - timedelta(hours=rules.OVERDEV_MODERATE_END_BEFORE_H), "surdéveloppement attendu 1 h plus tard"))
+        caps.append((od - timedelta(hours=rules.OVERDEV_MODERATE_END_BEFORE_H), "surdéveloppement attendu 1 h plus "
+                                                                                "tard"))
     a = td.tl.at(start)
     li = a.lifted_index if a.lifted_index is not None else 5.0
-    if thermal and a.cape_j_kg >= rules.CAPE_CAUTION["cape"] and li <= rules.CAPE_CAUTION["li"] and td.cw.overdevelopment_risk == "low":
+    if (
+        thermal
+        and a.cape_j_kg >= rules.CAPE_CAUTION["cape"]
+        and li <= rules.CAPE_CAUTION["li"]
+        and td.cw.overdevelopment_risk == "low"
+    ):
         # repli : fin de créneau avancée à 14h solaire
         dh = rules.CAPE_CAUTION_WINDOW_END_SOLAR_H - solar_hour(start, td.site.lon)
         caps.append((start + timedelta(hours=dh), "instabilité : fin avancée à 14h solaire"))
@@ -580,13 +723,16 @@ def evaluate_variant(
     if td.sunrise and start < td.sunrise:
         return _codes_prefix("SUNSET", f"Décollage avant le lever du soleil ({fmt_hm(td.sunrise)}).")
     if td.sunset and start >= td.sunset:
-        return _codes_prefix("SUNSET", f"Décollage après le coucher du soleil ({fmt_hm(td.sunset)}) : le vol libre se pratique de jour.")
+        return _codes_prefix("SUNSET", f"Décollage après le coucher du soleil ({fmt_hm(td.sunset)}) : le vol libre se "
+                                       f"pratique de jour.")
     thermal_variant = variant in ("local_thermal", "xc")
     cap, cap_reason = _landing_caps(td, start, thermal_variant)
     avail_min = (cap - start).total_seconds() / 60.0
     drop = alt - landing.elevation_m
     plouf_min = max(0.0, drop) / (rules.SINK_RATE_MS["calm"] * 60.0) + rules.PLOUF_EXTRA_MIN
-    glide_wind = vector_mean([(tw.speed_kmh, tw.direction_deg), (td.ltl.at(start).wind_speed_kmh, td.ltl.at(start).wind_direction_deg)])
+    glide_wind = vector_mean(
+        [(tw.speed_kmh, tw.direction_deg), (td.ltl.at(start).wind_speed_kmh, td.ltl.at(start).wind_direction_deg)]
+    )
     duration_note: str | None = None
     feas: list[Finding] = []
     max_alt = alt
@@ -598,7 +744,9 @@ def evaluate_variant(
             return "Pas d'atterrissage en contrebas pour un plouf"
         dur = plouf_min
         if variant == "restitution":
-            if not td.sunset or not (td.sunset - timedelta(hours=rules.RESTITUTION_BEFORE_SUNSET_H) <= start < td.sunset):
+            if not td.sunset or not (
+                td.sunset - timedelta(hours=rules.RESTITUTION_BEFORE_SUNSET_H) <= start < td.sunset
+            ):
                 return "Hors créneau de restitution"
             if not any(o in rules.RESTITUTION_FACES for o in site.orientations):
                 return "Face non orientée pour la restitution"
@@ -606,11 +754,16 @@ def evaluate_variant(
             dur = min(dur, (td.sunset - start).total_seconds() / 60.0 - 5)
             thermal_usage = "optional"
         if dur > filters.duration_max_minutes + 0.5:
-            return _codes_prefix("WEAK_THERMALS", f"La descente seule dure ~{dur:.0f} min, plus que la durée max demandée.")
+            return _codes_prefix("WEAK_THERMALS", f"La descente seule dure ~{dur:.0f} min, plus que la durée max "
+                                                  f"demandée.")
         if dur < filters.duration_min_minutes:
             duration_note = (
                 f"Seul un plouf d'environ {dur:.0f} min est possible"
-                + (" avant le coucher du soleil" if td.sunset and (td.sunset - start) < timedelta(hours=2) else " (pas de thermique exploitable)")
+                + (
+                    " avant le coucher du soleil"
+                    if td.sunset and (td.sunset - start) < timedelta(hours=2)
+                    else " (pas de thermique exploitable)"
+                )
                 + f" : plus court que les {filters.duration_min_minutes:.0f} min demandées."
             )
         lw_hour = td.ltl.at(start + timedelta(minutes=dur))
@@ -627,27 +780,43 @@ def evaluate_variant(
         t = start
         while t < cap and persist < 600:
             twx = takeoff_wind(ctx, site, td.tl, t)
-            if not (rules.RIDGE_MIN_KMH_BY_LEVEL[level] <= twx.speed_kmh <= rules.RIDGE["max_kmh"][level] * 1.05) or twx.angle.category == "tail":
+            if (
+                not (rules.RIDGE_MIN_KMH_BY_LEVEL[level] <= twx.speed_kmh <= rules.RIDGE["max_kmh"][level] * 1.05)
+                or twx.angle.category == "tail"
+            ):
                 break
             persist += 60.0
             t += timedelta(hours=1)
         persist = max(persist, 30.0 if rules.RIDGE_MIN_KMH_BY_LEVEL[level] <= tw.speed_kmh else 0.0)
         dur = min(filters.duration_max_minutes, persist, rules.RIDGE_MAX_DURATION_MIN[level], avail_min)
-        feas.append(Finding("WEAK_THERMALS", "Vent de soaring", f"Vent de face {tw.speed_kmh:.0f} km/h pour tenir en dynamique.",
+        feas.append(Finding("WEAK_THERMALS", "Vent de soaring", f"Vent de face {tw.speed_kmh:.0f} km/h pour tenir en "
+                                                                f"dynamique.",
                             value=tw.speed_kmh, limits={lv: float(rules.RIDGE_MIN_KMH_BY_LEVEL[lv]) for lv in LEVELS},
                             kind="min", feasibility=True, band=False, blocks_go=False))  # fmt: skip
         if dur < 15:
             return _codes_prefix("WEAK_THERMALS", "Vent de soaring trop peu durable.")
         if dur < filters.duration_min_minutes:
             duration_note = f"Le vent de soaring ne tient que ~{dur:.0f} min : plus court que demandé."
-        route = build_ridge(ctx, site, landing, td.alternates, level, wing, glide_wind, tw.direction_deg, dur, td.top_landing)
+        route = build_ridge(
+            ctx, site, landing, td.alternates, level, wing, glide_wind, tw.direction_deg, dur, td.top_landing
+        )
         max_alt = route.max_altitude_m
     elif variant == "local_thermal":
         if vario < rules.THERMAL_USABLE_MIN_MS:
             return _codes_prefix("WEAK_THERMALS", f"Thermiques non exploitables à {fmt_hm(start)} ({vario:.1f} m/s).")
-        feas.append(Finding("WEAK_THERMALS", "Plafond utile", f"Plafond utile {usable:.0f} m ({usable - alt:.0f} m au-dessus du déco).",
-                            value=usable - alt, limits={lv: float(x) for lv, x in rules.LOCAL_CEILING_MIN_ABOVE_TAKEOFF_M.items()},
-                            kind="min", feasibility=True, band=False, blocks_go=False))  # fmt: skip
+        feas.append(
+            Finding(
+                "WEAK_THERMALS",
+                "Plafond utile",
+                f"Plafond utile {usable:.0f} m ({usable - alt:.0f} m au-dessus du déco).",
+                value=usable - alt,
+                limits={lv: float(x) for lv, x in rules.LOCAL_CEILING_MIN_ABOVE_TAKEOFF_M.items()},
+                kind="min",
+                feasibility=True,
+                band=False,
+                blocks_go=False,
+            )
+        )
         max_d = min(filters.duration_max_minutes, avail_min, float(rules.MAX_DURATION_MIN[level]))
         if level == "beginner":
             max_d = min(max_d, rules.LOCAL_THERMAL_BEGINNER_MAX_MIN)
@@ -664,33 +833,51 @@ def evaluate_variant(
             max_d = realism_cap
             cap_reason = f"thermiques {vario:.1f} m/s, plafond utile {usable - alt:.0f} m au-dessus du déco"
         if max_d < plouf_min + 10:
-            return _codes_prefix("WEAK_THERMALS", f"Fenêtre thermique trop courte après {fmt_hm(start)} ({cap_reason}).")
+            return _codes_prefix("WEAK_THERMALS", f"Fenêtre thermique trop courte après {fmt_hm(start)} "
+                                                  f"({cap_reason}).")
         dur = max_d
         if dur < filters.duration_min_minutes:
             duration_note = f"Vol limité à ~{dur:.0f} min ({cap_reason}) : plus court que demandé."
         max_alt = usable
         thermal_usage = "essential" if dur > plouf_min * 1.5 else "optional"
         layer = a.profile.mean_wind(alt, max(alt + 200, usable))
-        route = build_local_thermal(ctx, proj, site, landing, td.alternates, level, wing, glide_wind, layer, start, dur, usable, max_alt)
+        route = build_local_thermal(
+            ctx, proj, site, landing, td.alternates, level, wing, glide_wind, layer, start, dur, usable, max_alt
+        )
     elif variant == "xc":
         if vario < rules.THERMAL_USABLE_MIN_MS:
             return _codes_prefix("WEAK_THERMALS", f"Thermiques insuffisants pour un cross à {fmt_hm(start)}.")
         xc_min = rules.XC_CEILING_MIN_ABOVE_TAKEOFF_M
-        feas.append(Finding("WEAK_THERMALS", "Plafond pour le cross", f"Plafond utile {usable - alt:.0f} m au-dessus du déco.",
-                            value=usable - alt, limits={lv: (None if x is None else float(x)) for lv, x in xc_min.items()},
-                            kind="min", feasibility=True, band=False, blocks_go=False))  # fmt: skip
+        feas.append(
+            Finding(
+                "WEAK_THERMALS",
+                "Plafond pour le cross",
+                f"Plafond utile {usable - alt:.0f} m au-dessus du déco.",
+                value=usable - alt,
+                limits={lv: (None if x is None else float(x)) for lv, x in xc_min.items()},
+                kind="min",
+                feasibility=True,
+                band=False,
+                blocks_go=False,
+            )
+        )
         if xc_min[level] is None or usable - alt < xc_min[level]:
-            return _codes_prefix("WEAK_THERMALS", f"Plafond utile trop bas pour un cross ({usable - alt:.0f} m au-dessus du déco).")
+            return _codes_prefix("WEAK_THERMALS", f"Plafond utile trop bas pour un cross ({usable - alt:.0f} m "
+                                                  f"au-dessus du déco).")
         budget = min(filters.duration_max_minutes, avail_min, float(rules.MAX_DURATION_MIN[level]))
         if td.cw.overdevelopment_risk == "high":
             if level != "expert":
-                return _codes_prefix("OVERDEVELOPMENT", "Journée à surdéveloppement : pas de cross (sauf expert, retour avant 13h solaire).")
+                return _codes_prefix("OVERDEVELOPMENT", "Journée à surdéveloppement : pas de cross (sauf expert, "
+                                                        "retour avant 13h solaire).")
             back = start + timedelta(hours=rules.OVERDEV_HIGH_EXPERT_RETURN_SOLAR_H - sh)
             budget = min(budget, (back - start).total_seconds() / 60.0, rules.OVERDEV_HIGH_MAX_DURATION_MIN)
         if budget < rules.XC_MIN_DURATION_MIN:
-            return _codes_prefix("WEAK_THERMALS", f"Fenêtre trop courte pour un cross ({budget:.0f} min, {cap_reason}).")
+            return _codes_prefix("WEAK_THERMALS", f"Fenêtre trop courte pour un cross ({budget:.0f} min, "
+                                                  f"{cap_reason}).")
         layer = a.profile.mean_wind(alt, usable)
-        xc, why = build_cross(ctx, proj, site, landing, td.landings_pool, level, wing, layer, start, budget, usable, usable, vario)
+        xc, why = build_cross(
+            ctx, proj, site, landing, td.landings_pool, level, wing, layer, start, budget, usable, usable, vario
+        )
         if xc is None:
             return why or "Cross impossible"
         route = xc.route
@@ -712,6 +899,8 @@ def evaluate_variant(
     findings: list[Finding] = list(td.site_findings) + feas
     ridge = variant == "ridge"
     findings += takeoff_wind_findings(tw, site, ridge, sh)
+    if free_takeoff.is_free_takeoff(site):  # §12.6 : seuils propres au décollage libre
+        findings += free_takeoff.wind_findings(tw, td.free, site)
     # nowcasting (§12) : tendance des balises du déco (début du créneau)
     findings += trend_findings(tw.nowcast, ctx.horizon, tw.speed_kmh, ridge)
     top = (max_alt + rules.ALOFT_CHECK_ABOVE_CEILING_M) if thermal_variant else alt + rules.CREST_CHECK_ABOVE_TAKEOFF_M
@@ -728,23 +917,40 @@ def evaluate_variant(
                 criterion=None, value=vario_max, limits={lv: float(x) for lv, x in rules.THERMAL_MAX_MS.items()})
     )  # fmt: skip
     if filters.thermals == "avoid" and vario_max > rules.AVOID_THERMAL_MAX_MS:
-        return _codes_prefix("STRONG_THERMALS", f"Thermiques {vario_max:.1f} m/s pendant le créneau : incompatible avec « sans thermiques ».")
+        return _codes_prefix("STRONG_THERMALS", f"Thermiques {vario_max:.1f} m/s pendant le créneau : incompatible "
+                                                f"avec « sans thermiques ».")
     if filters.thermals == "required" and thermal_usage == "none":
         return _codes_prefix("WEAK_THERMALS", "Vol sans thermique alors que tu veux des thermiques.")
     if filters.thermals == "required" and vario < 1.0:
-        findings.append(Finding("WEAK_THERMALS", "Thermiques faibles", "Thermiques faibles, vol local court probable.", info=True))
+        findings.append(
+            Finding("WEAK_THERMALS", "Thermiques faibles", "Thermiques faibles, vol local court probable.", info=True)
+        )
     # froid / gel
     if thermal_variant and a.freezing_level_m is not None and a.freezing_level_m < max_alt:
         t_ceiling = a.profile.temperature(max_alt)
         findings.append(Finding("FREEZING", "Isotherme 0 °C sous le plafond",
-                                f"Isotherme 0 °C vers {a.freezing_level_m:.0f} m, {t_ceiling:.0f} °C au plafond : onglée, givre sur les instruments.",
+                                f"Isotherme 0 °C vers {a.freezing_level_m:.0f} m, {t_ceiling:.0f} °C au plafond : "
+                                f"onglée, givre sur les instruments.",
                                 caution=True))  # fmt: skip
-        findings.append(Finding("FREEZING", "Froid au plafond", f"{t_ceiling:.0f} °C au plafond.", value=-t_ceiling,
-                                limits={"beginner": -rules.COLD_AT_CEILING_BEGINNER_C, "intermediate": 99.0, "advanced": 99.0, "expert": 99.0},
-                                band=False))  # fmt: skip
+        findings.append(
+            Finding(
+                "FREEZING",
+                "Froid au plafond",
+                f"{t_ceiling:.0f} °C au plafond.",
+                value=-t_ceiling,
+                limits={
+                    "beginner": -rules.COLD_AT_CEILING_BEGINNER_C,
+                    "intermediate": 99.0,
+                    "advanced": 99.0,
+                    "expert": 99.0,
+                },
+                band=False,
+            )
+        )
     inv = _inversion(a, alt)
     if inv is not None:
-        findings.append(Finding("INVERSION", "Inversion", f"Inversion vers {inv:.0f} m : thermiques bloqués en dessous, turbulence au passage.",
+        findings.append(Finding("INVERSION", "Inversion", f"Inversion vers {inv:.0f} m : thermiques bloqués en "
+                                                          f"dessous, turbulence au passage.",
                                 info=True))  # fmt: skip
     # atterrissage à l'heure d'arrivée (en top landing : même vent que le déco, déjà contrôlé — lot 6.8)
     top_ldg = ridge and td.top_landing
@@ -757,21 +963,25 @@ def evaluate_variant(
     for lv in LEVELS:
         g = _route_glide(ctx, td, route, lv, wing, glide_wind)
         glide_by_level[lv] = g
-        glide_ratios[lv] = g.ratio if not (top_ldg or variant == "plouf" and td.top_landing) else 0.0
+        glide_ratios[lv] = g.ratio if not (top_ldg or (variant == "plouf" and td.top_landing)) else 0.0
     if not top_ldg:
         g = glide_by_level[level]
-        txt = (f"Finesse requise {g.required_ratio:.1f} vers {g.landing_name or landing.name} pour {g.available_ratio:.1f} disponible "
-               f"(finesse de calcul sol, vent compris)") + ("" if g.terrain_ok else " ; le relief coupe la ligne de plané")
+        txt = (f"Finesse requise {g.required_ratio:.1f} vers {g.landing_name or landing.name} pour "
+               f"{g.available_ratio:.1f} disponible "
+               f"(finesse de calcul sol, vent compris)") + ("" if g.terrain_ok else " ; le relief coupe la ligne de "
+                                                                                    "plané")
         findings.append(Finding("GLIDE_MARGIN", "Marge de finesse", txt + ".", criterion="landing", ratios=glide_ratios,
                                 band_start=rules.GLIDE_CAUTION_RATIO, curve=glide_subscore))  # fmt: skip
     # coucher du soleil
     if td.sunset:
         if end > td.sunset:
-            findings.append(Finding("SUNSET", "Atterrissage après le coucher du soleil", f"Atterrissage estimé {fmt_hm(end)}, coucher {fmt_hm(td.sunset)}.",
+            findings.append(Finding("SUNSET", "Atterrissage après le coucher du soleil", f"Atterrissage estimé "
+                f"{fmt_hm(end)}, coucher {fmt_hm(td.sunset)}.",
                                     absolute_nogo=True))  # fmt: skip
         elif end > td.sunset - timedelta(minutes=rules.LANDING_BEFORE_SUNSET_MIN):
             findings.append(Finding("SUNSET", "Atterrissage proche du coucher du soleil",
-                                    f"Atterrissage estimé {fmt_hm(end)}, coucher du soleil {fmt_hm(td.sunset)} : pas de marge.",
+                                    f"Atterrissage estimé {fmt_hm(end)}, coucher du soleil {fmt_hm(td.sunset)} : pas "
+                                    f"de marge.",
                                     caution=True))  # fmt: skip
     # espaces aériens + zones sensibles (route 3D)
     min_alt = min(landing.elevation_m, alt)
@@ -779,30 +989,70 @@ def evaluate_variant(
     asp = evaluate_airspaces(ctx, proj, flight_coords, min_alt, max_alt)
     if asp.altitude_cap_m is not None and asp.altitude_cap_m < max_alt:
         max_alt = max(alt, asp.altitude_cap_m)
-        findings.append(Finding("ALTITUDE_LIMIT", "Plafond limité par un espace aérien",
-                                f"Altitude max limitée à {max_alt:.0f} m (plancher d'un espace aérien − 100 m).", caution=True, blocks_go=False))  # fmt: skip
+        findings.append(
+            Finding(
+                "ALTITUDE_LIMIT",
+                "Plafond limité par un espace aérien",
+                f"Altitude max limitée à {max_alt:.0f} m (plancher d'un espace aérien − 100 m).",
+                caution=True,
+                blocks_go=False,
+            )
+        )
         asp = evaluate_airspaces(ctx, proj, flight_coords, min_alt, max_alt)
     findings += asp.findings
     if thermal_variant and a.usable_ceiling_m > rules.FL115_M_STANDARD - rules.CEILING_MARGIN_BELOW_AIRSPACE_M:
         findings.append(Finding("ALTITUDE_LIMIT", "Plafond au-dessus du FL115",
-                                f"Plafond utile ~{a.usable_ceiling_m:.0f} m : rester sous le FL115 (≈ {rules.FL115_M_STANDARD:.0f} m QNH 1013), altitude retenue {max_alt:.0f} m.",
+                                f"Plafond utile ~{a.usable_ceiling_m:.0f} m : rester sous le FL115 (≈ "
+                                f"{rules.FL115_M_STANDARD:.0f} m QNH 1013), altitude retenue {max_alt:.0f} m.",
                                 caution=True, blocks_go=False))  # fmt: skip
-    findings += evaluate_sensitive_route(ctx, proj, [(c[0], c[1], max_alt if i not in (0, len(flight_coords) - 1) else c[2]) for i, c in enumerate(flight_coords)], site, landing)
+    findings += evaluate_sensitive_route(
+        ctx,
+        proj,
+        [(c[0], c[1], max_alt if i not in (0, len(flight_coords) - 1) else c[2]) for i, c in enumerate(flight_coords)],
+        site,
+        landing,
+    )
 
     cand = Candidate(
-        variant=variant, takeoff=site, landing=landing, alternates=td.alternates, start=start, duration_min=round(dur, 1),
-        route=route, findings=findings, takeoff_wind=tw, landing_wind=lw, convection=td.cw, vario=vario, usable=usable,
-        max_alt=max_alt, thermal_usage=thermal_usage, horizon=ctx.horizon, level=level, mock=ctx.mock,
-        sunrise=td.sunrise, sunset=td.sunset, latest_landing=cap, landing_cap_reason=cap_reason, duration_note=duration_note,
+        variant=variant,
+        takeoff=site,
+        landing=landing,
+        alternates=td.alternates,
+        start=start,
+        duration_min=round(dur, 1),
+        route=route,
+        findings=findings,
+        takeoff_wind=tw,
+        landing_wind=lw,
+        convection=td.cw,
+        vario=vario,
+        usable=usable,
+        max_alt=max_alt,
+        thermal_usage=thermal_usage,
+        horizon=ctx.horizon,
+        level=level,
+        mock=ctx.mock,
+        sunrise=td.sunrise,
+        sunset=td.sunset,
+        latest_landing=cap,
+        landing_cap_reason=cap_reason,
+        duration_note=duration_note,
         airspace=asp,
-    )  # fmt: skip
+    )
     cand.airspaces = asp.warnings
+    cand.glide_wind = glide_wind
+    cand.wing = wing
+    cand.free_terrain = td.free
+    cand.landing_sel = td.sel
+    cand.policy = filters.landing_policy
     cand.score_items = [conv_sub]  # temporaire : sous-score convectif transmis à finalize()
     route.glide = glide_by_level[level] if not top_ldg else route.glide
     return cand
 
 
-def _route_glide(ctx: DataContext, td: TakeoffData, route: Route, level: str, wing: float, wind: tuple[float, float]) -> GlideCheck:
+def _route_glide(
+    ctx: DataContext, td: TakeoffData, route: Route, level: str, wing: float, wind: tuple[float, float]
+) -> GlideCheck:
     """Pire cas (lot 6.11) : (a) déco → atterro principal à l'altitude du déco ; (b) chaque point de route à
     son altitude de point bas → meilleur atterro identifié."""
     g = glide_to(ctx, td.site.lat, td.site.lon, td.site.elevation_m, td.landing, level, wing, wind)
@@ -826,7 +1076,7 @@ def _route_glide(ctx: DataContext, td: TakeoffData, route: Route, level: str, wi
 
 def _inversion(a: HourAnalysis, alt: float) -> float | None:
     pts = [p for p in a.profile.points if alt + 100 <= p.z <= 3500]
-    for p, q in zip(pts, pts[1:], strict=False):
+    for p, q in pairwise(pts):
         if q.t > p.t + 0.5:
             return p.z
     return None
@@ -841,7 +1091,9 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     # confiance
     t = cand.start
     tl = ctx.timelines[cand.takeoff.id]
-    model_winds = tl.model_winds.get(min(tl.model_winds, key=lambda x: abs((x - t).total_seconds()))) if tl.model_winds else []
+    model_winds = (
+        tl.model_winds.get(min(tl.model_winds, key=lambda x: abs((x - t).total_seconds()))) if tl.model_winds else []
+    )
     nc = cand.takeoff_wind.nowcast
     rep_to = nc is not None and nc.has_representative
     coherent = None if not rep_to else (True if nc.coherent else (False if nc.mismatch else None))
@@ -853,12 +1105,18 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     cand.confidence = min(conf_raw, rules.MOCK_CONFIDENCE_CAP) if ctx.mock else conf_raw
     base = rules.HORIZON_BASE_CONFIDENCE[ctx.horizon]
     if conf_raw < rules.VERDICT["go_min_confidence_ratio"] * base:
-        why = f"dispersion des modèles (σ vent {sig_v:.0f} km/h" + (f", σ direction {sig_d:.0f}°" if sig_d else "") + ")"
+        why = (
+            f"dispersion des modèles (σ vent {sig_v:.0f} km/h" + (f", σ direction {sig_d:.0f}°" if sig_d else "") + ")"
+        )
         if beacon < 1:
             why += ", balises en désaccord"
         if f_ldg < 1:
             why += ", balise de l'atterro absente ou en désaccord"
-        findings.append(Finding("LOW_CONFIDENCE", "Prévision incertaine", f"Confiance {conf_raw * 100:.0f} % : {why}.", caution=True))
+        findings.append(
+            Finding(
+                "LOW_CONFIDENCE", "Prévision incertaine", f"Confiance {conf_raw * 100:.0f} % : {why}.", caution=True
+            )
+        )
     if rep_to and nc.mismatch:
         findings.append(Finding("BEACON_MISMATCH", "Balises en désaccord avec la prévision",
                                 "Au déco, les balises contredisent le modèle : " + " ; ".join(nc.details[:2])
@@ -866,8 +1124,14 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     if ctx.horizon in rules.NOWCAST_HORIZONS:
         stale = _stale_attached(ctx, cand)
         if stale:
-            findings.append(Finding("STALE_BEACONS", "Balises anciennes",
-                                    "Mesure de plus de 30 min ignorée : " + ", ".join(stale[:3]) + ".", info=True))  # fmt: skip
+            findings.append(
+                Finding(
+                    "STALE_BEACONS",
+                    "Balises anciennes",
+                    "Mesure de plus de 30 min ignorée : " + ", ".join(stale[:3]) + ".",
+                    info=True,
+                )
+            )
     # une source no-go (lot 4.3)
     sp = tl.spreads.get(min(tl.spreads, key=lambda x: abs((x - t).total_seconds()))) if tl.spreads else None
     if sp is not None and sp.n_models >= 2:
@@ -875,19 +1139,24 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
         scale = cand.takeoff_wind.model_speed_kmh / a.wind_speed_kmh if a.wind_speed_kmh > 1 else 1.0
         msgs = []
         if sp.gust_max_kmh * scale > rules.TAKEOFF_GUST_MAX_KMH[level]:
-            msgs.append(("TAKEOFF_GUSTS", f"au moins un modèle prévoit {sp.gust_max_kmh * scale:.0f} km/h de rafales au déco"))
+            msgs.append(("TAKEOFF_GUSTS", f"au moins un modèle prévoit {sp.gust_max_kmh * scale:.0f} km/h de rafales "
+                                          f"au déco"))
         if sp.precip_max_mm_h >= rules.NOGO["precip_mm_h"]:
             msgs.append(("RAIN", f"au moins un modèle prévoit {sp.precip_max_mm_h:.1f} mm/h de pluie"))
-        if sp.cape_max_j_kg >= rules.NOGO["cape_storm"]["cape"] and (sp.li_min is None or sp.li_min <= rules.NOGO["cape_storm"]["li"]):
+        if sp.cape_max_j_kg >= rules.NOGO["cape_storm"]["cape"] and (
+            sp.li_min is None or sp.li_min <= rules.NOGO["cape_storm"]["li"]
+        ):
             msgs.append(("THUNDERSTORM", f"au moins un modèle prévoit une CAPE de {sp.cape_max_j_kg:.0f} J/kg"))
         for code, m in msgs:
             findings.append(Finding(code, "Un modèle prévoit un no-go", m[0].upper() + m[1:] + ".", caution=True,
                                     blocks_go=conf_raw < rules.SINGLE_SOURCE_NOGO_CONFIDENCE))  # fmt: skip
     if ctx.mock:
-        findings.append(Finding("MOCK_DATA", "Données synthétiques", "Plan calculé sur des données SYNTHÉTIQUES (démo hors-ligne) : ne pas utiliser pour voler.",
+        findings.append(Finding("MOCK_DATA", "Données synthétiques", "Plan calculé sur des données SYNTHÉTIQUES (démo "
+                                                                     "hors-ligne) : ne pas utiliser pour voler.",
                                 caution=True, blocks_go=False))  # fmt: skip
     if ctx.horizon in ("15m", "30m", "1h") and cand.takeoff.access:
-        findings.append(Finding("ACCESS_TIME", "Temps d'accès au déco", f"Vérifie que tu peux être au déco à temps : {cand.takeoff.access}",
+        findings.append(Finding("ACCESS_TIME", "Temps d'accès au déco", f"Vérifie que tu peux être au déco à temps : "
+                                                                        f"{cand.takeoff.access}",
                                 info=True, blocks_go=False))  # fmt: skip
 
     # difficulté du plan
@@ -913,7 +1182,8 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
             label = rules.LEVEL_LABEL_FR[diff]
             if fails:
                 for f in fails:
-                    reasons.append(_codes_prefix(f.code, f"{f.detail} Conditions trop fortes pour ton niveau (OK pour {label})."))
+                    reasons.append(_codes_prefix(f.code, f"{f.detail} Conditions trop fortes pour ton niveau (OK pour "
+                                                         f"{label})."))
             elif rules.level_index(site_lvl) > rules.level_index(level):
                 reasons.append(_codes_prefix("SITE_LEVEL", f"Site de niveau {label} : au-dessus de ton niveau."))
             else:
@@ -937,7 +1207,11 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     conv_sub = cand.score_items[0] if cand.score_items else 100.0
     vario_flight = cand.vario
     th_s, th_c = thermal_match_subscore(filters.thermals, vario_flight, cand.thermal_usage != "none", level)
-    if filters.thermals == "required" and cand.variant == "xc" and cand.vario > rules.THERMAL_MAX_MS[level] * rules.MARGINAL_BAND:
+    if (
+        filters.thermals == "required"
+        and cand.variant == "xc"
+        and cand.vario > rules.THERMAL_MAX_MS[level] * rules.MARGINAL_BAND
+    ):
         th_c += " (zone de vigilance de ton niveau)"
     du_s, du_c = duration_subscore(cand.duration_min, filters.duration_min_minutes, filters.duration_max_minutes)
     conf_s = linear(conf_raw, 0.3, 0.0, 0.9, 100.0)
@@ -945,7 +1219,9 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     if rules.level_index(site_lvl) == rules.level_index(level):
         site_s = min(site_s, 85.0)
     asp_s = 100.0
-    if cand.airspace and any(f.code in ("AIRSPACE", "AIRSPACE_ACTIVATION") and (f.caution or f.absolute_nogo) for f in cand.airspace.findings):
+    if cand.airspace and any(
+        f.code in ("AIRSPACE", "AIRSPACE_ACTIVATION") and (f.caution or f.absolute_nogo) for f in cand.airspace.findings
+    ):
         asp_s = 40.0
     extra: dict[str, tuple[float, str]] = {
         "thermal_match": (th_s, th_c),
@@ -959,7 +1235,8 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
         extra["takeoff_wind"] = (rules.CALM_TAKEOFF_SUBSCORE, "vent nul au déco : décollage plus technique")
     g = cand.route.glide
     if g.required_ratio > 0:
-        extra["landing"] = (glide_subscore(g.ratio), f"finesse requise {g.required_ratio:.1f} / {g.available_ratio:.1f}")
+        extra["landing"] = (glide_subscore(g.ratio), f"finesse requise {g.required_ratio:.1f} / "
+                                                     f"{g.available_ratio:.1f}")
     sr = aggregate_score(level, findings, extra)
     risks = _risks(findings, level)
     blocking = any(
@@ -970,7 +1247,8 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
         weak = sr.weakest_safety
         cand.reject_reasons = [
             _codes_prefix(CRITERION_RISK_CODE[weak],
-                          f"Score global insuffisant ({sr.score:.0f}/100) : point faible = {CRITERION_LABEL_FR[weak].lower()}.")
+                          f"Score global insuffisant ({sr.score:.0f}/100) : point faible = "
+                          f"{CRITERION_LABEL_FR[weak].lower()}.")
         ]  # fmt: skip
         cand.flyability = "no_go"
         cand.risks = risks
@@ -978,7 +1256,8 @@ def finalize(ctx: DataContext, cand: Candidate, filters: PlanFilters) -> Candida
     if v == "marginal" and not any(r.level == "caution" and r.code not in NON_BLOCKING_CAUTIONS for r in risks):
         weak = min(rules.WEIGHTS, key=lambda c: sr.subscores.get(c, 100.0))
         risks.append(Risk(code=CRITERION_RISK_CODE[weak], level="caution", title=f"{CRITERION_LABEL_FR[weak]} limite",
-                          detail=f"Critère « {CRITERION_LABEL_FR[weak]} » à {sr.subscores[weak]:.0f}/100 : conditions moyennes."))  # fmt: skip
+                          detail=f"Critère « {CRITERION_LABEL_FR[weak]} » à {sr.subscores[weak]:.0f}/100 : conditions "
+                                 f"moyennes."))  # fmt: skip
     cand.flyability = v
     cand.score = sr.score
     cand.raw_score = sr.raw_score
@@ -995,7 +1274,11 @@ def _stale_attached(ctx: DataContext, cand: Candidate) -> list[str]:
             continue
         for a in nc.attachments:
             if a.stale:
-                what = f"muette depuis {a.age_min:.0f} min" if a.beacon.wind_speed_kmh is not None else "aucune mesure"
+                what = (
+                    f"muette depuis {duration_fr(a.age_min)}"
+                    if a.beacon.wind_speed_kmh is not None
+                    else "aucune mesure"
+                )
                 txt = f"{a.beacon.name} ({what})"
                 if txt not in out:
                     out.append(txt)
@@ -1004,15 +1287,13 @@ def _stale_attached(ctx: DataContext, cand: Candidate) -> list[str]:
 
 def _only_strong_thermals(cand: Candidate) -> bool:
     codes = {r.split("]")[0].strip("[") for r in cand.reject_reasons}
-    return codes == {"STRONG_THERMALS"} or codes <= {"STRONG_THERMALS", "LANDING_WIND", "VALLEY_BREEZE"} and "STRONG_THERMALS" in codes
+    return codes == {"STRONG_THERMALS"} or (
+        codes <= {"STRONG_THERMALS", "LANDING_WIND", "VALLEY_BREEZE"} and "STRONG_THERMALS" in codes
+    )
 
 
 def _blocks(findings: list[Finding], risk: Risk, level: str) -> bool:
-    for f in findings:
-        if f.code == risk.code and f.risk_level(level) == "caution":
-            if f.blocks_go:
-                return True
-    return False
+    return any(f.code == risk.code and f.risk_level(level) == "caution" and f.blocks_go for f in findings)
 
 
 def _risks(findings: list[Finding], level: str) -> list[Risk]:
@@ -1036,7 +1317,10 @@ def _risks(findings: list[Finding], level: str) -> list[Risk]:
 # Orchestration par décollage
 # =============================================================================================
 def _landing_setup(ctx: DataContext, site: Site) -> tuple[Site | None, list[Site], list[Site]]:
-    assoc = [ctx.landings[i] for i in site.associated_landing_ids if i in ctx.landings]
+    """Mode classique : atterro principal = premier atterro associé OFFICIEL ; secours et réserve (cross) = atterros
+    officiels plus bas à moins de 40 km (les atterros communautaires et les champs relèvent du décollage libre)."""
+    assoc = [ctx.landings[i] for i in site.associated_landing_ids
+             if i in ctx.landings and landing_kind_of(ctx.landings[i]) == "official"]  # fmt: skip
     meta = ctx.site_meta.get(site.id)
     if not assoc and meta and meta.top_landing:
         assoc = [site]
@@ -1046,7 +1330,7 @@ def _landing_setup(ctx: DataContext, site: Site) -> tuple[Site | None, list[Site
     alternates = [x for x in assoc[1:] if x.id != main.id]
     pool = list(assoc)
     for ldg in ctx.landings.values():
-        if ldg.id in {x.id for x in pool}:
+        if ldg.id in {x.id for x in pool} or landing_kind_of(ldg) != "official":
             continue
         d = haversine_km(site.lat, site.lon, ldg.lat, ldg.lon)
         if d <= 40.0 and ldg.elevation_m < site.elevation_m:
@@ -1057,34 +1341,23 @@ def _landing_setup(ctx: DataContext, site: Site) -> tuple[Site | None, list[Site
 
 
 def _big_valley(ctx: DataContext, landing: Site) -> bool:
-    meta = ctx.site_meta.get(landing.id)
-    if meta and meta.big_valley is not None:
-        return meta.big_valley
-    if landing.elevation_m >= rules.BIG_VALLEY_MAX_FLOOR_M:
-        return False
-    if ctx.terrain is not None:
-        from app.geo import destination
-
-        for brg in range(0, 360, 30):
-            for r in (5.0, rules.BIG_VALLEY_RADIUS_KM):
-                la, lo = destination(landing.lat, landing.lon, brg, r)
-                e = ctx.terrain_at(la, lo)
-                if e is not None and e >= rules.BIG_VALLEY_MIN_RELIEF_M:
-                    return True
-        return False
-    return any(
-        s.elevation_m > rules.BIG_VALLEY_FALLBACK_TAKEOFF_M
-        and haversine_km(s.lat, s.lon, landing.lat, landing.lon) <= rules.BIG_VALLEY_FALLBACK_RADIUS_KM
-        for s in ctx.takeoffs
-    )
+    return big_valley(ctx, landing)
 
 
 def _site_findings(ctx: DataContext, site: Site, landing: Site, proj: Projector) -> list[Finding]:
     out: list[Finding] = []
     if site.status == "closed":
-        out.append(Finding("SITE_CLOSED", "Site fermé", site.restrictions or "Site signalé fermé par la source.", absolute_nogo=True))
+        out.append(
+            Finding(
+                "SITE_CLOSED",
+                "Site fermé",
+                site.restrictions or "Site signalé fermé par la source.",
+                absolute_nogo=True,
+            )
+        )
     elif site.status == "restricted":
-        out.append(Finding("SITE_RESTRICTED", "Site soumis à restrictions", site.restrictions or "Site à accès restreint : se renseigner.",
+        out.append(Finding("SITE_RESTRICTED", "Site soumis à restrictions", site.restrictions or "Site à accès "
+            "restreint : se renseigner.",
                            caution=True))  # fmt: skip
     out += evaluate_sensitive_sites(ctx, proj, site, landing)
     return out
@@ -1096,8 +1369,13 @@ def start_bounds(ctx: DataContext) -> tuple[datetime, datetime]:
     t0 = ctx.target_time
     nb = rules.NOWCAST_WINDOW_START_MIN.get(ctx.horizon)
     if nb is None:
-        return t0 - timedelta(minutes=rules.WINDOW_START_BEFORE_TARGET_MIN), t0 + timedelta(hours=rules.WINDOW_START_AFTER_TARGET_H)
-    lo = max(t0 + timedelta(minutes=nb[0]), ctx.reference_time + timedelta(minutes=rules.NOWCAST_MIN_LEAD_MIN))
+        return t0 - timedelta(minutes=rules.WINDOW_START_BEFORE_TARGET_MIN), t0 + timedelta(
+            hours=rules.WINDOW_START_AFTER_TARGET_H
+        )
+    lead = ctx.reference_time + timedelta(minutes=rules.NOWCAST_MIN_LEAD_MIN)
+    if lead.second or lead.microsecond:  # minute entière suivante (heure de décollage lisible)
+        lead = lead.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    lo = max(t0 + timedelta(minutes=nb[0]), lead)
     return lo, max(lo, t0 + timedelta(minutes=nb[1]))
 
 
@@ -1152,26 +1430,65 @@ def evaluate_takeoff(
     ctx: DataContext, site: Site, filters: PlanFilters
 ) -> tuple[list[Candidate], list[str]]:
     level = filters.difficulty
+    free = free_takeoff.is_free_takeoff(site)
+    sel: LandingSelection | None = None
+    if free:
+        # décollage libre (§12.6) : jamais pour un élève ; atterros candidats évalués dans le cône (§12.7)
+        sel = select_landings(ctx, site, level, filters.wing_glide_ratio, filters.landing_policy)
+        if level not in rules.FREE_TAKEOFF["allowed_levels"]:
+            return [], [_codes_prefix("FREE_TAKEOFF", rules.FREE_TAKEOFF["refusal_beginner"]), *sel.reasons]
     if not site.orientations:
-        return [], [_codes_prefix("TAKEOFF_WIND", "Orientation du déco inconnue : impossible de juger le vent (site visible sur la carte seulement).")]
-    landing, alternates, pool = _landing_setup(ctx, site)
+        why = ("précise l'orientation de la pente (MNT indisponible)" if free
+               else "site visible sur la carte seulement")  # fmt: skip
+        return [], [_codes_prefix("TAKEOFF_WIND", f"Orientation du déco inconnue : impossible de juger le vent "
+                                                  f"({why}).")]  # fmt: skip
+    if sel is not None:
+        if sel.main is None:
+            return [], sel.reasons
+        landing = sel.main.spot.site
+        alternates = [e.spot.site for e in sel.alternates]
+        pool = [e.spot.site for e in sel.evals if e.policy_ok and e.use != "never" and not e.failures]
+    else:
+        landing, alternates, pool = _landing_setup(ctx, site)
     if landing is None:
+        unofficial = [ctx.landings[i] for i in site.associated_landing_ids
+                      if i in ctx.landings and landing_kind_of(ctx.landings[i]) != "official"]  # fmt: skip
+        if unofficial:
+            return [], [_codes_prefix("UNOFFICIAL_LANDING", f"Seul atterro associé : « {unofficial[0].name} », non "
+                                      "officiel : non proposé en mode classique (étudie-le en mode décollage libre "
+                                      "avec les atterros communautaires).")]  # fmt: skip
         return [], [_codes_prefix("GLIDE_MARGIN", "Aucun atterrissage identifié associé à ce déco.")]
     tl = ctx.timelines.get(site.id)
     ltl = ctx.timelines.get(landing.id) or tl
     if tl is None:
         return [], ["Prévision météo indisponible pour ce site."]
     meta = ctx.site_meta.get(landing.id)
-    top_landing = (landing.elevation_m >= site.elevation_m - rules.TOP_LANDING_MAX_DROP_M) or bool(meta and meta.top_landing)
+    top_landing = (landing.elevation_m >= site.elevation_m - rules.TOP_LANDING_MAX_DROP_M) or bool(
+        meta and meta.top_landing
+    )
     proj = Projector(site.lat, site.lon)
     rise, sset = sun_times(ctx.target_time, site.lat, site.lon)
     day_hours = [h for h in tl.hours if abs((h.time - ctx.target_time).total_seconds()) <= 16 * 3600]
     cw = convection_window(sorted(day_hours, key=lambda h: h.time), rise, sset)
     td = TakeoffData(
-        site=site, tl=tl, landing=landing, ltl=ltl, alternates=alternates if not top_landing else [x for x in pool if x.id != landing.id][:2],
-        landings_pool=pool, big_valley=_big_valley(ctx, landing), top_landing=top_landing, cw=cw, sunrise=rise, sunset=sset,
+        site=site,
+        tl=tl,
+        landing=landing,
+        ltl=ltl,
+        alternates=alternates if not top_landing else [x for x in pool if x.id != landing.id][:2],
+        landings_pool=pool,
+        big_valley=_big_valley(ctx, landing),
+        top_landing=top_landing,
+        cw=cw,
+        sunrise=rise,
+        sunset=sset,
         site_findings=_site_findings(ctx, site, landing, proj),
-    )  # fmt: skip
+        free=ctx.free_terrain.get(site.id) if free else None,
+        sel=sel,
+    )
+    if free and sel is not None and sel.main is not None:
+        td.site_findings = [*free_takeoff.site_findings(site, td.free), *td.site_findings,
+                            *landing_kind_findings(ctx, sel.main, sel.alternates)]  # fmt: skip
     if top_landing:
         # le plouf / local nécessitent un atterro en contrebas : on prend le premier atterro de secours
         lower = [x for x in pool if x.elevation_m < site.elevation_m - rules.TOP_LANDING_MAX_DROP_M]
@@ -1193,8 +1510,16 @@ def evaluate_takeoff(
             lower = td.landings_pool
             if not lower:
                 continue
-            vt = TakeoffData(**{**td.__dict__, "landing": lower[0], "ltl": ctx.timelines.get(lower[0].id) or tl,
-                                "alternates": lower[1:3], "top_landing": False, "big_valley": _big_valley(ctx, lower[0])})  # fmt: skip
+            vt = TakeoffData(
+                **{
+                    **td.__dict__,
+                    "landing": lower[0],
+                    "ltl": ctx.timelines.get(lower[0].id) or tl,
+                    "alternates": lower[1:3],
+                    "top_landing": False,
+                    "big_valley": _big_valley(ctx, lower[0]),
+                }
+            )
         first_reasons: list[str] | None = None
         for start in candidate_starts(ctx, vt, variant, level):
             res = evaluate_variant(ctx, vt, variant, start, filters, proj)
@@ -1221,7 +1546,9 @@ def evaluate_takeoff(
     if any(c.thermal_usage != "none" and c.variant in ("local_thermal", "xc") for c in accepted):
         for c in accepted:
             if c.variant == "plouf":
-                c.duration_note = f"Variante sans thermique : plouf direct de ~{c.duration_min:.0f} min (plan B si ça ne monte pas)."
+                c.duration_note = (
+                    f"Variante sans thermique : plouf direct de ~{c.duration_min:.0f} min (plan B si ça ne monte pas)."
+                )
     return accepted, list(dict.fromkeys(reasons_first))
 
 
@@ -1231,12 +1558,16 @@ def _wind_ratio_at(ctx: DataContext, td: TakeoffData, cand: Candidate, t: dateti
     tw = takeoff_wind(ctx, td.site, td.tl, t)
     wl = rules.RIDGE["max_kmh"][level] if ridge else rules.TAKEOFF_WIND_MAX_KMH[level]
     gl = rules.RIDGE_GUST_MAX_KMH[level] if ridge else rules.TAKEOFF_GUST_MAX_KMH[level]
+    tail_max = rules.TAILWIND_MAX_KMH[level]
+    if free_takeoff.is_free_takeoff(td.site):  # §12.6 : seuils du décollage libre
+        fwl, fgl, tail_max = free_takeoff.wind_limits(level)
+        wl, gl = min(wl, fwl), min(gl, fgl)
     r = max(tw.speed_kmh / wl, tw.gust_kmh / gl)
     if not (ridge and td.top_landing):
         lw = landing_wind(td.ltl, t + timedelta(minutes=cand.duration_min), td.big_valley, ctx, td.landing)
         r = max(r, lw.speed_kmh / rules.LANDING_WIND_MAX_KMH[level], lw.gust_kmh / rules.LANDING_GUST_MAX_KMH[level])
     wet = td.tl.at(t).precipitation_mm_h >= rules.NOGO["precip_mm_h"]
-    tail = tw.angle.category == "tail" and tw.speed_kmh > rules.TAILWIND_MAX_KMH[level]
+    tail = tw.angle.category == "tail" and tw.speed_kmh > tail_max
     return r, (r > 1.0 or wet or tail)
 
 
@@ -1270,7 +1601,10 @@ def _compute_window(ctx: DataContext, td: TakeoffData, cand: Candidate, filters:
     cand.window_start = start
     cand.window_end = max(end, start + timedelta(minutes=15)) if end > start else start + timedelta(minutes=15)
     if increasing_at is not None:
-        detail = f"Le vent forcit à partir de {fmt_hm(increasing_at)} (proche des limites de ton niveau) : décoller tôt dans le créneau."
+        detail = (
+            f"Le vent forcit à partir de {fmt_hm(increasing_at)} (proche des limites de ton niveau) : "
+            "décoller tôt dans le créneau."
+        )
         prev = next((r for r in cand.risks if r.code == "WIND_INCREASING"), None)
         if prev is None:
             cand.risks.append(Risk(code="WIND_INCREASING", level="caution", title="Le vent forcit", detail=detail))
@@ -1317,8 +1651,13 @@ def _readings_for(ctx: DataContext, nc: StationNowcast | None, site: Site, role:
     atts = list(nc.attachments) if nc is not None else []
     if not any(a.representative for a in atts):
         near = nearest_unattached(ctx, site, role, {a.beacon.id for a in atts})
-        if near is not None and (not atts or near.distance_km < min(a.distance_km for a in atts)):
+        if near is not None and (
+            not atts
+            or near.distance_km < min(a.distance_km for a in atts)
+            or (not near.stale and all(a.stale for a in atts))
+        ):
             atts.append(near)
+        atts.sort(key=lambda a: (a.stale, a.distance_km))  # balises qui transmettent d'abord, muettes ensuite
     for a in atts[:MAX_READINGS_PER_SITE]:
         w = round(nc.weight_of(a), 2) if nc is not None else 0.0
         dz = a.alt_diff_m
@@ -1388,7 +1727,9 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         comment=th_comment,
     )
     beacons_nearby: list[Beacon] = [
-        b for b in ctx.beacons if haversine_km(b.lat, b.lon, cand.takeoff.lat, cand.takeoff.lon) <= rules.BEACON_SEARCH_RADIUS_KM
+        b
+        for b in ctx.beacons
+        if haversine_km(b.lat, b.lon, cand.takeoff.lat, cand.takeoff.lon) <= rules.BEACON_SEARCH_RADIUS_KM
     ][:10]
     g = cand.route.glide
     plan_id = _plan_id(ctx, cand)
@@ -1400,6 +1741,11 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
     if cand.sunset:
         latest = min(latest, cand.sunset)
     cand.latest_landing = max(latest, cand.landing_time)
+    analysis = candidates_for_plan(
+        ctx, cand.takeoff, cand.landing, cand.alternates, cand.level, cand.wing, cand.glide_wind, cand.landing_time,
+        cand.policy, cand.landing_wind, extra=cand.landing_sel.evals if cand.landing_sel is not None else None,
+    )  # fmt: skip
+    cand.landing_warnings = analysis[0].warnings if analysis and analysis[0].site.id == cand.landing.id else []
     return FlightPlan(
         id=plan_id,
         rank=rank,
@@ -1411,11 +1757,16 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         title=title(cand),
         summary=summary(cand),
         target_time=iso(ctx.target_time),
-        window=TimeWindow(start=iso(cand.window_start), end=iso(cand.window_end), latest_landing=iso(cand.latest_landing)),
-        sun=SunTimes(sunrise=iso(cand.sunrise) if cand.sunrise else None, sunset=iso(cand.sunset) if cand.sunset else None),
+        window=TimeWindow(
+            start=iso(cand.window_start), end=iso(cand.window_end), latest_landing=iso(cand.latest_landing)
+        ),
+        sun=SunTimes(
+            sunrise=iso(cand.sunrise) if cand.sunrise else None, sunset=iso(cand.sunset) if cand.sunset else None
+        ),
         takeoff=cand.takeoff,
         landing=cand.landing,
         alternate_landings=cand.alternates,
+        landing_analysis=analysis,
         waypoints=cand.route.waypoints,
         route=RouteGeometry(coordinates=[(round(c[0], 6), round(c[1], 6), round(c[2])) for c in cand.route.coords]),
         distance_km=round(cand.route.distance_km, 1),
@@ -1481,8 +1832,13 @@ def evaluate_sites(
     plans = [to_flight_plan(ctx, c, i + 1, sources or []) for i, c in enumerate(selected)]
     warnings = list(ctx.warnings)
     if ctx.mock:
+        demo = ["météo simulée"]
+        if ctx.takeoffs and all(s.source == "fixture" for s in ctx.takeoffs):
+            demo.append("sites de démonstration")
+        if all(b.source == "fixture" for b in ctx.beacons):
+            demo.append("balises de démonstration")
         warnings.append(
-            "Mode démo : données SYNTHÉTIQUES (météo simulée, sites et balises de démonstration). "
+            f"Mode démo : données SYNTHÉTIQUES ({', '.join(demo)}). "
             "Confiance affichée plafonnée à 30 % — ne pas utiliser pour décider d'un vol."
         )
     if not plans:

@@ -272,6 +272,7 @@ export function evaluateLanding(site: Site, ctx: LandingContext): { candidate: L
     candidate: {
       site: { ...site, landing_kind: kind },
       kind,
+      use: canBeMain(kind, ctx.level) ? "main" : "alternate",
       score,
       required_glide_ratio: Math.round(Math.min(99, required) * 10) / 10,
       available_glide_ratio: Math.round(available * 10) / 10,
@@ -315,7 +316,7 @@ export function glideCone(ctx: LandingContext): GeoJsonPolygon {
   return { type: "Polygon", coordinates: [ring] };
 }
 
-const kindRank = (c: LandingCandidate, level: Difficulty) => (canBeMain(c.kind, level) ? 0 : 1);
+const kindRank = (c: LandingCandidate, level: Difficulty) => (c.use === "main" && canBeMain(c.kind, level) ? 0 : 1);
 
 /** Trie : atterros pouvant servir d'atterro principal d'abord, puis par score décroissant. */
 export function sortCandidates(list: LandingCandidate[], level: Difficulty): LandingCandidate[] {

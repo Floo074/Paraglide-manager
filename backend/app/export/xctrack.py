@@ -21,7 +21,7 @@ def _wp(name: str, lat: float, lon: float, alt: float, desc: str) -> dict:
         "name": name[:MAX_NAME],
         "lat": round(lat, 6),
         "lon": round(lon, 6),
-        "altSmoothed": int(round(alt)),
+        "altSmoothed": round(alt),
         "description": desc[:60],
     }
 
@@ -46,7 +46,10 @@ def plan_to_xctsk(plan: FlightPlan) -> dict:
     inner = [w for w in plan.waypoints if w.type in ("turnpoint", "thermal_trigger")]
     landing = next((w for w in plan.waypoints if w.type == "landing"), None)
     for i, w in enumerate(inner):
-        tp = {"radius": int(w.radius_m or rules.TURNPOINT_RADIUS_M), "waypoint": _wp(w.name, w.lat, w.lon, w.altitude_m, w.note or w.type)}
+        tp = {
+            "radius": int(w.radius_m or rules.TURNPOINT_RADIUS_M),
+            "waypoint": _wp(w.name, w.lat, w.lon, w.altitude_m, w.note or w.type),
+        }
         if i == 0:
             tp["type"] = "SSS"
         tps.append(tp)
@@ -62,8 +65,8 @@ def plan_to_xctsk(plan: FlightPlan) -> dict:
         # tâche minimale : SSS à la sortie du cylindre de décollage
         tps[0]["type"] = "TAKEOFF"
         if len(tps) > 1:
-            tps.insert(1, {"type": "SSS", "radius": int(rules.TAKEOFF_RADIUS_M) * 2,
-                           "waypoint": _wp(takeoff.name + " SSS", takeoff.lat, takeoff.lon, takeoff.altitude_m, "Départ")})  # fmt: skip
+            sss = _wp(takeoff.name + " SSS", takeoff.lat, takeoff.lon, takeoff.altitude_m, "Départ")
+            tps.insert(1, {"type": "SSS", "radius": int(rules.TAKEOFF_RADIUS_M) * 2, "waypoint": sss})
     deadline = plan.window.latest_landing or plan.window.end
     return {
         "taskType": "CLASSIC",

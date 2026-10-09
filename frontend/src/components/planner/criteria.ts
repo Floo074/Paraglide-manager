@@ -158,9 +158,9 @@ export function buildPlanRequest(zone: Zone, c: Criteria, takeoff: FreeTakeoff |
 
 /** Requête POST /api/landings/analyze depuis un décollage libre. */
 export function buildLandingAnalyzeRequest(c: Criteria, t: FreeTakeoff): LandingAnalyzeRequest {
-  const { lat, lon, elevation_m, orientations } = toCustomTakeoff(t);
+  const { lat, lon, elevation_m, orientations, name } = toCustomTakeoff(t);
   return {
-    takeoff: { lat, lon, ...(elevation_m !== undefined ? { elevation_m } : {}), ...(orientations ? { orientations } : {}) },
+    takeoff: { lat, lon, ...(elevation_m !== undefined ? { elevation_m } : {}), ...(orientations ? { orientations } : {}), ...(name ? { name } : {}) },
     horizon: c.horizon,
     ...(c.referenceTime ? { reference_time: new Date(c.referenceTime).toISOString() } : {}),
     wing_glide_ratio: round(c.glide, 1),

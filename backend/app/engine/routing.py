@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from itertools import pairwise
 
 from app.engine import rules
 from app.engine.airspace import Projector, route_conflicts, route_sensitive_conflict
@@ -68,6 +69,21 @@ def arrival_margin(level: str, drop_m: float) -> float:
     return min(rules.LANDING_ARRIVAL_MARGIN_M[level], rules.LANDING_ARRIVAL_MARGIN_MAX_FRACTION * max(0.0, drop_m))
 
 
+def landing_kind_of(site: Site) -> str:
+    """Catégorie d'atterro (contrat `LandingKind`) : déduite de `official` si la source ne la donne pas."""
+    return site.landing_kind or ("official" if site.official else "community")
+
+
+def kind_glide_params(kind: str, level: str, drop_m: float) -> tuple[float, float]:
+    """(marge d'arrivée m, facteur de finesse) : atterro officiel = marge du §2.3 bornée à 25 % du dénivelé ;
+    communautaire / champ = hauteur d'arrivée mini et facteur f du CDC §12.7 (niveau élève : valeurs brevet)."""
+    if kind == "official":
+        return arrival_margin(level, drop_m), 1.0
+    g = rules.UNOFFICIAL_GLIDE
+    lv = level if level in g["arrival_height_min_m"][kind] else "intermediate"
+    return float(g["arrival_height_min_m"][kind][lv]), float(g["available_factor"][kind])
+
+
 def glide_to(
     ctx: DataContext,
     lat: float,
@@ -78,12 +94,18 @@ def glide_to(
     wing: float,
     wind: tuple[float, float],
     drop_ref: float | None = None,
+    kind: str | None = None,
 ) -> GlideCheck:
+    """Finesse requise vers un atterro. Atterro non officiel (§12.7) : hauteur d'arrivée mini du kind au lieu de la
+    marge standard, et finesse disponible × f (0,90 communautaire, 0,80 champ). `kind="official"` force les règles
+    d'un atterro officiel (portée « géométrique » d'un candidat)."""
     dist_m = haversine_km(lat, lon, landing.lat, landing.lon) * 1000.0
     track = bearing_deg(lat, lon, landing.lat, landing.lon)
-    margin = arrival_margin(level, drop_ref if drop_ref is not None else alt - landing.elevation_m)
+    margin, factor = kind_glide_params(
+        kind or landing_kind_of(landing), level, drop_ref if drop_ref is not None else alt - landing.elevation_m
+    )
     height = alt - (landing.elevation_m + margin)
-    available = finesse_sol(wing, level, wind[0], wind[1], track)
+    available = finesse_sol(wing, level, wind[0], wind[1], track) * factor
     required = dist_m / height if height > 1 else 99.0
     terrain_ok = terrain_clear(ctx, lat, lon, alt, landing, available)
     return GlideCheck(
@@ -152,7 +174,7 @@ def best_landing_glide(
 # ---------------------------------------------------------------------------------------------
 def path_length_km(coords: list[Coord]) -> float:
     return sum(
-        haversine_km(a[1], a[0], b[1], b[0]) for a, b in zip(coords, coords[1:], strict=False)
+        haversine_km(a[1], a[0], b[1], b[0]) for a, b in pairwise(coords)
     )
 
 
@@ -199,7 +221,8 @@ def _wp(
 
 def alternates_waypoints(alternates: list[Site], eta: float | None = None) -> list[Waypoint]:
     return [
-        _wp(a.name, a.lat, a.lon, a.elevation_m, "alternate_landing", rules.GOAL_RADIUS_M, None, "Atterrissage de secours")
+        _wp(a.name, a.lat, a.lon, a.elevation_m, "alternate_landing", rules.GOAL_RADIUS_M, None, "Atterrissage de "
+                                                                                                 "secours")
         for a in alternates
     ]
 
@@ -255,7 +278,9 @@ def build_plouf(
                 f"Côté sous le vent de l'atterro, ≥ {rules.PLOUF_LOSE_HEIGHT_MIN_AGL_M:.0f} m sol, puis PTU",
             )
         )
-    wps.append(_wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration_min))
+    wps.append(
+        _wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration_min)
+    )
     wps += alternates_waypoints(alternates)
     return Route("plouf", coords, wps, dist, takeoff.elevation_m, glide)
 
@@ -360,7 +385,9 @@ def build_local_thermal(
         # pas de déclencheur identifié : boucle au-dessus du déco
         coords.append((takeoff.lon, takeoff.lat, min(max_alt, takeoff.elevation_m + 300)))
     coords.append((landing.lon, landing.lat, landing.elevation_m))
-    wps.append(_wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration_min))
+    wps.append(
+        _wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration_min)
+    )
     wps += alternates_waypoints(alternates)
     glide = glide_to(ctx, takeoff.lat, takeoff.lon, takeoff.elevation_m, landing, level, wing, glide_wind)
     # pire point de la boucle (déclencheurs à l'altitude de travail)
@@ -608,7 +635,9 @@ def _search_shape(
 
     if shape == "out_and_return":
         for p in cands:
-            dist = haversine_km(takeoff.lat, takeoff.lon, p.lat, p.lon) + haversine_km(p.lat, p.lon, landing.lat, landing.lon)
+            dist = haversine_km(takeoff.lat, takeoff.lon, p.lat, p.lon) + haversine_km(
+                p.lat, p.lon, landing.lat, landing.lon
+            )
             if not (0.75 * d <= dist <= 1.15 * d):
                 continue
             dev = leg_ok(p)
@@ -671,7 +700,9 @@ def _search_shape(
             prev = c
             eta = t_climb + cum / v_eff * 60.0
             wps.append(_wp(p.name, p.lat, p.lon, max_alt, "turnpoint", rules.TURNPOINT_RADIUS_M, eta))
-        wps.append(_wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration))
+        wps.append(
+            _wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration)
+        )
         alts = [x for x in used_landings if x.id != landing.id]
         wps += alternates_waypoints(alts)
         route = Route(
@@ -708,7 +739,7 @@ def _cone_check(
     worst: GlideCheck | None = None
     decisions: list[str] = []
     used: dict[str, Site] = {}
-    for idx, (a, b) in enumerate(zip(coords[:-1], coords[1:-1] + [coords[-1]], strict=False)):
+    for idx, (a, b) in enumerate(zip(coords[:-1], [*coords[1:-1], coords[-1]], strict=False)):
         seg = haversine_km(a[1], a[0], b[1], b[0])
         n = max(1, int(seg / rules.GLIDE_CHECK_STEP_KM))
         seg_worst_alt = 0.0

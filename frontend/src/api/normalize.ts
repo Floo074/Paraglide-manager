@@ -24,7 +24,9 @@ function normalizeReading(r: StationReading): StationReading {
 }
 
 function normalizeCandidate(c: LandingCandidate): LandingCandidate {
-  return { ...c, site: normalizeSite(c.site), obstacles: c.obstacles ?? [], warnings: c.warnings ?? [], reasons: c.reasons ?? [] };
+  // `use` absent (cache d'une version antérieure) : choix prudent, un non officiel n'est retenu qu'en secours.
+  const use = (c as Loose<LandingCandidate>).use ?? (c.kind === "official" ? "main" : "alternate");
+  return { ...c, use, site: normalizeSite(c.site), obstacles: c.obstacles ?? [], warnings: c.warnings ?? [], reasons: c.reasons ?? [] };
 }
 
 export function normalizePlan(p: FlightPlan): FlightPlan {

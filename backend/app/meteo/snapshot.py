@@ -37,7 +37,12 @@ def snapshot_from_analysis(
             continue
         s, d = a.profile.wind(z)
         aloft.append(
-            WindLevel(altitude_m=z, pressure_hpa=round(a.profile.pressure(z), 0), speed_kmh=round(s, 1), direction_deg=round(d))
+            WindLevel(
+                altitude_m=z,
+                pressure_hpa=round(a.profile.pressure(z), 0),
+                speed_kmh=round(s, 1),
+                direction_deg=round(d),
+            )
         )
     return WeatherSnapshot(
         time=iso(a.time),

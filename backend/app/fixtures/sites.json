@@ -75,7 +75,7 @@
      "restrictions": "Proximité des espaces aériens de Nice : vérifier les planchers.", "status": "open",
      "url": null, "associated_landing_ids": ["fixture:gourdon-atterro"], "meta": {"region": "alpes-maritimes"}},
 
-    {"id": "fixture:doussard", "name": "Doussard (atterrissage officiel)", "kind": "landing", "lat": 45.7890, "lon": 6.2225, "elevation_m": 452,
+    {"id": "fixture:doussard", "name": "Doussard (atterrissage officiel)", "kind": "landing", "lat": 45.7820, "lon": 6.2224, "elevation_m": 452,
      "orientations": [], "difficulty": null, "flight_types": [], "description": "Grand atterrissage du bout du lac.", "access": null,
      "restrictions": "Brise de nord forte l'après-midi ; PTU côté lac.", "status": "open", "url": null, "associated_landing_ids": [], "meta": {"big_valley": true}},
     {"id": "fixture:perroix", "name": "Talloires – Perroix", "kind": "landing", "lat": 45.8455, "lon": 6.2135, "elevation_m": 450,

@@ -196,9 +196,11 @@ export interface AirspaceWarning {
 export interface LandingCandidate {
   site: Site; // site.landing_kind renseigné ; source "osm" pour un champ détecté
   kind: LandingKind;
+  use: LandingUse; // usage permis au niveau du pilote : principal possible / secours seulement (CDC §12.7)
   score: number; // 0..100
-  required_glide_ratio: number; // finesse sol nécessaire depuis le déco (vent compris)
-  available_glide_ratio: number; // finesse de calcul retenue (prudente)
+  required_glide_ratio: number; // finesse sol nécessaire depuis le déco (vent compris), hauteur d'arrivée mini
+  // du kind déduite (officiel : marge §2.3 ; communautaire / champ : 100-200 m)
+  available_glide_ratio: number; // finesse de calcul retenue (prudente), × 0,90 communautaire / × 0,80 champ
   arrival_height_m: number; // hauteur estimée à l'arrivée au-dessus de l'atterro
   size_m: { length: number; width: number } | null;
   slope_pct: number | null;
@@ -207,9 +209,12 @@ export interface LandingCandidate {
   wind_at_arrival: { speed_kmh: number; direction_deg: number; gust_kmh: number } | null;
   community_usage: "frequent" | "occasional" | "unknown";
   access: string | null; // route / parking / navette
-  warnings: string[]; // ex. "Non officiel : autorisation du propriétaire à vérifier"
-  reasons: string[]; // pourquoi ce classement
+  warnings: string[]; // ex. "Non officiel : autorisation du propriétaire à vérifier" (toujours pour community / field)
+  reasons: string[]; // pourquoi ce classement (2-3 sous-scores décisifs ; « Écarté : … » le cas échéant)
 }
+
+/** LandingCandidate.use (le contrat le décrit en ligne). */
+export type LandingUse = "main" | "alternate";
 
 export interface ScoreItem {
   criterion: string;
@@ -434,7 +439,7 @@ export interface PlanResponse {
   horizon: Horizon;
   zone: Zone;
   data_mode: DataMode;
-  plans: FlightPlan[]; // triés par score décroissant
+  plans: FlightPlan[]; // ordre de `rank` : verdict, durée dans la plage, score (lot 6.2) ; diversité CDC §9.4
   rejected: RejectedSite[];
   warnings: string[];
 }
@@ -447,12 +452,12 @@ export interface GeoJsonPolygon {
 
 /** POST /api/landings/analyze — analyse des atterrissages depuis un décollage libre (clic sur la carte). */
 export interface LandingAnalyzeRequest {
-  takeoff: { lat: number; lon: number; elevation_m?: number; orientations?: string[] };
+  takeoff: { lat: number; lon: number; elevation_m?: number; orientations?: string[]; name?: string };
   horizon: Horizon;
   reference_time?: string;
-  wing_glide_ratio?: number;
+  wing_glide_ratio?: number; // défaut 8.5
   difficulty: Difficulty;
-  landing_policy: LandingPolicy;
+  landing_policy?: LandingPolicy; // défaut "official_only"
 }
 
 export interface LandingAnalyzeResponse {

@@ -91,7 +91,10 @@ export interface XctskTask {
   version: 1;
   earthModel: "WGS84";
   turnpoints: XctskTurnpoint[];
-  goal: { type: "CYLINDER" | "LINE" };
+  /** Départ (le backend le renseigne : porte au début du créneau). */
+  sss?: { type: "RACE" | "ELAPSED-TIME"; direction: "ENTER" | "EXIT"; timeGates: string[] };
+  /** `deadline` (HH:MM:SSZ) : dernier atterrissage conseillé, renseigné par le backend. */
+  goal: { type: "CYLINDER" | "LINE"; deadline?: string };
 }
 
 /**

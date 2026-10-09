@@ -9,13 +9,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from itertools import pairwise
+from typing import Any
 
 from shapely.geometry.base import BaseGeometry
 
+from app.geo import wind_components, wind_from_components
 from app.meteo.ensemble import Spread
 from app.meteo.thermals import HourAnalysis
 from app.models import Beacon, Site
+
+_STEP = timedelta(minutes=15)
+_HALF_STEP = timedelta(minutes=8)
 
 
 @dataclass(slots=True)
@@ -31,10 +37,32 @@ class PointTimeline:
     model_winds: dict[datetime, list[tuple[str, float, float]]] = field(default_factory=dict)
     mode: str = "mock"
     model_label: str = "synthetic"
+    # vent 10 m au pas de 15 min (Open-Meteo `minutely_15`, horizons ≤ 2 h) : (heure, vent, direction, rafale)
+    minutely: list[tuple[datetime, float, float, float]] = field(default_factory=list)
 
     def at(self, t: datetime) -> HourAnalysis:
         """Heure la plus proche de t."""
         return min(self.hours, key=lambda h: abs((h.time - t).total_seconds()))
+
+    def wind10_at(self, t: datetime) -> tuple[float, float, float] | None:
+        """Vent 10 m (vitesse, direction, rafale) à t, interpolé entre deux pas de 15 min ; None sans données au pas
+        de 15 min couvrant t (on garde alors l'heure la plus proche)."""
+        m = self.minutely
+        if not m or t < m[0][0] - _HALF_STEP or t > m[-1][0] + _HALF_STEP:
+            return None
+        if t <= m[0][0]:
+            return m[0][1], m[0][2], m[0][3]
+        for (t0, v0, d0, g0), (t1, v1, d1, g1) in pairwise(m):
+            if t0 <= t <= t1:
+                if t1 - t0 > 2 * _STEP:  # trou dans la série : pas le plus proche
+                    _, v, d, g = (t0, v0, d0, g0) if t - t0 <= t1 - t else (t1, v1, d1, g1)
+                    return v, d, g
+                f = (t - t0).total_seconds() / max(1.0, (t1 - t0).total_seconds())
+                u0, w0 = wind_components(v0, d0)
+                u1, w1 = wind_components(v1, d1)
+                _, d = wind_from_components(u0 + f * (u1 - u0), w0 + f * (w1 - w0))
+                return v0 + f * (v1 - v0), d, g0 + f * (g1 - g0)
+        return m[-1][1], m[-1][2], m[-1][3]
 
     def between(self, start: datetime, end: datetime) -> list[HourAnalysis]:
         out = [h for h in self.hours if start <= h.time <= end]
@@ -116,6 +144,11 @@ class DataContext:
     beacon_dem_m: dict[str, float] = field(default_factory=dict)
     # cache des rattachements balise ↔ site (app.engine.stations), indépendants de l'instant évalué
     station_cache: dict = field(default_factory=dict)
+    # décollage libre (CDC §12.6) : lecture du MNT (app.engine.terrain.TakeoffTerrain) par id de site « user:… »
+    free_terrain: dict[str, Any] = field(default_factory=dict)
+    # atterros candidats (CDC §12.7) : données du terrain (app.engine.landings.LandingSpot) par id de site ; un
+    # atterro sans entrée est un site ordinaire (catégorie déduite de `official` / `landing_kind`)
+    landing_spots: dict[str, Any] = field(default_factory=dict)
 
     def terrain_at(self, lat: float, lon: float) -> float | None:
         if self.terrain is None:

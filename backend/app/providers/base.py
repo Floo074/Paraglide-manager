@@ -47,6 +47,9 @@ class SourceState:
     last_error: str | None = None
     last_mode: str | None = None  # live | mock
     extra: dict = field(default_factory=dict)
+    # quota / limitation de débit (HTTP 429) : aucun appel avant cette échéance (time.monotonic())
+    blocked_until: float | None = None
+    blocked_reason: str | None = None
 
     def record_success(self) -> None:
         self.last_success = time.monotonic()
@@ -57,7 +60,19 @@ class SourceState:
         self.last_failure = time.monotonic()
         self.last_error = redact(err)[:300]
 
+    def block(self, seconds: float, reason: str) -> None:
+        """Suspend la source `seconds` secondes (quota atteint) : pas de nouvel appel avant l'échéance."""
+        until = time.monotonic() + max(0.0, seconds)
+        if self.blocked_until is None or until > self.blocked_until:
+            self.blocked_until = until
+            self.blocked_reason = redact(reason)[:300]
+
+    def blocked(self) -> bool:
+        return self.blocked_until is not None and time.monotonic() < self.blocked_until
+
     def recently_failed(self, retry_after_s: float) -> bool:
+        if self.blocked():
+            return True
         return (
             self.last_failure is not None
             and (self.last_success is None or self.last_failure > self.last_success)

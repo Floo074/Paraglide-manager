@@ -11,6 +11,7 @@ Ce module n'importe que la bibliothèque standard (il est importé partout, y co
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Final
 
 
@@ -99,7 +100,16 @@ WEIGHTS: Final = {
     "site_fit": 5,
 }
 # §12.9 (a) : valeurs complétées de l'horizon 15m (remplacent celles du §11)
-HORIZON_BEACON_WEIGHT: Final = {"15m": 0.85, "30m": 0.7, "1h": 0.5, "2h": 0.3, "8h": 0.1, "12h": 0.0, "24h": 0.0, "48h": 0.0}
+HORIZON_BEACON_WEIGHT: Final = {
+    "15m": 0.85,
+    "30m": 0.7,
+    "1h": 0.5,
+    "2h": 0.3,
+    "8h": 0.1,
+    "12h": 0.0,
+    "24h": 0.0,
+    "48h": 0.0,
+}
 HORIZON_BASE_CONFIDENCE: Final = {
     "15m": 0.92, "30m": 0.9, "1h": 0.85, "2h": 0.8, "8h": 0.7, "12h": 0.65, "24h": 0.55, "48h": 0.4,
 }  # fmt: skip
@@ -329,6 +339,24 @@ REGIONS: Final = {
 BISE_SECTOR_DEG: Final = (10.0, 80.0)
 MISTRAL_SECTOR_DEG: Final = (320.0, 30.0)
 
+# --- §12.6 / §12.7 compléments backend (décollage libre, atterros candidats, cône de finesse) ----------
+FREE_TAKEOFF_DEM: Final = {"grid_n": 5, "grid_step_m": 100.0}  # grille MNT autour du point (1 appel Open-Meteo)
+FREE_TAKEOFF_FLIGHT_TYPES: Final = ("local", "cross_country")  # pas de soaring (top landing) depuis un point libre
+GLIDE_CONE: Final = {"bearings": 36, "step_km": 0.25, "max_km": 40.0, "clearance_from_km": 0.5}
+LANDING_SEARCH_RADIUS_KM: Final = 20.0  # atterros candidats cherchés autour d'un décollage libre
+LANDING_MAX_CANDIDATES: Final = 40  # au plus 40 candidats évalués (les plus proches, dans la portée de plané)
+LANDING_MAX_IN_ANALYSIS: Final = 8  # LandingCandidate publiés dans un plan / une analyse
+LANDING_FORECAST_CLUSTERS: Final = 4  # points de prévision pour les atterros candidats (quota Open-Meteo)
+LANDING_FORECAST_CLUSTER_KM: Final = 3.0  # candidats à moins de 3 km d'un point de prévision : même prévision
+OBSTACLE_TYPICAL_HEIGHT_M: Final = {"forest": 20.0, "building": 8.0, "power_line": 15.0, "aerialway": 15.0}
+OSM_OBSTACLE_SEARCH_M: Final = {"power_line": 300, "trees_buildings": 60, "water": 200, "road": 60}  # 2 × minima
+FIELD_MIN_DETECT_M: Final = (100.0, 30.0)  # champ OSM retenu si ≥ 100 × 30 m (minimum du niveau expert)
+PGE_COMMUNITY_USAGE: Final = "occasional"  # atterro non officiel documenté par les pilotes sur ParaglidingEarth
+ACCESS_TEXT_ROAD_M: Final = 150.0  # accès décrit (« route », « parking ») sans distance chiffrée
+UNKNOWN_SIZE_SUBSCORE: Final = 30.0  # taille d'un atterro communautaire non renseignée
+UNKNOWN_SLOPE_SUBSCORE: Final = 50.0  # pente non mesurée (MNT indisponible)
+LANDING_WIND_UNKNOWN_SUBSCORE: Final = 50.0
+
 # --- §7.5 radio / urgence -----------------------------------------------------------------------
 RADIO_FREQ_MHZ: Final = "143,9875"
 EMERGENCY_NUMBER: Final = "112"
@@ -345,7 +373,11 @@ HORIZON_MINUTES_ADD: Final = {"15m": 15}  # ajouté à HORIZON_MINUTES (models.p
 BEACON_WEIGHT_BY_MINUTES: Final = {0: 0.90, 15: 0.85, 30: 0.70, 60: 0.50, 120: 0.30, 480: 0.10, 720: 0.0}
 BEACON_GUST_HORIZONS: Final = ("15m", "30m", "1h")  # rafale retenue = max(rafale balise 10 min, rafale fusionnée)
 NOWCAST_HORIZONS: Final = ("15m", "30m", "1h", "2h")  # horizons où NO_LANDING_BEACON / STALE_BEACONS existent
-NOWCAST_WINDOW_START_MIN: Final = {"15m": (-10, 45), "30m": (-15, 60), "1h": (-30, 90)}  # bornes de window.start / cible
+NOWCAST_WINDOW_START_MIN: Final = {
+    "15m": (-10, 45),
+    "30m": (-15, 60),
+    "1h": (-30, 90),
+}  # bornes de window.start / cible
 NOWCAST_MIN_LEAD_MIN: Final = 10  # window.start ≥ reference_time + 10 min
 BEACON_FRESHNESS_MIN: Final = {"full_weight": 10, "stale": 30, "factor_at_stale": 0.3}  # > 30 min : périmée (poids 0)
 BEACON_REPRESENTATIVE_MIN_FACTOR: Final = 0.3  # f_distance × f_altitude × f_alt_inconnue × f_fraîcheur
@@ -379,14 +411,20 @@ TREND_1H: Final = {
     "wind_increase_kmh_per_h": {"caution": 5, "danger": 20},  # strictement supérieur ; r = speed_change × 60 / window
     "caution_min_ratio_to_threshold": 0.5,  # caution seulement si max(v_fusion, v_ext) ≥ 50 % du seuil, sinon info
     "rotation": {"caution_deg": 60, "min_wind_kmh": 8},
-    "reversal": {"deg": 120, "min_wind_kmh": 10,
-                 "level": {"beginner": "danger", "intermediate": "danger", "advanced": "caution", "expert": "caution"}},
-    "gust_max_over_threshold_kmh": {"caution": 0, "danger": 10},  # gust_max_kmh > seuil rafale du niveau (+ 10 → danger)
+    "reversal": {
+        "deg": 120,
+        "min_wind_kmh": 10,
+        "level": {"beginner": "danger", "intermediate": "danger", "advanced": "caution", "expert": "caution"},
+    },
+    "gust_max_over_threshold_kmh": {
+        "caution": 0,
+        "danger": 10,
+    },  # gust_max_kmh > seuil rafale du niveau (+ 10 → danger)
     "extrapolate_horizons": ("15m", "30m", "1h"),
     "extrapolate_max_minutes": 60,
     "extrapolate_cap_kmh": 15,
     "extrapolate_down": False,
-}  # fmt: skip
+}
 TREND_IMPACT: Final = {  # niveau du Risk par horizon ; horizon absent = ignoré
     "wind_increase": {"15m": "caution", "30m": "caution", "1h": "caution", "2h": "info"},
     "wind_increase_high": {"15m": "danger", "30m": "danger", "1h": "danger", "2h": "caution"},
@@ -431,14 +469,17 @@ FREE_TAKEOFF: Final = {
     "clear_area_m": {"length": 30, "width": 15},  # non vérifiable au MNT : contrôle obligatoire
     "refusal_beginner": "Décollage libre non proposé au niveau élève : uniquement sous la responsabilité d'un moniteur "
     "présent sur place.",
-    "warning": "Décollage libre, hors site officiel : pente, obstacles et vent ne sont vérifiés par personne. Reconnais le "
+    "warning": "Décollage libre, hors site officiel : pente, obstacles et vent ne sont vérifiés par personne. "
+               "Reconnais le "
     "terrain à pied, vérifie l'autorisation, et ne décolle qu'une fois tous les contrôles faits.",
     "mandatory_checks": (
         "Autorisation du propriétaire ou de la commune ; pas de décollage en cœur de parc national, réserve naturelle, "
         "arrêté de biotope ou zone Biodiv'Sports active.",
-        "Reconnaissance à pied de l'aire et de l'axe : pierres, souches, clôtures, câbles, téléskis, lignes, randonneurs, "
+        "Reconnaissance à pied de l'aire et de l'axe : pierres, souches, clôtures, câbles, téléskis, lignes, "
+        "randonneurs, "
         "bétail ; prévoir de quoi interrompre le décollage.",
-        "Observer le vent 5 min (manche, rubalise, herbes) : de face et régulier, ni rotor, ni dévent, ni cycles thermiques "
+        "Observer le vent 5 min (manche, rubalise, herbes) : de face et régulier, ni rotor, ni dévent, ni cycles "
+        "thermiques "
         "trop forts.",
         "Atterro repéré à vue avant de gonfler, dans le cône de finesse, plus un atterro de secours.",
         "Espaces aériens, NOTAM et zones sensibles vérifiés ; prévenir un proche (point exact, heure, atterro prévu) ; "
@@ -524,7 +565,7 @@ def interp_aloft_threshold(altitude_m: float, level: str) -> float:
         return float(WIND_ALOFT_MAX_KMH[keys[0]][level])
     if altitude_m >= keys[-1]:
         return float(WIND_ALOFT_MAX_KMH[keys[-1]][level])
-    for a, b in zip(keys, keys[1:], strict=False):
+    for a, b in pairwise(keys):
         if a <= altitude_m <= b:
             va, vb = WIND_ALOFT_MAX_KMH[a][level], WIND_ALOFT_MAX_KMH[b][level]
             return float(va + (vb - va) * (altitude_m - a) / (b - a))
@@ -542,7 +583,7 @@ def xc_speed_kmh(vario_ms: float, level: str, glide_ratio: float) -> float:
         speed = table[keys[0]] * v / keys[0]
     else:
         speed = float(table[keys[-1]])
-        for a, b in zip(keys, keys[1:], strict=False):
+        for a, b in pairwise(keys):
             if a <= v <= b:
                 speed = table[a] + (table[b] - table[a]) * (v - a) / (b - a)
                 break
@@ -561,7 +602,7 @@ def beacon_weight_by_minutes(dt_min: float) -> float:
     x = max(0.0, dt_min)
     if x >= pts[-1][0]:
         return float(pts[-1][1])
-    for (x0, y0), (x1, y1) in zip(pts, pts[1:], strict=False):
+    for (x0, y0), (x1, y1) in pairwise(pts):
         if x0 <= x <= x1:
             return float(y0 + (y1 - y0) * (x - x0) / (x1 - x0))
     return float(pts[0][1])  # pragma: no cover

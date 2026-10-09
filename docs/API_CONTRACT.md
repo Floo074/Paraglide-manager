@@ -54,8 +54,11 @@ interface Site {
   url: string | null;
   associated_landing_ids: string[]; // pour un décollage : atterrissages officiels associés
   official: boolean;                // site officiel / référencé (FFVL, PGE validé, fixture)
-  landing_kind: LandingKind | null; // pour un atterrissage
+  landing_kind: LandingKind | null; // pour un atterrissage : toujours renseigné si kind = "landing" | "both"
+                                    // (déduit de `official` si la source ne le donne pas) ; null pour un décollage
 }
+// Décollage libre : Site source "user", id "user:{lat},{lon}" (5 décimales), kind "takeoff", official false,
+// difficulty null (= intermediate), flight_types ["local", "cross_country"], orientations = pilote ou exposition MNT ± 22,5°.
 
 interface Beacon {                   // balise météo temps réel
   id: string; name: string;
@@ -133,6 +136,9 @@ interface ThermalAnalysis {
 }
 
 interface Risk { code: string; level: RiskLevel; title: string; detail: string }
+// codes : catalogue du cahier des charges ; §12 ajoute NO_LANDING_BEACON, WIND_SHIFT, FREE_TAKEOFF (décollage libre :
+// info / caution / danger selon le niveau), UNOFFICIAL_LANDING (atterro communautaire), DETECTED_FIELD (champ détecté).
+// Raisons de rejet préfixées « [CODE] ».
 
 interface Waypoint {
   name: string; lat: number; lon: number; altitude_m: number;
@@ -151,10 +157,14 @@ interface AirspaceWarning {
 
 interface LandingCandidate {
   site: Site;                        // site.landing_kind renseigné ; source "osm" pour un champ détecté
+                                     // ("fixture" pour un terrain de démonstration, nom suffixé « démo »)
   kind: LandingKind;
+  use: "main" | "alternate";         // usage permis au niveau du pilote : principal possible / secours seulement
+                                     // (ex. champ pour un brevet de pilote, communautaire peu fréquenté) (CDC §12.7)
   score: number;                     // 0..100
-  required_glide_ratio: number;      // finesse sol nécessaire depuis le déco (vent compris)
-  available_glide_ratio: number;     // finesse de calcul retenue (prudente)
+  required_glide_ratio: number;      // finesse sol nécessaire depuis le déco (vent compris), hauteur d'arrivée mini
+                                     // du kind déduite (officiel : marge §2.3 ; communautaire / champ : 100-200 m)
+  available_glide_ratio: number;     // finesse de calcul retenue (prudente), × 0,90 communautaire / × 0,80 champ
   arrival_height_m: number;          // hauteur estimée à l'arrivée au-dessus de l'atterro
   size_m: { length: number; width: number } | null;
   slope_pct: number | null;
@@ -163,8 +173,9 @@ interface LandingCandidate {
   wind_at_arrival: { speed_kmh: number; direction_deg: number; gust_kmh: number } | null;
   community_usage: "frequent" | "occasional" | "unknown";
   access: string | null;             // route / parking / navette
-  warnings: string[];                // ex. "Non officiel : autorisation du propriétaire à vérifier"
-  reasons: string[];                 // pourquoi ce classement
+  warnings: string[];                // ex. "Non officiel : autorisation du propriétaire à vérifier" (toujours pour
+                                     // community / field), saison des foins, obstacles proches, données manquantes
+  reasons: string[];                 // pourquoi ce classement (2-3 sous-scores décisifs ; « Écarté : … » le cas échéant)
 }
 
 interface ScoreItem { criterion: string; score: number; weight: number; comment: string } // score 0..100
@@ -187,13 +198,15 @@ interface FlightPlan {
   takeoff: Site;
   landing: Site;
   alternate_landings: Site[];
-  landing_analysis: LandingCandidate[]; // atterros candidats évalués, triés (le 1er = landing)
+  landing_analysis: LandingCandidate[]; // atterros évalués (≤ 8), le 1er = landing, puis secours et autres candidats
+                                     // utilisables par score ; mode classique : officiels seulement
   waypoints: Waypoint[];
   route: { type: "LineString"; coordinates: [number, number, number][] }; // GeoJSON [lon, lat, alt]
   distance_km: number;
   est_duration_min: number;
   max_altitude_m: number;
-  glide: { required_ratio: number; available_ratio: number; margin_ok: boolean };
+  glide: { required_ratio: number; available_ratio: number; margin_ok: boolean }; // atterro non officiel :
+                                     // available_ratio inclut le facteur f (0,90 / 0,80) et la hauteur d'arrivée mini
   weather: { takeoff: WeatherSnapshot; landing: WeatherSnapshot; timeline: WeatherSnapshot[] }; // timeline horaire au déco, fenêtre ±3h
   thermals: ThermalAnalysis;
   sounding: SoundingLevel[];
@@ -218,6 +231,8 @@ interface FlightPlan {
 ### `GET /api/sources`
 État de chaque fournisseur de données.
 `{ "sources": { name: string; kind: "forecast"|"sites"|"beacons"|"airspaces"|"elevation"|"sensitive_areas"; mode: "live"|"mock"|"disabled"; healthy: boolean; requires_api_key: boolean; api_key_configured: boolean; message: string | null; url: string | null }[] }`
+(inclut « OpenStreetMap / Overpass (champs candidats, atterros vol libre, obstacles) », kind `sites`, `disabled` par
+défaut ; une source suspendue après un HTTP 429 le dit dans `message`.)
 
 ### `GET /api/sites?bbox=min_lon,min_lat,max_lon,max_lat`
 `{ "sites": Site[] }` — fusion dédoublonnée FFVL + ParaglidingEarth + SpotAir (dédoublonnage < 300 m et nom proche).
@@ -273,14 +288,19 @@ interface PlanRequest {
     wing_glide_ratio?: number;       // finesse de l'aile, défaut 8.5
     landing_policy?: "official_only" | "include_community" | "include_fields"; // défaut "official_only"
   };
-  mode?: "classic" | "custom_takeoff"; // défaut "classic" = déco ET atterro officiels
+  mode?: "classic" | "custom_takeoff"; // défaut "classic" = déco ET atterro officiels : les décos non officiels de la
+                                     // zone sont listés dans `rejected` (non évalués) ; landing_policy autre
+                                     // qu'official_only y est ignorée (warning). custom_takeoff : `zone` est ignorée
+                                     // pour les décollages (seul le point est évalué), atterros cherchés à ≤ 20 km
   custom_takeoff?: {                 // requis si mode = "custom_takeoff" (ex. vol rando)
     lat: number; lon: number;
     elevation_m?: number;            // sinon altitude terrain (MNT)
-    orientations?: string[];         // sinon déduites de la pente (exposition MNT)
+    orientations?: string[];         // sinon déduites de la pente (exposition MNT) ; rose 16 points (O/SO… acceptés)
     name?: string;
   };
 }
+// mode = "custom_takeoff" sans custom_takeoff → 422. Altitude absente et MNT indisponible → 422 (« indique elevation_m »).
+// Élève (beginner) : aucun plan, rejet « [FREE_TAKEOFF] Décollage libre non proposé au niveau élève… » + raison atterro.
 ```
 Réponse :
 ```ts
@@ -291,7 +311,9 @@ interface PlanResponse {
   horizon: Horizon;
   zone: Zone;
   data_mode: DataMode;
-  plans: FlightPlan[];               // triés par score décroissant
+  plans: FlightPlan[];               // ordre de `rank` : verdict (go > marginal), durée dans la plage demandée, score
+                                     // plafonné puis non plafonné (revue moniteur, lot 6.2) ; diversité CDC §9.4 (≤ 2 par
+                                     // déco dans les 5 premiers) : un `marginal` mieux noté peut suivre un `go`
   rejected: { site: Site; reasons: string[] }[];
   warnings: string[];
 }
@@ -300,8 +322,15 @@ Erreurs : `422` si requête invalide (zone > 150 km de rayon / bbox > 3° de cô
 
 ### `POST /api/landings/analyze`
 Analyse des atterrissages possibles depuis un point de décollage libre (clic sur la carte).
-Requête : `{ takeoff: { lat, lon, elevation_m?, orientations? }, horizon: Horizon, reference_time?: string, wing_glide_ratio?: number, difficulty: Difficulty, landing_policy: "official_only" | "include_community" | "include_fields" }`
+Requête : `{ takeoff: { lat, lon, elevation_m?, orientations?, name? }, horizon: Horizon, reference_time?: string, wing_glide_ratio?: number /* défaut 8.5 */, difficulty: Difficulty, landing_policy?: "official_only" | "include_community" | "include_fields" /* défaut official_only */ }`
 Réponse : `{ takeoff: Site /* source "user" */, target_time: string, glide_cone: GeoJSON Polygon /* zone atteignable avec marge, vent compris */, candidates: LandingCandidate[], warnings: string[] }`
+- `candidates` : atterros **utilisables** à ce niveau (portée de plané, politique, usage par niveau, critères minimaux),
+  principaux possibles d'abord puis par score (≤ 8). Les meilleurs candidats écartés et la cause sont dans `warnings`
+  (ex. « « Pré X » (champ détecté) écarté : pente de 12 % (maximum 8 %) »), ainsi que le refus élève, la politique
+  forcée (élève : officiels seulement) et la lecture du MNT au point (pente, exposition, profil de l'axe).
+- `glide_cone` : anneau de 36 caps (fermé), finesse de calcul du niveau (k) vent compris, marge d'arrivée du niveau,
+  raccourci là où le relief coupe la ligne de plané (MNT réel).
+- Erreurs : `422` (requête invalide, altitude inconnue sans MNT), `503` (source indispensable indisponible en `live`).
 
 ### `GET /api/plans/{id}` → `FlightPlan` (cache mémoire, TTL 6h ; 404 sinon)
 ### `GET /api/plans/{id}/gpx` → `application/gpx+xml` (GPX 1.1 : `wpt` déco/balises/atterros, `rte` route, `metadata` avec briefing résumé)

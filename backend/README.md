@@ -43,6 +43,8 @@ Toutes sont décrites dans [`.env.example`](.env.example) ; aucune n'est obligat
 | `DATA_MODE` | `auto` | `auto` : sources réelles avec repli sur la démo en cas d'échec ; `live` : sources réelles seulement ; `mock` : données de démonstration, aucun appel réseau |
 | `HTTP_TIMEOUT_S` | `5` | délai par appel HTTP |
 | `LIVE_RETRY_AFTER_S` | `120` | en mode `auto`, une source en échec n'est pas retentée avant ce délai |
+| `QUOTA_BLOCK_MAX_S` | `3600` | quota journalier atteint (HTTP 429 « Daily API request limit ») : suspension maximale entre deux essais ; les trois API Open-Meteo (prévision, 15 min, MNT) sont suspendues ensemble ; OpenAIP : 5 min au moins |
+| `OVERPASS_ENABLED`, `OVERPASS_URL` | `false`, `https://overpass-api.de/api/interpreter` | champs candidats, atterros vol libre et obstacles OpenStreetMap (décollage libre) ; désactivé par défaut |
 | `OPEN_METEO_MODELS` | `meteofrance_arome_france_hd,icon_d2,ecmwf_ifs025` | modèles interrogés ensemble |
 | `OPEN_METEO_API_KEY` | vide | offre commerciale Open-Meteo uniquement |
 | `OPENAIP_API_KEY` | vide | espaces aériens OpenAIP (clé gratuite, compte openaip.net → *API clients*) |
@@ -67,7 +69,8 @@ Les clés ne sont jamais écrites dans les logs, les messages d'erreur ni les r�
 | **Biodiv'Sports** (`biodiv-sports.fr`) | Zones sensibles faune / réglementaires pour la pratique « aérien » (mois de sensibilité, hauteur de survol, règles) | libre | citer Biodiv'Sports (LPO et partenaires) et le lien de chaque zone (`url`) ; conditions de réutilisation à confirmer auprès de Biodiv'Sports |
 | Fichiers **OpenAir** locaux | Espaces aériens (repli sans clé) | fichiers déposés par l'utilisateur | selon la source du fichier (voir `data/airspaces/README.md`) |
 | **FFVL** (`data.ffvl.fr`) | Terrains et balises officiels | clé sur demande | selon l'accord FFVL — désactivé sans clé |
-| Fixtures (`app/fixtures/`) | Sites, balises, zones et espaces de démonstration | local | approximatifs, **jamais pour naviguer** |
+| **OpenStreetMap / Overpass** (`overpass-api.de`, désactivé par défaut) | Prés et prairies (`landuse=meadow\|grass\|farmland`, `natural=grassland`), atterros vol libre (`free_flying:site=landing`), obstacles (lignes, câbles, forêts, bâtiments, eau, routes) | libre | **ODbL 1.0** : « © les contributeurs d'OpenStreetMap » avec lien https://www.openstreetmap.org/copyright |
+| Fixtures (`app/fixtures/`) | Sites, balises, zones et espaces de démonstration ; atterros communautaires et champs **fictifs** (`landing_spots.json`) | local | approximatifs, **jamais pour naviguer** |
 
 Chaque réponse de l'API liste les sources réellement utilisées (`sources[]`, mode `live` / `mock`),
 à afficher avec leurs attributions (page Sources du frontend, attributions de la carte).
@@ -137,6 +140,24 @@ Tous les seuils sont dans [`app/engine/rules.py`](app/engine/rules.py) (repris d
    classe E autorisée en VMC (info), R / ZRT / D / TRA / TSA « à vérifier » (activations inconnues),
    SIV / FIR information seulement ; zones sensibles actives au mois du vol → risque `SENSITIVE_AREA`.
 7. **Briefing** (`app/engine/briefing.py`) : textes en français, checklist, exports GPX et XCTrack.
+8. **Mode classique / décollage libre** (CDC §12.6-12.7) :
+   - mode `classic` (défaut) : déco ET atterro **officiels** uniquement (`Site.official`, `landing_kind`) ; les
+     décos communautaires de la zone sont listés dans `rejected` ; `landing_analysis` liste les atterros
+     officiels évalués (le premier = l'atterro du plan) ;
+   - mode `custom_takeoff` (`app/engine/terrain.py`, `free_takeoff.py`) : point cliqué (site source `user`,
+     difficulté intermediate) ; grille MNT 5 × 5 au pas de 100 m (un appel Open-Meteo Elevation) → exposition ;
+     pente moyenne sur 150 m sous le point et profil de l'axe sur 300 m (un second appel) ; orientations
+     = exposition ± 22,5° ; seuils de vent propres (15 / 20 / 25 km/h…, angle vent / pente, vent arrière dès
+     3 km/h), pente 25 % (15 % avec 10 km/h de face) à 60-80 %, jamais pour un élève, au mieux marginal pour
+     un brevet de pilote, contrôles obligatoires dans le briefing et la checklist ;
+   - atterros candidats (`app/engine/landings.py`) dans le cône de finesse : officiels → communautaires
+     (ParaglidingEarth non officiels, OSM `free_flying`) → champs (OSM + MNT) selon `landing_policy` puis le
+     niveau ; critères minimaux, marges renforcées (finesse × 0,90 / × 0,80, hauteur d'arrivée 100-200 m),
+     score pondéré (marge 25, obstacles 20, vent 15, taille 10, usage 10, pente 8, accès 7, balise 5 + bonus
+     de catégorie), avertissement « Non officiel » systématique, rejet expliqué ; `POST /api/landings/analyze`
+     renvoie aussi le cône de finesse (GeoJSON) ;
+   - sans Overpass : terrains de démonstration en mode démo seulement ; en live, seuls les atterros
+     ParaglidingEarth sont évalués (jamais de terrain fictif dans un plan réel).
 
 ## Vérification des sources : `app.check_sources`
 
@@ -186,3 +207,8 @@ puis copier la réponse utile dans `tests/fixtures/` (jamais de clé dans une fi
 - Quota Open-Meteo gratuit (pondéré par le nombre de variables et de modèles) : en cas de 429, repli
   sur la météo synthétique (mode `auto`) jusqu'au prochain essai.
 - FFVL, SpotAir et Météo-Parapente désactivés sans accord / clé ; sites FFVL non vérifiés faute de clé.
+- Overpass (OpenStreetMap) injoignable depuis l'environnement de développement : adaptateur testé sur une
+  réponse fabriquée au format Overpass, à valider sur une vraie réponse ; hauteurs d'obstacles typiques
+  (forêt 20 m, ligne 15 m, bâtiment 8 m) faute de donnée ; ligne électrique absente d'OSM = « non cartographiée ».
+- MNT Copernicus 90 m : la pente d'un décollage libre et d'un champ est une estimation (lissage du MNT) ;
+  sans MNT réel (quota), pente et exposition sont « non mesurées » (jamais le MNT de démo pour un vol réel).

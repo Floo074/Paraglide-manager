@@ -14,8 +14,11 @@ from datetime import UTC, datetime, timedelta
 
 from shapely.geometry import Polygon
 
+from app.engine import rules
 from app.engine.context import Airspace, DataContext, PointTimeline, ReliefPoint, SensitiveArea, SiteMeta
+from app.engine.landings import LandingSpot
 from app.engine.planner import evaluate_sites
+from app.engine.terrain import TakeoffTerrain, axis_from_orientations, orientations_from_aspect
 from app.meteo.ensemble import Spread
 from app.meteo.profile import VerticalProfile
 from app.meteo.snapshot import iso
@@ -36,7 +39,7 @@ def _hm(s: str, day: datetime) -> datetime:
     return day.replace(hour=h, minute=m, second=0, microsecond=0)
 
 
-def _site(spec: dict, sid: str, kind: str, landing_ids: list[str] | None = None) -> Site:
+def _site(spec: dict, sid: str, kind: str, landing_ids: list[str] | None = None, **extra) -> Site:
     return Site(
         id=sid,
         name=spec["name"],
@@ -54,6 +57,7 @@ def _site(spec: dict, sid: str, kind: str, landing_ids: list[str] | None = None)
         source="fixture",
         url=None,
         associated_landing_ids=landing_ids or [],
+        **extra,
     )
 
 
@@ -72,8 +76,16 @@ def _levels(winds_aloft: dict, t_ground: float, td_ground: float, ground_m: floa
         speed, direction = float(sd[0]), float(sd[1])
         t = t_ground - 0.0065 * (z - ground_m)
         td = min(t - 1.0, td_ground - 0.002 * (z - ground_m))
-        out.append(LevelData(pressure_hpa=round(1013.25 * (1 - 2.25577e-5 * z) ** 5.25588, 1), height_m=z,
-                             temperature_c=t, dew_point_c=td, wind_speed_kmh=speed, wind_direction_deg=direction))  # fmt: skip
+        out.append(
+            LevelData(
+                pressure_hpa=round(1013.25 * (1 - 2.25577e-5 * z) ** 5.25588, 1),
+                height_m=z,
+                temperature_c=t,
+                dew_point_c=td,
+                wind_speed_kmh=speed,
+                wind_direction_deg=direction,
+            )
+        )
     return out
 
 
@@ -145,21 +157,81 @@ def _analysis(
     )
 
 
+def _custom_takeoff(spec: dict) -> tuple[Site, TakeoffTerrain]:
+    """Décollage libre d'un scénario : site source « user » (difficulté null = intermediate) ; pente et exposition MNT
+    imposées (`slope_pct`, `aspect_deg`) ; profil dans l'axe non contrôlé (pas de MNT réel)."""
+    ct = spec["custom_takeoff"]
+    aspect = ct.get("aspect_deg")
+    orientations = list(ct.get("orientations") or (orientations_from_aspect(float(aspect)) if aspect is not None
+                                                   else []))  # fmt: skip
+    site = Site(
+        id="user:scenario", name=ct.get("name") or "Décollage libre", kind="takeoff", lat=float(ct["lat"]),
+        lon=float(ct["lon"]), elevation_m=float(ct["elevation_m"]), orientations=orientations, difficulty=None,
+        flight_types=list(rules.FREE_TAKEOFF_FLIGHT_TYPES), source="user", status="unknown", official=False,
+    )  # fmt: skip
+    terrain = TakeoffTerrain(
+        elevation_m=float(ct["elevation_m"]),
+        slope_pct=None if ct.get("slope_pct") is None else float(ct["slope_pct"]),
+        aspect_deg=None if aspect is None else float(aspect),
+        profile_ok=None,
+        axis_deg=axis_from_orientations(orientations) if orientations else aspect,
+        source="scenario",
+    )
+    return site, terrain
+
+
+def _spot(site: Site, spec: dict) -> LandingSpot:
+    """Données d'un atterro candidat d'un scénario (`landing_candidates`, CDC §12.7)."""
+    size = spec.get("size_m")
+    clear = spec.get("clearances_m")
+    clearances: dict[str, float | None] = {}
+    if isinstance(clear, dict):  # null = rien dans un rayon de 500 m ; clé absente = non cartographié
+        clearances = {k: (None if v is None else float(v)) for k, v in clear.items()}
+    return LandingSpot(
+        site=site,
+        kind=spec.get("landing_kind", "official"),
+        size=(float(size["length"]), float(size["width"])) if size else None,
+        axis_deg=spec.get("axis_deg"),
+        slope_pct=spec.get("slope_pct"),
+        surface=spec.get("surface"),
+        community_usage=spec.get("community_usage", "unknown"),
+        access=spec.get("access"),
+        road_m=clearances.get("road"),
+        clearances=clearances,
+    )
+
+
 def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
-    if spec.get("mode", "classic") != "classic":
-        raise NotImplementedError(f"mode {spec['mode']!r} (décollage libre) pas encore géré par le chargeur de scénarios")
+    mode = spec.get("mode", "classic")
     ref = _parse_time(spec["reference_time"])
     horizon = spec["horizon"]
     target = ref + timedelta(minutes=HORIZON_MINUTES[horizon])
     filters = PlanFilters(**spec["filters"])
     weather = spec["weather"]
-    alt_specs = spec.get("alternate_landings") or []
-    landing_ids = ["scenario:landing"] + [f"scenario:alt{i}" for i in range(len(alt_specs))]
-    takeoff = _site(spec["takeoff"], "scenario:takeoff", "takeoff", landing_ids)
-    landing = _site(spec["landing"], "scenario:landing", "landing")
-    alternates = [_site(a, f"scenario:alt{i}", "landing") for i, a in enumerate(alt_specs)]
+    free_terrain: dict[str, TakeoffTerrain] = {}
+    spots: dict[str, LandingSpot] = {}
+    if mode == "custom_takeoff":
+        # décollage libre : `landing_candidates` remplace landing / alternate_landings ; le moteur choisit
+        takeoff, terrain = _custom_takeoff(spec)
+        free_terrain[takeoff.id] = terrain
+        cand_specs = list(spec.get("landing_candidates") or [])
+        cands = []
+        for i, c in enumerate(cand_specs):
+            kind = c.get("landing_kind", "official")
+            site = _site(c, f"scenario:cand{i}", "landing", official=kind == "official", landing_kind=kind)
+            cands.append(site)
+            spots[site.id] = _spot(site, c)
+        landing, alternates, alt_specs = cands[0], cands[1:], cand_specs[1:]
+        landing_spec = cand_specs[0]
+    else:
+        alt_specs = spec.get("alternate_landings") or []
+        landing_ids = ["scenario:landing"] + [f"scenario:alt{i}" for i in range(len(alt_specs))]
+        takeoff = _site(spec["takeoff"], "scenario:takeoff", "takeoff", landing_ids)
+        landing = _site(spec["landing"], "scenario:landing", "landing")
+        alternates = [_site(a, f"scenario:alt{i}", "landing") for i, a in enumerate(alt_specs)]
+        landing_spec = spec["landing"]
     meta = {
-        landing.id: SiteMeta(big_valley=spec["landing"].get("big_valley"), top_landing=False),
+        landing.id: SiteMeta(big_valley=landing_spec.get("big_valley"), top_landing=False),
         **{a.id: SiteMeta(big_valley=s.get("big_valley")) for a, s in zip(alternates, alt_specs, strict=False)},
     }
     day0 = target.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -181,14 +253,32 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
         t_to = float(vals.get("temperature_c", 15.0))
         td_to = float(vals.get("dew_point_c", t_to - 8.0))
         low = float(vals.get("cloud_cover_low_pct", 0.0))
-        tl_hours.append(_analysis(t, takeoff.lat, takeoff.lon, takeoff.elevation_m, vals, tw, t_to, td_to, low, in_conv, takeoff.elevation_m))
+        tl_hours.append(
+            _analysis(
+                t,
+                takeoff.lat,
+                takeoff.lon,
+                takeoff.elevation_m,
+                vals,
+                tw,
+                t_to,
+                td_to,
+                low,
+                in_conv,
+                takeoff.elevation_m,
+            )
+        )
         for ldg in [landing, *alternates]:
             lw = (float(vals["landing_wind_kmh"]), float(vals["landing_wind_dir"]), float(vals["landing_gust_kmh"]))
             dz = takeoff.elevation_m - ldg.elevation_m
             t_l = float(vals.get("landing_temperature_c", t_to + 0.0065 * dz))
             td_l = float(vals.get("landing_dew_point_c", td_to + 0.002 * dz))
             low_l = float(vals.get("landing_cloud_cover_low_pct", low))
-            l_hours[ldg.id].append(_analysis(t, ldg.lat, ldg.lon, ldg.elevation_m, vals, lw, t_l, td_l, low_l, in_conv, takeoff.elevation_m))
+            l_hours[ldg.id].append(
+                _analysis(
+                    t, ldg.lat, ldg.lon, ldg.elevation_m, vals, lw, t_l, td_l, low_l, in_conv, takeoff.elevation_m
+                )
+            )
     model_winds: dict[datetime, list[tuple[str, float, float]]] = {}
     spreads: dict[datetime, Spread] = {}
     models = spec.get("models") or {}
@@ -198,20 +288,35 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
             model_winds[t] = mw
             vals = _hour_values(weather, t)
             spreads[t] = Spread(
-                n_models=len(mw), wind_speed_sigma_kmh=0.0, wind_dir_sigma_deg=0.0,
-                precip_max_mm_h=float(vals.get("precipitation_mm_h", 0.0)), cape_max_j_kg=float(vals.get("cape_j_kg", 0.0)),
+                n_models=len(mw),
+                wind_speed_sigma_kmh=0.0,
+                wind_dir_sigma_deg=0.0,
+                precip_max_mm_h=float(vals.get("precipitation_mm_h", 0.0)),
+                cape_max_j_kg=float(vals.get("cape_j_kg", 0.0)),
                 wind_speed_max_kmh=max(v for _, v, _ in mw),
-                gust_max_kmh=max(v for _, v, _ in mw) * (float(vals["takeoff_gust_kmh"]) / max(1.0, float(vals["takeoff_wind_kmh"]))),
-                li_min=None if vals.get("lifted_index") is None else float(vals["lifted_index"]), models=list(models),
-            )  # fmt: skip
+                gust_max_kmh=max(v for _, v, _ in mw)
+                * (float(vals["takeoff_gust_kmh"]) / max(1.0, float(vals["takeoff_wind_kmh"]))),
+                li_min=None if vals.get("lifted_index") is None else float(vals["lifted_index"]),
+                models=list(models),
+            )
     timelines = {
-        takeoff.id: PointTimeline(takeoff.lat, takeoff.lon, takeoff.elevation_m, tl_hours, spreads, model_winds,
-                                  mode="live", model_label="scenario"),
+        takeoff.id: PointTimeline(
+            takeoff.lat,
+            takeoff.lon,
+            takeoff.elevation_m,
+            tl_hours,
+            spreads,
+            model_winds,
+            mode="live",
+            model_label="scenario",
+        ),
         **{
-            ldg.id: PointTimeline(ldg.lat, ldg.lon, ldg.elevation_m, l_hours[ldg.id], mode="live", model_label="scenario")
+            ldg.id: PointTimeline(
+                ldg.lat, ldg.lon, ldg.elevation_m, l_hours[ldg.id], mode="live", model_label="scenario"
+            )
             for ldg in [landing, *alternates]
         },
-    }  # fmt: skip
+    }
     beacons: list[Beacon] = []
     ages: dict[str, float] = {}
     beacon_dem: dict[str, float] = {}
@@ -226,7 +331,7 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
                 wind_gust_kmh=b.get("wind_gust_kmh"), wind_direction_deg=b.get("wind_direction_deg"),
                 temperature_c=b.get("temperature_c"), source="fixture", stale=age > 30,
                 trend=BeaconTrend(**trend) if trend else None,
-            )  # fmt: skip
+            )
         )
         ages[bid] = age
         # altitude inconnue (null) : MNT imposé par `dem_elevation_m`, sinon MNT indisponible à ce point (CDC §12.1)
@@ -237,19 +342,26 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
             name=a["name"], airspace_class=str(a["airspace_class"]), type=str(a.get("type", a["airspace_class"])),
             floor_m=float(a["floor_m"]), ceiling_m=float(a["ceiling_m"]), geometry=Polygon(a["polygon"]),
             activity_known=bool(a.get("activity_known", False)), active=bool(a.get("active", False)),
-        )  # fmt: skip
+        )
         for a in spec.get("airspaces") or []
     ]
     areas = [
         SensitiveArea(
-            id=f"scenario:area{i}", name=z["name"], kind=z.get("kind", "species"), species=z.get("species"),
-            period_months=list(z.get("period_months") or list(range(1, 13))), recommendation=z.get("recommendation", ""),
-            min_height_agl_m=z.get("min_height_agl_m"), geometry=Polygon(z["polygon"]),
-        )  # fmt: skip
+            id=f"scenario:area{i}",
+            name=z["name"],
+            kind=z.get("kind", "species"),
+            species=z.get("species"),
+            period_months=list(z.get("period_months") or list(range(1, 13))),
+            recommendation=z.get("recommendation", ""),
+            min_height_agl_m=z.get("min_height_agl_m"),
+            geometry=Polygon(z["polygon"]),
+        )
         for i, z in enumerate(spec.get("sensitive_areas") or [])
     ]
     relief = [
-        ReliefPoint(p["name"], p["lat"], p["lon"], float(p["elevation_m"]), list(p.get("faces", [])), bool(p.get("valley")))
+        ReliefPoint(
+            p["name"], p["lat"], p["lon"], float(p["elevation_m"]), list(p.get("faces", [])), bool(p.get("valley"))
+        )
         for p in fixture_relief()
     ]
     ctx = DataContext(
@@ -269,6 +381,8 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
         mock=False,
         exact_inputs=True,
         beacon_dem_m=beacon_dem,
+        free_terrain=free_terrain,
+        landing_spots=spots,
     )
     return ctx, filters
 
@@ -276,7 +390,7 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
 def run_scenario(spec: dict) -> PlanResponse:
     ctx, filters = build_context(spec)
     plans, rejected, warnings, _ = evaluate_sites(ctx, filters)
-    t = spec["takeoff"]
+    t = spec.get("takeoff") or spec["custom_takeoff"]
     zone = CircleZone(type="circle", center=LatLon(lat=t["lat"], lon=t["lon"]), radius_km=10)
     return PlanResponse(
         request_id=str(uuid.uuid4()),

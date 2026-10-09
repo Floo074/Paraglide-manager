@@ -143,7 +143,9 @@ def landing_wind(
     l'atterro (poids selon Δt = arrivée − reference_time) puis par la tendance (§12.1-12.2)."""
     a = timeline.at(t)
     factor = breeze_factor(t, big_valley)
-    mv, md, mg = a.wind_speed_kmh * factor, a.wind_direction_deg, a.wind_gust_kmh * factor
+    # vent 10 m au pas de 15 min (AROME, horizons ≤ 2 h) s'il couvre t, sinon l'heure la plus proche
+    v10, d10, g10 = timeline.wind10_at(t) or (a.wind_speed_kmh, a.wind_direction_deg, a.wind_gust_kmh)
+    mv, md, mg = v10 * factor, d10, g10 * factor
     nc = None
     if ctx is not None and landing is not None:
         nc = station_nowcast(ctx, landing, role, timeline, t, big_valley)

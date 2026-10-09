@@ -3,10 +3,10 @@
   "beacons": [
     {"id": "fixture:b-forclaz", "name": "Col de la Forclaz", "lat": 45.8145, "lon": 6.2470, "elevation_m": 1240, "bias": {"speed": 2, "dir": 10}},
     {"id": "fixture:b-planfait", "name": "Planfait", "lat": 45.8575, "lon": 6.2290, "elevation_m": 1250, "bias": {"speed": -1, "dir": -8}},
-    {"id": "fixture:b-doussard", "name": "Doussard atterrissage", "lat": 45.7885, "lon": 6.2230, "elevation_m": 452, "bias": {"speed": 3, "dir": 5}},
-    {"id": "fixture:pioupiou-1720", "name": "Atterrissage de Doussard", "lat": 45.781728, "lon": 6.222627, "elevation_m": null, "bias": {"speed": 1, "dir": 8}, "_source": "Pioupiou 1720 (position réelle, OpenWindMap) ; altitude non fournie par la source"},
+    {"id": "fixture:b-doussard", "name": "Doussard atterrissage", "lat": 45.7826, "lon": 6.2232, "elevation_m": 452, "bias": {"speed": 3, "dir": 5}},
+    {"id": "fixture:pioupiou-1720", "name": "Atterrissage de Doussard", "lat": 45.781728, "lon": 6.222627, "elevation_m": null, "dem_elevation_m": 455, "bias": {"speed": 1, "dir": 8}, "_source": "Pioupiou 1720 (position réelle, OpenWindMap) ; altitude non fournie par la source ; dem_elevation_m = altitude MNT simulée du mode démo (plaine de Doussard, ≈ 455 m), en live : Open-Meteo Elevation"},
     {"id": "fixture:pioupiou-1708", "name": "Déco Anglettaz  1570m", "lat": 45.960345, "lon": 6.240994, "elevation_m": 1570, "bias": {"speed": -1, "dir": 5}, "_source": "Pioupiou 1708 (position réelle, OpenWindMap) ; altitude lue dans le nom"},
-    {"id": "fixture:pioupiou-1476", "name": "Veyrier Club Nautique", "lat": 45.887754, "lon": 6.172054, "elevation_m": null, "bias": {"speed": 2, "dir": -5}, "_source": "Pioupiou 1476 (position réelle, OpenWindMap) ; altitude non fournie par la source"},
+    {"id": "fixture:pioupiou-1476", "name": "Veyrier Club Nautique", "lat": 45.887754, "lon": 6.172054, "elevation_m": null, "dem_elevation_m": 450, "bias": {"speed": 2, "dir": -5}, "_source": "Pioupiou 1476 (position réelle, OpenWindMap) ; altitude non fournie par la source ; dem_elevation_m = altitude MNT simulée du mode démo (rive du lac d'Annecy, ≈ 450 m), en live : Open-Meteo Elevation"},
     {"id": "fixture:b-semnoz", "name": "Semnoz sommet", "lat": 45.7850, "lon": 6.0960, "elevation_m": 1690, "bias": {"speed": 4, "dir": 0}},
     {"id": "fixture:b-sthilaire", "name": "Saint-Hilaire déco", "lat": 45.3110, "lon": 5.8885, "elevation_m": 980, "bias": {"speed": 1, "dir": 12}},
     {"id": "fixture:b-lumbin", "name": "Lumbin", "lat": 45.3035, "lon": 5.9140, "elevation_m": 240, "bias": {"speed": 2, "dir": -5}},

@@ -1,8 +1,8 @@
 """Scénarios de validation métier de l'expert (docs/expert/scenarios-validation.yaml) + invariants §3.
 
 Chaque scénario est exécuté par le vrai moteur via `app.engine.scenario.run_scenario` (sans réseau).
-Blocs chargés : `scenarios` + `scenarios_phase2` (CDC §12 : horizon 15m, balises d'atterro, tendance ; décollage libre
-et atterros non officiels → xfail tant que le moteur ne les gère pas).
+Blocs chargés : `scenarios` + `scenarios_phase2` (CDC §12 : horizon 15m, balises d'atterro, tendance, décollage libre
+et atterros non officiels).
 """
 
 from __future__ import annotations
@@ -32,17 +32,10 @@ def _load() -> list[dict]:
 
 
 SCENARIOS = _load()
-FREE_TAKEOFF_XFAIL = "décollage libre : agent suivant"
-
-
-def _needs_free_takeoff(sc: dict) -> bool:
-    """Scénario qui exige le décollage libre / l'analyse des atterros (mode custom_takeoff, landing_candidates)."""
-    return sc.get("mode", "classic") != "classic" or "landing_candidates" in sc
 
 
 def _param(sc: dict):
-    marks = [pytest.mark.xfail(reason=FREE_TAKEOFF_XFAIL, strict=False)] if _needs_free_takeoff(sc) else []
-    return pytest.param(sc, id=sc["id"], marks=marks)
+    return pytest.param(sc, id=sc["id"])
 
 
 def _t(s: str) -> datetime:
@@ -66,7 +59,7 @@ def results() -> dict[str, PlanResponse | Exception]:
     for sc in SCENARIOS:
         try:
             out[sc["id"]] = run_scenario(sc)
-        except Exception as e:  # scénario non encore exécutable (décollage libre) : signalé par son test
+        except Exception as e:  # erreur du moteur : signalée par le test du scénario
             out[sc["id"]] = e
     return out
 
@@ -86,7 +79,9 @@ def test_scenario(sc: dict, results: dict[str, PlanResponse | Exception]) -> Non
         assert c in codes, f"code {c} absent ({sorted(codes)})"
     for c in exp.get("risk_codes_forbidden", []):
         for p in plans:
-            assert not any(r.code == c and r.level in ("caution", "danger") for r in p.risks), f"{c} présent dans {p.title}"
+            assert not any(r.code == c and r.level in ("caution", "danger") for r in p.risks), (
+                f"{c} présent dans {p.title}"
+            )
     if "rejected_reason_contains" in exp:
         txt = " ".join(r for rj in res.rejected for r in rj.reasons).lower()
         assert exp["rejected_reason_contains"].lower() in txt
@@ -145,7 +140,9 @@ def test_scenario(sc: dict, results: dict[str, PlanResponse | Exception]) -> Non
         assert rep and all(r.weight <= exp["landing_beacon_weight_max"] + 1e-9 for r in rep), [r.weight for r in rep]
     if "landing_beacon_comment_contains" in exp:
         rep = [r for r in ldg_readings if r.representative]
-        assert any(exp["landing_beacon_comment_contains"].lower() in r.comment.lower() for r in rep), [r.comment for r in rep]
+        assert any(exp["landing_beacon_comment_contains"].lower() in r.comment.lower() for r in rep), [
+            r.comment for r in rep
+        ]
     if "landing_kind" in exp:
         kind = best.landing.landing_kind or ("official" if best.landing.official else None)
         assert kind == exp["landing_kind"], kind

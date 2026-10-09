@@ -50,11 +50,17 @@ def _norm(text: str) -> str:
     return "".join(c for c in s if not unicodedata.combining(c))
 
 
+# variantes toponymiques d'un mot-clé de rôle : « Crêt » (Savoie, Jura) = crête, sommet
+_KEYWORD_VARIANTS = {"crete": ("cret",)}
+
+
 def name_has_keyword(name: str, keywords) -> bool:
     """Mot-clé en début de mot (« atterro » ⊂ « atterros ») ; mots de 4 lettres ou moins : mot entier (« col »,
     « top », « déco »), pour ne pas prendre « Colombier » ou « Nicolas » pour un col."""
     n = _norm(name)
-    for kw in keywords:
+    kws = list(keywords)
+    kws += [v for kw in kws for v in _KEYWORD_VARIANTS.get(_norm(kw), ())]
+    for kw in kws:
         k = _norm(kw)
         tail = r"(?![a-z])" if len(k) <= 4 else ""
         if re.search(r"(?<![a-z])" + re.escape(k) + tail, n):
@@ -67,9 +73,23 @@ def site_name_tokens(site_name: str) -> list[str]:
     return [t for t in toks if len(t) >= 4 and t not in _SITE_STOPWORDS]
 
 
-def name_mentions_site(beacon_name: str, site_name: str) -> bool:
+def name_mentions_site(beacon_name: str, site_name: str, exclude: set[str] | frozenset[str] = frozenset()) -> bool:
+    """Le nom de la balise reprend un mot du nom du site (hors `exclude` : mots communs au déco et à l'atterro, en
+    général le nom du village, qui ne disent pas de quel côté est la balise)."""
     n = _norm(beacon_name)
-    return any(re.search(r"(?<![a-z])" + re.escape(t) + r"(?![a-z])", n) for t in site_name_tokens(site_name))
+    toks = [t for t in site_name_tokens(site_name) if t not in exclude]
+    return any(re.search(r"(?<![a-z])" + re.escape(t) + r"(?![a-z])", n) for t in toks)
+
+
+def _paired_tokens(ctx: DataContext, site: Site, role: str) -> set[str]:
+    """Mots du nom du site partagés avec le site « d'en face » (atterros associés d'un déco, décos associés d'un
+    atterro) : « La Clusaz » dans « La Clusaz – Crêt du Loup » et « Atterro de La Clusaz »."""
+    if role == "takeoff":
+        others = [ctx.landings[i].name for i in site.associated_landing_ids if i in ctx.landings]
+    else:
+        others = [t.name for t in ctx.takeoffs if site.id in t.associated_landing_ids]
+    mine = set(site_name_tokens(site.name))
+    return {t for o in others for t in site_name_tokens(o)} & mine
 
 
 # =============================================================================================
@@ -119,6 +139,17 @@ class Attachment:
 def km(x: float) -> str:
     """Distance en km, virgule décimale (texte destiné au pilote)."""
     return f"{x:.1f}".replace(".", ",")
+
+
+def duration_fr(minutes: float) -> str:
+    """« 4 min », « 2 h 05 », « 3 j » : âge d'une mesure lisible par le pilote."""
+    m = max(0, round(minutes))
+    if m < 120:
+        return f"{m} min"
+    if m < 48 * 60:
+        h, r = divmod(m, 60)
+        return f"{h} h {r:02d}" if h < 6 and r else f"{h} h"
+    return f"{m // 1440} j"
 
 
 def _linear(x: float, x0: float, y0: float, x1: float, y1: float) -> float:
@@ -176,7 +207,9 @@ def _attach_takeoff(at: Attachment) -> None:
     if at.elevation_source == "unknown":
         max_d = min(max_d, rules.UNKNOWN_BEACON_ALTITUDE["no_dem_takeoff_max_distance_km"])
     if d > max_d:
-        at.reason = f"à {km(d)} km du déco" + (" (altitude inconnue : 2 km au plus)" if at.elevation_source == "unknown" else "")
+        at.reason = f"à {km(d)} km du déco" + (
+            " (altitude inconnue : 2 km au plus)" if at.elevation_source == "unknown" else ""
+        )
         return
     full = p["name_bonus"]["full_distance_km"] if at.name_bonus else dist["full"]
     at.f_distance = _linear(d, full, 1.0, dist["max"], dist["factor_at_max"])
@@ -222,15 +255,21 @@ def _attach_landing(ctx: DataContext, at: Attachment) -> None:
         nd = rules.UNKNOWN_BEACON_ALTITUDE["no_dem_landing"]
         at.f_altitude = 1.0
         at.f_unknown = rules.UNKNOWN_BEACON_ALTITUDE["no_dem_factor"]
-        if (nd["requires_name_bonus"] and not at.name_bonus) or d > nd["max_distance_km"]:
+        if nd["requires_name_bonus"] and not at.name_bonus:
             at.attached = True
-            at.reason = "altitude inconnue, sans nom d'atterro ou trop loin pour être sûre de voir la brise"
+            at.reason = "altitude inconnue et nom sans « atterro » : rien ne dit qu'elle voit la brise de vallée"
+            return
+        if d > nd["max_distance_km"]:
+            at.attached = True
+            at.reason = f"altitude inconnue : {km(nd['max_distance_km'])} km au plus de l'atterro (ici {km(d)} km)"
             return
     else:
         adz = abs(dz)
         max_dz = bonus["max_alt_diff_m"] if at.name_bonus else p["alt_diff_m"]["max"]
         if adz > max_dz:
-            at.reason = f"{adz:.0f} m {'plus haut' if dz > 0 else 'plus bas'} que l'atterro : ne voit pas la brise de vallée"
+            at.reason = (
+                f"{adz:.0f} m {'plus haut' if dz > 0 else 'plus bas'} que l'atterro : ne voit pas la brise de vallée"
+            )
             return
         at.f_altitude = _linear(adz, p["alt_diff_m"]["full"], 1.0, max_dz, p["alt_diff_m"]["factor_at_max"])
         at.f_unknown = rules.UNKNOWN_BEACON_ALTITUDE["dem_factor"] if at.elevation_source == "dem" else 1.0
@@ -243,7 +282,9 @@ def _attach_landing(ctx: DataContext, at: Attachment) -> None:
 def attach(ctx: DataContext, b: Beacon, site: Site, role: str) -> Attachment:
     elev, src = beacon_elevation(ctx, b)
     kws = rules.TAKEOFF_BEACON_ATTACH if role == "takeoff" else rules.LANDING_BEACON_ATTACH
-    bonus = name_has_keyword(b.name, kws["name_bonus"]["keywords"]) or name_mentions_site(b.name, site.name)
+    bonus = name_has_keyword(b.name, kws["name_bonus"]["keywords"]) or (
+        kws["name_bonus"]["site_name"] and name_mentions_site(b.name, site.name, _paired_tokens(ctx, site, role))
+    )
     age = ctx.beacon_ages_min.get(b.id, 0.0)
     at = Attachment(beacon=b, role=role, site=site, distance_km=haversine_km(site.lat, site.lon, b.lat, b.lon),
                     age_min=age, elevation_m=elev, elevation_source=src, name_bonus=bonus)  # fmt: skip
@@ -284,7 +325,8 @@ def _model_now(ctx: DataContext, at: Attachment, tl: PointTimeline, big_valley: 
 
         v, d, _ = model_takeoff_wind(a, at.site.elevation_m)
         return v, d
-    return a.wind_speed_kmh * breeze_factor(ctx.reference_time, big_valley), a.wind_direction_deg
+    v10, d10, _ = tl.wind10_at(ctx.reference_time) or (a.wind_speed_kmh, a.wind_direction_deg, 0.0)
+    return v10 * breeze_factor(ctx.reference_time, big_valley), d10
 
 
 def site_attachments(
@@ -306,20 +348,34 @@ def site_attachments(
         if not at.stale and b.wind_speed_kmh is not None:
             at.model_speed_kmh, at.model_dir_deg = _model_now(ctx, at, tl, big_valley)
             at.dv = b.wind_speed_kmh - at.model_speed_kmh
-            if b.wind_direction_deg is not None and b.wind_speed_kmh >= DIR_MIN_WIND_KMH and at.model_speed_kmh >= DIR_MIN_WIND_KMH:
+            if (
+                b.wind_direction_deg is not None
+                and b.wind_speed_kmh >= DIR_MIN_WIND_KMH
+                and at.model_speed_kmh >= DIR_MIN_WIND_KMH
+            ):
                 at.dd = signed_angle_diff(b.wind_direction_deg, at.model_dir_deg)
                 at.dd_valid = True
             gust0 = b.wind_gust_kmh in (None, 0.0) or (b.wind_gust_kmh or 0.0) <= 0.5
             at.suspect = b.wind_speed_kmh <= 0.5 and gust0 and at.model_speed_kmh >= rules.BEACON_SUSPECT_MODEL_MIN_KMH
         at.representative = (
-            at.reason is None and not at.stale and not at.suspect and at.f_distance * at.f_altitude * at.f_unknown * at.f_fresh
+            at.reason is None
+            and not at.stale
+            and not at.suspect
+            and at.f_distance * at.f_altitude * at.f_unknown * at.f_fresh
             >= rules.BEACON_REPRESENTATIVE_MIN_FACTOR - 1e-9
         )
+        if at.stale:  # muette : c'est la raison principale, quelle que soit la géométrie
+            at.reason = (
+                f"muette depuis {duration_fr(at.age_min)}"
+                if b.wind_speed_kmh is not None
+                else "aucune mesure transmise"
+            )
         if not at.representative and at.reason is None:
-            if at.stale:
-                at.reason = "périmée" if b.wind_speed_kmh is not None else "aucune mesure transmise"
-            elif at.suspect:
-                at.reason = f"suspecte : 0 km/h alors que le modèle donne {at.model_speed_kmh:.0f} km/h (anémomètre bloqué ou balise abritée)"
+            if at.suspect:
+                at.reason = (
+                    f"suspecte : 0 km/h alors que le modèle donne {at.model_speed_kmh:.0f} km/h "
+                    "(anémomètre bloqué ou balise abritée)"
+                )
             else:
                 at.reason = "trop éloignée, trop décalée en altitude ou trop ancienne pour corriger la prévision"
         out.append(at)
@@ -335,16 +391,19 @@ def site_attachments(
 
 
 def nearest_unattached(ctx: DataContext, site: Site, role: str, exclude: set[str]) -> Attachment | None:
-    """Balise la plus proche non rattachée (pour dire pourquoi il n'y a pas de balise représentative)."""
-    best: Attachment | None = None
+    """Balise la plus proche non rattachée (pour dire pourquoi il n'y a pas de balise représentative) ; une balise
+    qui transmet est préférée à une balise muette."""
+    best: tuple[bool, float, Beacon] | None = None
     for b in ctx.beacons:
         if b.id in exclude:
             continue
         d = haversine_km(site.lat, site.lon, b.lat, b.lon)
-        if d > rules.BEACON_SEARCH_RADIUS_KM or (best is not None and d >= best.distance_km):
+        if d > rules.BEACON_SEARCH_RADIUS_KM:
             continue
-        best = attach(ctx, b, site, role)
-    return best
+        mute = b.stale or b.wind_speed_kmh is None or ctx.beacon_ages_min.get(b.id, 0.0) > STALE_MIN
+        if best is None or (mute, d) < best[:2]:
+            best = (mute, d, b)
+    return None if best is None else attach(ctx, best[2], site, role)
 
 
 # =============================================================================================
@@ -366,7 +425,11 @@ class TrendEval:
 
 def usable_trend(b: Beacon) -> bool:
     t = b.trend
-    return t is not None and t.window_min >= rules.TREND_1H["min_window_min"] and t.samples >= rules.TREND_1H["min_samples"]
+    return (
+        t is not None
+        and t.window_min >= rules.TREND_1H["min_window_min"]
+        and t.samples >= rules.TREND_1H["min_samples"]
+    )
 
 
 def eval_trend(at: Attachment, horizon: str, dt_min: float) -> TrendEval | None:
@@ -474,12 +537,20 @@ def station_nowcast(
         dd = sum(w * a.dd for w, a in dir_rep) / sum(w for w, _ in dir_rep)
         nc.dir_bias_deg = max(-rules.NOWCAST_MAX_DIR_BIAS_DEG, min(rules.NOWCAST_MAX_DIR_BIAS_DEG, dd))
         nc.dir_valid = True
-    gust_src = [a for a in rep if not a.synoptic and a.beacon.wind_gust_kmh is not None]
+    # rafale balise 10 min : balises au niveau du site, hors balise isolée (abritée ou trop exposée, §12.1) sauf
+    # si toutes le sont
+    gust_all = [a for a in rep if not a.synoptic and a.beacon.wind_gust_kmh is not None]
+    gust_src = [a for a in gust_all if not a.outlier] or gust_all
     if gust_src:
         nc.beacon_gust_kmh = max(a.beacon.wind_gust_kmh or 0.0 for a in gust_src)
     if role == "takeoff":
-        nc.mismatch = abs(nc.speed_bias_kmh) > rules.BEACON_CONTRADICTION_KMH or abs(nc.dir_bias_deg) > rules.BEACON_CONTRADICTION_DEG
-        nc.coherent = abs(nc.speed_bias_kmh) < rules.BEACON_COHERENT_KMH and abs(nc.dir_bias_deg) < rules.BEACON_COHERENT_DEG
+        nc.mismatch = (
+            abs(nc.speed_bias_kmh) > rules.BEACON_CONTRADICTION_KMH
+            or abs(nc.dir_bias_deg) > rules.BEACON_CONTRADICTION_DEG
+        )
+        nc.coherent = (
+            abs(nc.speed_bias_kmh) < rules.BEACON_COHERENT_KMH and abs(nc.dir_bias_deg) < rules.BEACON_COHERENT_DEG
+        )
     else:  # §12.4 : contradictoire si écart > 10 km/h ou > 45° (vent ≥ 8 km/h) ; cohérente sinon
         nc.mismatch = abs(nc.speed_bias_kmh) > rules.BEACON_CONTRADICTION_KMH or (
             nc.dir_valid and abs(nc.dir_bias_deg) > rules.BEACON_CONTRADICTION_DEG
@@ -543,9 +614,16 @@ def trend_findings(nc: StationNowcast | None, horizon: str, v_retained: float, r
     inc = tr["wind_increase_kmh_per_h"]
     if te.rate_kmh_h > inc["danger"] and horizon in imp["wind_increase_high"]:
         lvl = imp["wind_increase_high"][horizon]
-        out.append(Finding("WIND_INCREASING", f"Le vent forcit {where}",
-                           f"{head} : hausse de {te.rate_kmh_h:.0f} km/h/h, changement de régime (front de rafales, orage, "
-                           f"percée de foehn ou brise anormalement forte).", level_risk={lv: lvl for lv in rules.LEVELS}))  # fmt: skip
+        out.append(
+            Finding(
+                "WIND_INCREASING",
+                f"Le vent forcit {where}",
+                f"{head} : hausse de {te.rate_kmh_h:.0f} km/h/h, changement de régime (front de rafales, "
+                f"orage, "
+                f"percée de foehn ou brise anormalement forte).",
+                level_risk={lv: lvl for lv in rules.LEVELS},
+            )
+        )
     elif te.rate_kmh_h > inc["caution"] and horizon in imp["wind_increase"]:
         lvl = imp["wind_increase"][horizon]
         v_eval = max(v_retained, te.v_ext or 0.0)
@@ -557,21 +635,35 @@ def trend_findings(nc: StationNowcast | None, horizon: str, v_retained: float, r
                 risk[lv] = lvl
         when = f" vers {_hm(nc.eval_time)}" + (" (ton arrivée)" if landing else " (début du créneau)")
         ext = f" Environ {te.v_ext:.0f} km/h (raf. {te.g_ext:.0f}) attendus{when}." if te.v_ext is not None else ""
-        advice = " Pose-toi tôt, sans t'éloigner de l'atterro." if landing else " Décolle tôt dans le créneau ou renonce."
+        advice = (
+            " Pose-toi tôt, sans t'éloigner de l'atterro." if landing else " Décolle tôt dans le créneau ou renonce."
+        )
         out.append(Finding("WIND_INCREASING", f"Le vent forcit {where}",
                            f"{head}, le vent forcit.{ext}{advice}", level_risk=risk))  # fmt: skip
     # rotation / bascule
     dc = abs(te.direction_change_deg)
     rv, ro = tr["reversal"], tr["rotation"]
-    if dc >= rv["deg"] and te.v0 >= rv["min_wind_kmh"] and te.v_now >= rv["min_wind_kmh"] and horizon in imp["reversal"]:
+    if (
+        dc >= rv["deg"]
+        and te.v0 >= rv["min_wind_kmh"]
+        and te.v_now >= rv["min_wind_kmh"]
+        and horizon in imp["reversal"]
+    ):
         lvl = imp["reversal"][horizon]
         risk = {lv: (rv["level"][lv] if lvl == "by_level" else lvl) for lv in rules.LEVELS}
         out.append(Finding("WIND_SHIFT", "Le vent tourne",
-                           f"{b.name} : bascule du vent de {dc:.0f}° en {te.window_min:.0f} min {where} (bascule de brise, "
+                           f"{b.name} : bascule du vent de {dc:.0f}° en {te.window_min:.0f} min {where} (bascule de "
+                           f"brise, "
                            "convergence ou front d'orage).", level_risk=risk))  # fmt: skip
-    elif dc >= ro["caution_deg"] and te.v0 >= ro["min_wind_kmh"] and te.v_now >= ro["min_wind_kmh"] and horizon in imp["rotation"]:
+    elif (
+        dc >= ro["caution_deg"]
+        and te.v0 >= ro["min_wind_kmh"]
+        and te.v_now >= ro["min_wind_kmh"]
+        and horizon in imp["rotation"]
+    ):
         lvl = imp["rotation"][horizon]
-        out.append(Finding("WIND_SHIFT", "Le vent tourne", f"{b.name} : le vent a tourné de {dc:.0f}° en {te.window_min:.0f} min {where}.",
+        out.append(Finding("WIND_SHIFT", "Le vent tourne", f"{b.name} : le vent a tourné de {dc:.0f}° en "
+                                                           f"{te.window_min:.0f} min {where}.",
                            level_risk={lv: lvl for lv in rules.LEVELS}))  # fmt: skip
     # rafale max de l'heure
     gm = te.gust_max_kmh
@@ -587,25 +679,39 @@ def trend_findings(nc: StationNowcast | None, horizon: str, v_retained: float, r
                 risk[lv] = None
         if any(risk.values()):
             title = "Rafales à l'atterrissage" if landing else "Rafales au déco"
-            out.append(Finding(gust_code, title, f"{b.name} : rafale max de {gm:.0f} km/h sur la dernière heure {where}.",
+            out.append(Finding(gust_code, title, f"{b.name} : rafale max de {gm:.0f} km/h sur la dernière heure "
+                                                 f"{where}.",
                                level_risk=risk))  # fmt: skip
     return out
 
 
 def nearest_reading_text(ctx: DataContext, nc: StationNowcast | None, site: Site, role: str) -> str:
     """« (la plus proche, Pioupiou X, est à 4,2 km et 230 m plus haut) » ou « (aucune balise à moins de 15 km) »."""
-    cand = None
-    if nc is not None and nc.attachments:
-        cand = min(nc.attachments, key=lambda a: a.distance_km)
-    if cand is None:
-        cand = nearest_unattached(ctx, site, role, set())
+    atts = list(nc.attachments) if nc is not None else []
+    fresh = [a for a in atts if not a.stale]
+    cand = min(fresh, key=lambda a: a.distance_km) if fresh else None
+    if cand is None:  # balise qui transmet hors des limites de rattachement, sinon la balise muette la plus proche
+        near = nearest_unattached(ctx, site, role, {a.beacon.id for a in atts})
+        if near is not None and (not near.stale or not atts):
+            cand = near
+        elif atts:
+            cand = min(atts, key=lambda a: a.distance_km)
     if cand is None:
         return f"aucune balise à moins de {rules.BEACON_SEARCH_RADIUS_KM:.0f} km"
     dz = cand.alt_diff_m
+    reason = cand.reason or ""
+    if cand.stale:
+        b = cand.beacon
+        reason = (
+            f"muette depuis {duration_fr(cand.age_min)}" if b.wind_speed_kmh is not None else "aucune mesure transmise"
+        )
     alt = ""
-    if dz is not None and abs(dz) >= 30:
+    if dz is not None and abs(dz) >= 30 and " m plus " not in reason:  # écart déjà dit par la raison
         alt = f" et {abs(dz):.0f} m plus {'haut' if dz > 0 else 'bas'}"
-    why = f" : {cand.reason}" if cand.reason and not cand.reason.startswith("à ") else ""
+    if " m plus " in reason:  # « 800 m plus haut que l'atterro : ne voit pas… » → « et 800 m plus haut : ne voit pas… »
+        head, _, tail = reason.partition(" : ")
+        alt, reason = f" et {head.split(' que ')[0]}", tail
+    why = f" : {reason}" if reason and not reason.startswith("à ") else ""
     return f"la plus proche, {cand.beacon.name}, est à {km(cand.distance_km)} km{alt}{why}"
 
 
@@ -625,11 +731,18 @@ def no_landing_beacon_finding(
     near = nc.nearest_text if nc is not None and nc.nearest_text else nearest_reading_text(ctx, nc, landing, "landing")
     detail = (
         f"Pas de balise représentative à l'atterro ({near}). "
-        f"Vent d'arrivée estimé par le modèle seul : environ {v_model:.0f} km/h, brise comprise. En vol, regarde la manche "
+        f"Vent d'arrivée estimé par le modèle seul : environ {v_model:.0f} km/h, brise comprise. En vol, regarde la "
+        f"manche "
         "à air, les drapeaux et la surface du lac, ou demande le vent par radio à un pilote posé."
     )
-    return Finding("NO_LANDING_BEACON", "Pas de balise à l'atterro", detail, caution=lvl == "caution", info=lvl == "info",
-                   blocks_go=False)  # fmt: skip
+    return Finding(
+        "NO_LANDING_BEACON",
+        "Pas de balise à l'atterro",
+        detail,
+        caution=lvl == "caution",
+        info=lvl == "info",
+        blocks_go=False,
+    )
 
 
 def landing_band_start(ctx: DataContext, nc: StationNowcast | None) -> float | None:
@@ -679,14 +792,16 @@ def coherence_text(at: Attachment) -> str:
 
 def reading_comment(at: Attachment, weight: float) -> str:
     b = at.beacon
-    age = f"il y a {at.age_min:.0f} min"
+    age = f"il y a {duration_fr(at.age_min)}"
     if b.wind_speed_kmh is None:
         head = f"{b.name} : aucune mesure transmise"
+    elif at.stale:
+        head = f"{b.name} : dernière mesure {b.wind_speed_kmh:.0f} km/h {_dir(b.wind_direction_deg)}"
     else:
         gust = f", rafales {b.wind_gust_kmh:.0f}" if b.wind_gust_kmh is not None else ""
         head = f"{b.name} : {b.wind_speed_kmh:.0f} km/h {_dir(b.wind_direction_deg)}{gust}, {age}"
     if at.stale:
-        mute = f"muette depuis {at.age_min:.0f} min" if b.wind_speed_kmh is not None else "balise muette"
+        mute = f"muette depuis {duration_fr(at.age_min)}" if b.wind_speed_kmh is not None else "balise muette"
         return f"{head} — {mute} : ignorée (comptée comme absente)."
     tail: list[str] = []
     if at.representative:
@@ -715,6 +830,7 @@ __all__ = [
     "attach",
     "beacon_elevation",
     "breeze_factor",
+    "duration_fr",
     "fuse",
     "landing_band_start",
     "landing_confidence_factor",

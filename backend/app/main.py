@@ -23,6 +23,8 @@ from app.models import (
     GridPoint,
     GridResponse,
     HealthResponse,
+    LandingsAnalyzeRequest,
+    LandingsAnalyzeResponse,
     PlanRequest,
     PlanResponse,
     PointForecastResponse,
@@ -136,8 +138,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"type": "FeatureCollection", "features": [area_feature(a, at) for a in items]}
 
     @app.get("/api/forecast/point", response_model=PointForecastResponse)
-    async def forecast_point(request: Request, lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
-                             time: str | None = None):  # fmt: skip
+    async def forecast_point(
+        request: Request,
+        lat: float = Query(..., ge=-90, le=90),
+        lon: float = Query(..., ge=-180, le=180),
+        time: str | None = None,
+    ):
         t = time_param(time)
         ds = data(request)
         (elev,), _ = await ds.elevations([(lat, lon)])
@@ -153,7 +159,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return PointForecastResponse(
             snapshot=snapshot_from_analysis(a, tl.model_label),
             sounding=sounding_from_analysis(a),
-            timeline=[snapshot_from_analysis(h, tl.model_label) for h in tl.hours if day <= h.time <= day + timedelta(hours=23)],
+            timeline=[
+                snapshot_from_analysis(h, tl.model_label)
+                for h in tl.hours
+                if day <= h.time <= day + timedelta(hours=23)
+            ],
         )
 
     @app.get("/api/forecast/grid", response_model=GridResponse)
@@ -171,16 +181,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         min_lon, min_lat, max_lon, max_lat = b
         span = max(max_lon - min_lon, max_lat - min_lat)
         res = max(span / (max_n - 1), 0.01)
-        nx = min(max_n, max(2, int(math.floor((max_lon - min_lon) / res)) + 1))
-        ny = min(max_n, max(2, int(math.floor((max_lat - min_lat) / res)) + 1))
+        nx = min(max_n, max(2, math.floor((max_lon - min_lon) / res) + 1))
+        ny = min(max_n, max(2, math.floor((max_lat - min_lat) / res) + 1))
         pts = [
             (min_lat + j * (max_lat - min_lat) / (ny - 1), min_lon + i * (max_lon - min_lon) / (nx - 1))
             for j in range(ny)
             for i in range(nx)
         ]
-        elevs, emode = await ds.elevations(pts) if ds.s.data_mode != "mock" else ([terrain_elevation(*p) for p in pts], "mock")
-        fcs, _ = await ds.forecasts([(la, lo, e) for (la, lo), e in zip(pts, elevs, strict=True)], t, t, datetime.now(UTC),
-                                    with_levels=layer not in ("cape", "precipitation") and not (layer == "wind" and alt == 10))  # fmt: skip
+        elevs, _emode = (
+            await ds.elevations(pts) if ds.s.data_mode != "mock" else ([terrain_elevation(*p) for p in pts], "mock")
+        )
+        fcs, _ = await ds.forecasts(
+            [(la, lo, e) for (la, lo), e in zip(pts, elevs, strict=True)],
+            t,
+            t,
+            datetime.now(UTC),
+            with_levels=layer not in ("cape", "precipitation") and not (layer == "wind" and alt == 10),
+        )
         points: list[GridPoint] = []
         for pf in fcs:
             tl = build_timeline(pf, None, t - timedelta(hours=1), t + timedelta(hours=1))
@@ -224,6 +241,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_plans(request: Request, req: PlanRequest):
         try:
             return await request.app.state.plans.create(req)
+        except Exception as e:
+            from app.providers.base import ProviderError
+
+            if isinstance(e, ProviderError):
+                raise HTTPException(503, detail=str(e)) from e
+            raise
+
+    @app.post("/api/landings/analyze", response_model=LandingsAnalyzeResponse)
+    async def analyze_landings(request: Request, req: LandingsAnalyzeRequest):
+        """Atterros possibles depuis un décollage libre (clic sur la carte) : candidats classés et cône de finesse."""
+        try:
+            return await request.app.state.plans.analyze_landings(req)
         except Exception as e:
             from app.providers.base import ProviderError
 
