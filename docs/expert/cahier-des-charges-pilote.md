@@ -605,3 +605,109 @@ goal_radius_m: 300
 8. **Espaces aériens en 3D** convertis en AMSL, plafond FL115 (~3500 m), R/ZRT au statut inconnu = caution ; parcs nationaux, réserves et zones rapaces = zones à éviter.
 9. **Pondération balises/modèles décroissante avec l'horizon** (0,7 à 30 min → 0 à 12 h) et confiance = base(horizon) × dispersion inter-modèles × cohérence balises ; mode mock affiché en clair.
 10. **La `difficulty` du plan = le plus petit niveau dont tous les seuils passent** (et ≥ difficulté du site / du type de vol) ; diversifier les résultats (≤ 2 plans par déco) et expliquer chaque `marginal`.
+
+---
+
+## 12. Balises atterro, horizon 15 min, décollage libre et atterros non officiels
+
+> Ajout phase 2 (demande utilisateur : « je décolle dans 15-30 min »). Le bloc YAML est directement recopiable dans `rules.py`. Codes Risk nouveaux : `NO_LANDING_BEACON`, `FREE_TAKEOFF`, `UNOFFICIAL_LANDING`, `DETECTED_FIELD` (s'ajoutent à `WIND_INCREASING`, `BEACON_MISMATCH` et `STALE_BEACONS`).
+
+### 12.1 Règles en clair
+- **Horizons ≤ 1 h** : la première puce du briefing est la lecture des balises. Exemple : « Balises (il y a 6 min) : déco ONO 12 km/h (raf. 16), tendance +2 km/h/h ; atterro N 14 km/h (raf. 20), tendance +7 km/h/h, la brise forcit ».
+- **Balise atterro** : on l'évalue à l'**heure d'arrivée**, avec un poids calculé sur l'horizon de l'arrivée (pas de la cible) et une tendance extrapolée.
+- **Tendance** : on compare la moyenne des 10 dernières minutes à la moyenne d'il y a 50 à 60 min. L'extrapolation se fait uniquement pour les horizons ≤ 1 h, plafonnée à +15 km/h. La valeur extrapolée **entre dans le verdict**, avec les seuils habituels du niveau.
+- **Aucune balise représentative à l'atterro** : on prend le modèle avec le facteur de brise. Pour les horizons ≤ 1 h, les seuils d'atterro sont multipliés par 0,9. On ajoute un Risk `NO_LANDING_BEACON`, non bloquant : caution pendant les heures de brise (12 h-18 h légales), info sinon. Le briefing dit : « Pas de balise à l'atterro : regarde la manche à air et les drapeaux en vol, ou demande le vent par radio à un pilote posé ».
+- **Décollage libre** (point choisi hors site officiel) : jamais pour beginner. Pour intermediate, au mieux marginal. Pas de vent arrière. Pente et orientation tirées du MNT. Contrôles obligatoires affichés.
+- **Atterros non officiels** : il y en a de deux sortes. « Communautaire » (ParaglidingEarth ou contribution d'utilisateur, non validé FFVL) et « champ détecté » (cartographie automatique, aucune vérification humaine). Marges de finesse et hauteurs d'arrivée renforcées. Jamais d'atterro non officiel pour un beginner.
+
+### 12.2 Valeurs
+```yaml
+# --- (a) balises, horizon 15 min, tendance -------------------------------------------------
+horizon_beacon_weight: {"15m": 0.85, "30m": 0.7, "1h": 0.5, "2h": 0.3, "8h": 0.1, "12h": 0, "24h": 0, "48h": 0}
+beacon_weight_by_minutes: {15: 0.85, 30: 0.70, 60: 0.50, 120: 0.30, 480: 0.10, 720: 0.0}   # interpolation linéaire ; pour l'atterro : minutes jusqu'à l'ARRIVÉE
+beacon_gust_horizons: ["15m", "30m", "1h"]          # rafale retenue = max(rafale balise 10 min, rafale fusionnée)
+beacon_freshness_min: {full_weight: 10, stale: 30}   # 10-30 min : poids × linéaire 1 → 0,3 ; > 30 : ignorée
+beacon_stats: {mean_window_min: 10, gust_window_min: 10, min_readings_20min: 3}
+takeoff_beacon_attach: {max_distance_km: 5.0, full_weight_km: 1.0, max_alt_diff_m: 300}   # au-delà de 1 km ou 150 m : poids × 0,5
+landing_beacon_attach:
+  max_distance_km: 3.0          # poids 1 jusqu'à 1,5 km, puis linéaire jusqu'à 0,5 à 3 km
+  full_weight_km: 1.5
+  max_alt_diff_m: 150           # balise à moins de 150 m de dénivelé de l'atterro
+  same_valley: true             # pas de relief > max(alt balise, alt atterro) + 100 m entre les deux (MNT)
+  exclude_names: ["déco", "sommet", "crête", "col"]   # balise de sommet ≠ balise d'atterro
+trend_1h:                       # moyenne des 10 dernières min vs moyenne d'il y a 50-60 min
+  wind_increase_kmh_per_h: {caution: 6, danger: 10}
+  gust_increase_kmh_per_h: {caution: 8, danger: 12}
+  gust_spread_increase_kmh_per_h: {caution: 5, danger: 10}
+  rotation_deg_per_h: {caution: 45, danger: 90}     # seulement si vent ≥ 8 km/h aux deux instants
+  reversal_deg: 120             # bascule de brise ≥ 120° en 1 h avec ≥ 8 km/h → danger à l'atterro
+  extrapolate_max_horizon_min: 60
+  extrapolate_cap_kmh: 15
+  min_wind_for_direction_kmh: 8
+no_landing_beacon:
+  landing_threshold_factor: 0.9       # horizons ≤ 1 h : seuils d'atterro × 0,9
+  caution_hours_legal: [12, 18]       # NO_LANDING_BEACON = caution (non bloquant) dans cette plage, info sinon
+  confidence_factor: 0.9
+  blocks_go: false
+
+# --- (b) décollage libre --------------------------------------------------------------------
+free_takeoff:
+  allowed_levels: [intermediate, advanced, expert]  # jamais beginner
+  best_verdict: {intermediate: marginal, advanced: go, expert: go}
+  wind_max_kmh: {intermediate: 15, advanced: 20, expert: 25}
+  gust_max_kmh: {intermediate: 20, advanced: 25, expert: 30}
+  crosswind_max_deg: {intermediate: 20, advanced: 30, expert: 45}
+  tailwind_allowed: false
+  aspect_tolerance_deg: 30            # orientation de la pente (MNT) à ± 30° du vent
+  slope_pct: {min_no_wind: 25, min_with_headwind_10kmh: 20, ideal: [30, 50], max: 84}   # 84 % ≈ 40°
+  clear_area_m: {length: 30, width: 15}
+  obstacle_clearance: {glide_slope: 0.25, margin_m: 20, check_distance_m: 150}   # pente 1/4 au-dessus des obstacles + 20 m
+  dem_resolution_max_m: 30            # au-delà, pente non fiable → refus
+  mandatory_checks:
+    - "Autorisation du propriétaire / de la commune ; pas de décollage en cœur de parc, réserve ou arrêté de biotope."
+    - "Reconnaissance à pied : rochers, souches, clôtures, câbles, randonneurs, pistes de ski, remontées mécaniques."
+    - "Manche à air ou repère de vent improvisé ; pas de vent arrière ni de rotor."
+    - "Espace aérien et zones sensibles vérifiés ; prévenir quelqu'un du point de décollage exact (accès secours)."
+    - "Atterrissage repéré à vue et dans le cône de finesse avant de gonfler."
+
+# --- (c) atterros non officiels ---------------------------------------------------------------
+landing_categories:
+  official:  {levels: [beginner, intermediate, advanced, expert], main: true, alternate: true, reliability: 100}
+  community: {levels: [intermediate, advanced, expert], main: {intermediate: false, advanced: true, expert: true}, alternate: true, reliability: 60}
+  detected:  {levels: [advanced, expert], main: {advanced: false, expert: false}, alternate: true, reliability: 30}   # jamais atterro principal
+unofficial_landing_min:              # critères minimaux (non officiels uniquement)
+  length_m:  {intermediate: 120, advanced: 100, expert: 80}
+  width_m:   {intermediate: 40,  advanced: 30,  expert: 25}
+  slope_pct_max: {intermediate: 8, advanced: 10, expert: 12}
+  power_line_clearance_m: {intermediate: 150, advanced: 100, expert: 100}
+  tree_building_clearance_m: 30       # par rapport aux bords du champ
+  approach_free_m: 150                # axe de finale libre de tout obstacle > 10 m sur 150 m
+  long_axis_vs_wind_max_deg: 45       # finale face au vent dans le grand axe du champ
+  season_crops_months: [5, 6, 7, 8, 9]   # « champ détecté » cultivé : caution saisonnière (cultures hautes)
+unofficial_glide:
+  available_factor: {community: 0.85, detected: 0.75}   # required ≤ available × facteur (marge en plus de glide_k)
+  arrival_height_min_m:
+    community: {intermediate: 150, advanced: 120, expert: 100}
+    detected:  {advanced: 150, expert: 120}
+landing_candidate_weights:           # classement des atterros candidats (somme 100)
+  glide_margin: 30
+  obstacle_clearance: 20
+  size_margin: 15
+  source_reliability: 10
+  slope: 10
+  axis_vs_wind: 10
+  road_access_500m: 5
+unofficial_warnings:
+  community: "Atterrissage communautaire non validé par la FFVL : vérifie l'état du terrain (cultures, bétail, clôtures, lignes) et l'accord du propriétaire ; repère-le en vol avant de t'engager."
+  detected: "Champ détecté automatiquement par cartographie, SANS vérification humaine : à utiliser uniquement en secours, après reconnaissance en vol (lignes électriques invisibles sur la carte, clôtures, cultures hautes, pente)."
+risk_levels:
+  UNOFFICIAL_LANDING: {intermediate: caution, advanced: info, expert: info}   # caution bloquante pour intermediate
+  DETECTED_FIELD: {beginner: danger, intermediate: danger, advanced: caution, expert: caution}   # danger si c'est le seul atterro accessible
+  FREE_TAKEOFF: {beginner: danger, intermediate: caution, advanced: info, expert: info}
+```
+
+### 12.3 Conduite à tenir (résumé)
+1. Si une balise atterro est rattachée et fraîche : vent d'arrivée = fusion modèle + poids × (balise − modèle), plus la tendance extrapolée (≤ 1 h). Tendance ≥ seuil danger, ou valeur extrapolée au-delà du seuil du niveau → no-go (`WIND_INCREASING` / `LANDING_WIND`).
+2. S'il n'y a pas de balise atterro : modèle × brise, seuils × 0,9 pour les horizons ≤ 1 h, et `NO_LANDING_BEACON`. Le verdict n'est jamais « go » si la balise du **déco** montre une tendance danger.
+3. Si la balise du déco est cohérente mais que l'atterro est en rafales (écart rafale − moyenne au-delà du seuil du niveau) → c'est l'atterro qui décide : `LANDING_WIND`, verdict selon le niveau.
+4. Décollage libre ou atterro non officiel : les warnings ci-dessus figurent dans le briefing (bloc Décollage / Atterrissage) **et** dans les Risks.
