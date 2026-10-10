@@ -17,6 +17,7 @@ import {
   WaypointTable,
 } from "../components/plan/Blocks";
 import { Emagram } from "../components/plan/Emagram";
+import { GlideBlock } from "../components/plan/GlideBlock";
 import { LandingAnalysisBlock } from "../components/plan/LandingAnalysisBlock";
 import { StationReadingsBlock } from "../components/plan/StationReadingsBlock";
 import { pilotLevel } from "../components/plan/level";
@@ -237,6 +238,7 @@ export function PlanDetailPage() {
             </details>
           </AerologyBlock>
           <RisksBlock risks={plan.risks} />
+          <GlideBlock plan={plan} level={level} />
           <LandingBlock plan={plan} level={level} />
           <LandingAnalysisBlock plan={plan} level={level} />
           <AirspacesBlock plan={plan} />

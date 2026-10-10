@@ -56,6 +56,35 @@
 #                                 false → aucune
 #   landing_beacon_weight_max     weight de chaque balise site_role=landing representative ≤ valeur
 #   landing_beacon_comment_contains  sous-chaîne (insensible à la casse) du comment de cette balise
+#
+# --- Révision 5 (CDC §14, vent sur le plané) : scénarios S33-S41, bloc `scenarios_phase3` en fin de fichier ---------
+# Même principe que la phase 2 : ils sont tenus hors des blocs chargés tant que le moteur n'applique pas le §14 (vent
+# rencontré par tranche et par branche, travers, crédit du vent arrière, majoration par les rafales, accélérateur,
+# hauteur d'arrivée, HIGH_ARRIVAL, ZPA au vent), pour que la suite reste verte. Le backend ajoute `scenarios_phase3`
+# au chargeur (tests/test_expert_scenarios.py, `_load`) EN MÊME TEMPS que le §14, avec les clés d'attente ci-dessous.
+# Aucune nouvelle clé d'entrée : la réserve du Bout du Lac est une `sensitive_areas` avec flight_prohibited: true
+# (géométrie : enveloppe simplifiée, 10 sommets, du polygone Biodiv'Sports 1564 de tests/fixtures).
+# Coordonnées Forclaz / Doussard / Planfait / Perroix / Montmin = celles de app/fixtures/sites.json (PGE), pas les
+# anciennes ancres forclaz_takeoff / doussard (3,4 km) qui restent pour S01-S32.
+# Les bornes chiffrées viennent du calcul de référence du §14 (valeur centrale entre parenthèses dans les titres du
+# tableau de scenarios-validation.md §2) avec une tolérance d'environ ±7 % ; les seuils de verdict (r = 0,90 et 1,0) ne
+# sont jamais à moins de 0,02 de la valeur de référence.
+# Nouvelles clés `expect` (meilleur plan sauf mention) :
+#   glide_required_min / glide_required_max         bornes sur plan.glide.required_ratio
+#   glide_available_min / glide_available_max       bornes sur plan.glide.available_ratio
+#   glide_r_min / glide_r_max                       bornes sur r = required_ratio / available_ratio
+#   glide_gain_vs_calm_min / glide_gain_vs_calm_max bornes sur available_ratio / calm_available_ratio
+#   glide_wind_along_track_min / _max               bornes sur plan.glide.wind_along_track_kmh (+ = vent arrière)
+#   glide_wind_credit_min / _max                    bornes sur plan.glide.wind_credit_kmh (part retenue dans available)
+#   glide_arrival_height_min / _max                 bornes sur plan.glide.expected_arrival_height_m (non null)
+#   glide_comment_contains     chaîne ou liste de chaînes : toutes présentes dans plan.glide.comment (casse ignorée)
+#   briefing_contains          chaîne ou liste de chaînes : toutes présentes dans " ".join(plan.briefing) (casse ignorée)
+#   risk_levels                {CODE: info | caution | danger} : niveau exact de ce Risk dans le meilleur plan
+#   rejected_codes_forbidden   codes absents des raisons de rejet « [CODE] … » ET des risks de tous les plans
+#   zpa_upwind_of_landing      true : le waypoint `turnpoint` « Zone de perte d'altitude » est au vent de l'atterro :
+#                              angle entre le relèvement atterro → ZPA et la direction d'où vient le vent à l'atterro
+#                              (plan.weather.landing.wind_10m.direction_deg) ≤ 95° (CDC §14.4 ; travers admis, jamais
+#                              sous le vent). Contrôle sauté si ce vent est < 5 km/h.
 
 sites:
   forclaz_takeoff: &forclaz_takeoff
@@ -114,6 +143,25 @@ sites:
     {name: "Pré de fauche (champ détecté, fictif)", lat: 45.6860, lon: 6.4116, elevation_m: 820, big_valley: false, landing_kind: field, size_m: {length: 170, width: 60}, slope_pct: 4, surface: "prairie", community_usage: unknown, access: "piste agricole", clearances_m: {power_line: 160, trees_buildings: 40, water: 400, road: 250}}
   rando_community: &rando_community            # 1,6 km au 135°
     {name: "Pré des parapentistes (communautaire, fictif)", lat: 45.6898, lon: 6.4146, elevation_m: 800, big_valley: false, landing_kind: community, size_m: {length: 200, width: 80}, slope_pct: 3, surface: "pré fauché", community_usage: frequent, access: "route et parking à 50 m", clearances_m: {power_line: 300, trees_buildings: 50, water: 500, road: 50}}
+
+  # Révision 5 (S33-S41) : positions des fixtures / PGE (Forclaz → Doussard = 4,12 km au 207° ; 793 m de dénivelé)
+  forclaz_pge: &forclaz_pge
+    {name: "Col de la Forclaz (Montmin)", lat: 45.815, lon: 6.2465, elevation_m: 1245, orientations: [W, WNW, NW], difficulty: beginner, flight_types: [local, cross_country], status: open}
+  doussard_pge: &doussard_pge
+    {name: "Doussard (atterrissage officiel)", lat: 45.782, lon: 6.2224, elevation_m: 452, big_valley: true}
+  planfait_fix: &planfait_fix                  # → Perroix : 1,73 km au 222°, 790 m de dénivelé
+    {name: "Planfait (Talloires)", lat: 45.857, lon: 6.2285, elevation_m: 1240, orientations: [SW, WSW, W], difficulty: intermediate, flight_types: [local], status: open}
+  perroix_fix: &perroix_fix
+    {name: "Talloires – Perroix", lat: 45.8455, lon: 6.2135, elevation_m: 450, big_valley: true}
+  montmin_aulp: &montmin_aulp                  # → Doussard : 4,62 km au 238°, 968 m de dénivelé
+    {name: "Montmin – Chalet de l'Aulp", lat: 45.804, lon: 6.273, elevation_m: 1420, orientations: [S, SSW, SW], difficulty: intermediate, flight_types: [local], status: open}
+
+zones:
+  # Réserve naturelle nationale du Bout du Lac d'Annecy (Biodiv'Sports 1564, règle PARAGLIDING-FORBIDDEN) : enveloppe
+  # simplifiée à 10 sommets ; à ≈ 330 m au N de l'atterro de Doussard ; la ligne droite Forclaz → Doussard la traverse,
+  # le contournement (par l'E puis le S) allonge le plané de 4,12 à 4,38 km.
+  bout_du_lac: &bout_du_lac
+    {name: "Réserve naturelle nationale du Bout du Lac d'Annecy", kind: regulatory, flight_prohibited: true, period_months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], min_height_agl_m: null, recommendation: "Parapente et autres sports aériens interdits dans la zone.", polygon: [[6.2259, 45.7841], [6.2249, 45.7843], [6.221, 45.7871], [6.2207, 45.7935], [6.2254, 45.7969], [6.2303, 45.7989], [6.2313, 45.7982], [6.2323, 45.7931], [6.2306, 45.7852], [6.2259, 45.7841]]}
 weathers:
   w_s01: &w_s01
     takeoff_wind_kmh: 12
@@ -255,6 +303,88 @@ weathers:
     temperature_c: 15
     dew_point_c: 5
     convection: {start: "09:30", end: "15:00"}
+
+  # --- Révision 5 (CDC §14) --------------------------------------------------------------------------------------
+  w_n13: &w_n13                   # flux de N faible + brise du lac de N à Doussard l'après-midi
+    takeoff_wind_kmh: 13          # 345° : 30° du secteur NW → écart 18,75°, travers 4 km/h (sous les seuils de tous niveaux)
+    takeoff_wind_dir: 345
+    takeoff_gust_kmh: 18
+    landing_wind_kmh: 10          # × 1,3 (13-17 h légales) → 13 km/h, rafales 18
+    landing_wind_dir: 0
+    landing_gust_kmh: 14
+    winds_aloft: {1550: [15, 350], 2000: [16, 355], 3000: [18, 0]}   # au-dessus du plouf : non rencontré
+    thermal_ceiling_m: 1800
+    cloud_base_m: null
+    thermal_strength_ms: 0.8
+    cape_j_kg: 30
+    lifted_index: 5
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 10
+    cloud_cover_low_pct: 0
+    temperature_c: 20
+    dew_point_c: 8
+    convection: {start: "10:30", end: "15:30"}
+  w_n9: &w_n9                     # même régime, plus faible (élève)
+    takeoff_wind_kmh: 9
+    takeoff_wind_dir: 345
+    takeoff_gust_kmh: 12
+    landing_wind_kmh: 8           # × 1,3 → 10,4 (69 % du seuil élève)
+    landing_wind_dir: 0
+    landing_gust_kmh: 11
+    winds_aloft: {1550: [11, 350], 2000: [13, 355], 3000: [16, 0]}
+    thermal_ceiling_m: 1700
+    cloud_base_m: null
+    thermal_strength_ms: 0.6
+    cape_j_kg: 30
+    lifted_index: 5
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 10
+    cloud_cover_low_pct: 0
+    temperature_c: 18
+    dew_point_c: 7
+    convection: {start: "10:30", end: "15:30"}
+  w_n24: &w_n24                   # N fort (hors bise : 0-355°, pas dans le secteur 10-80° de REGIONAL_WIND)
+    takeoff_wind_kmh: 24          # 80 % du seuil expert (30), au-delà du seuil brevet (20)
+    takeoff_wind_dir: 345
+    takeoff_gust_kmh: 30
+    landing_wind_kmh: 19          # × 1,3 → 24,7 : > 20 (brevet), 88 % de 28 (expert)
+    landing_wind_dir: 0
+    landing_gust_kmh: 24
+    winds_aloft: {1550: [26, 350], 2000: [28, 355], 3000: [32, 0]}
+    thermal_ceiling_m: 1800
+    cloud_base_m: null
+    thermal_strength_ms: 0.8
+    cape_j_kg: 30
+    lifted_index: 6
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 5
+    cloud_cover_low_pct: 0
+    temperature_c: 17
+    dew_point_c: 3
+    convection: {start: "10:30", end: "15:30"}
+  w_s_aloft: &w_s_aloft           # flux de S au-dessus de 1550 m seulement ; brise de pente d'O au déco, calme à Doussard
+    takeoff_wind_kmh: 9
+    takeoff_wind_dir: 280
+    takeoff_gust_kmh: 13
+    landing_wind_kmh: 4
+    landing_wind_dir: 0
+    landing_gust_kmh: 7
+    winds_aloft: {1550: [16, 190], 2000: [19, 195], 3000: [22, 200]}   # crête (déco + 300 m) : < 20 km/h, à 102° de l'axe
+    thermal_ceiling_m: 1500
+    cloud_base_m: null
+    thermal_strength_ms: 0.5
+    cape_j_kg: 0
+    lifted_index: 6
+    precipitation_mm_h: 0
+    precip_prev_3h_mm: 0
+    cloud_cover_pct: 30
+    cloud_cover_low_pct: 0
+    temperature_c: 16
+    dew_point_c: 5
+    convection: {start: "11:00", end: "14:00"}
 
 scenarios:
   - id: S01
@@ -1179,3 +1309,281 @@ scenarios_phase2:
       difficulty_max: advanced
       risk_codes: [FREE_TAKEOFF, UNOFFICIAL_LANDING]   # tous deux en info pour advanced
       risk_codes_forbidden: [DETECTED_FIELD, GLIDE_MARGIN, TAILWIND, CROSSWIND, TAKEOFF_WIND]
+
+# =========================================================================================================
+# Révision 5 (CDC §14, vent sur le plané) : à charger avec `scenarios + scenarios_phase2` dès que le moteur applique
+# le §14 (voir l'en-tête). Valeurs centrales du calcul de référence du §14 en commentaire de chaque scénario.
+# =========================================================================================================
+scenarios_phase3:
+  - id: S33
+    title: "Forclaz → Doussard, flux de N et brise du lac : le vent arrière porte le plané (brevet de pilote)"
+    reference_time: "2026-09-12T00:00:00Z"
+    horizon: "12h"                # cible 12:00Z = 14:00 légale ; arrivée ≈ 14:15 (brise × 1,3 : 13 km/h de N)
+    filters: {difficulty: intermediate, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather: *w_n13
+    # Référence §14 : vent rencontré 13 km/h du 354° → 10,8 dans le dos, 7,1 de travers ; crédit 0,60 + 0,20 (brise
+    # établie) = 0,80 → 8,6 km/h ; finesse 8,26 (calme 6,80, × 1,21) ; requise 5,94 → r = 0,72 ; arrivée ≈ 370 m.
+    expect:
+      flyability: go
+      flight_type: local
+      thermal_usage_in: [none]
+      risk_codes: [HIGH_ARRIVAL]
+      risk_levels: {HIGH_ARRIVAL: info}
+      risk_codes_forbidden: [GLIDE_MARGIN, TAILWIND, LEE_SIDE]
+      glide_required_min: 5.8
+      glide_required_max: 6.1
+      glide_available_min: 7.8
+      glide_available_max: 8.8
+      glide_gain_vs_calm_min: 1.15
+      glide_wind_along_track_min: 9.0
+      glide_wind_along_track_max: 13.0
+      glide_wind_credit_min: 7.5
+      glide_wind_credit_max: 10.05      # plafond brevet de pilote : 10 km/h
+      glide_arrival_height_min: 330
+      glide_arrival_height_max: 430
+      glide_comment_contains: ["dans le dos", "arrivée haute"]
+      briefing_contains: "au vent de l'atterro"
+      zpa_upwind_of_landing: true
+
+  - id: S34
+    title: "Forclaz → Doussard autour de la réserve du Bout du Lac, N 9 km/h, élève : passe aisément"
+    reference_time: "2026-09-26T00:00:00Z"
+    horizon: "12h"                # cible 12:00Z = 14:00 légale
+    filters: {difficulty: beginner, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather: *w_n9
+    sensitive_areas: [*bout_du_lac]
+    # Référence §14 : chemin 4,38 km (contournement par l'E et le S) → requise 6,33 ; 7,7 dans le dos ; crédit élève
+    # 0,50 + 0,20 (brise établie) = 0,70 → 5,4 km/h ; finesse 7,70 (× 1,13) → r = 0,82 ; arrivée ≈ 310 m.
+    # Par calme strict, le même plané donne r ≈ 0,93 (S35).
+    expect:
+      flyability: go
+      flight_type: local
+      difficulty_max: beginner
+      risk_codes_forbidden: [GLIDE_MARGIN, SENSITIVE_AREA, TAILWIND]
+      glide_required_min: 6.2
+      glide_required_max: 6.5
+      glide_available_min: 7.3
+      glide_available_max: 8.1
+      glide_r_max: 0.88
+      glide_gain_vs_calm_min: 1.08
+      glide_wind_along_track_min: 6.0
+      glide_wind_along_track_max: 10.0
+      glide_wind_credit_min: 3.5
+      glide_wind_credit_max: 7.0
+      glide_comment_contains: ["dans le dos", "contourn"]
+      briefing_contains: "hors de la zone « Réserve naturelle nationale du Bout du Lac"
+      zpa_upwind_of_landing: true
+
+  - id: S35
+    title: "Forclaz → Doussard autour de la réserve, calme strict, élève : sans aucune réserve de calcul"
+    reference_time: "2026-09-26T00:00:00Z"
+    horizon: "12h"
+    filters: {difficulty: beginner, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather:
+      <<: *w_n9
+      takeoff_wind_kmh: 4
+      takeoff_wind_dir: 290
+      takeoff_gust_kmh: 7
+      landing_wind_kmh: 3
+      landing_wind_dir: 0
+      landing_gust_kmh: 5
+      winds_aloft: {1550: [6, 280], 2000: [8, 270], 3000: [12, 260]}
+    sensitive_areas: [*bout_du_lac]
+    # Référence §14 : vent rencontré 3-4 km/h (< 5 : aucun crédit) ; finesse 6,78 ; requise 6,33 → r = 0,93 ;
+    # arrivée réaliste ≈ 240 m. Verdict expert : MARGINAL confirmé (CDC §14.6).
+    expect:
+      flyability: marginal
+      flight_type: local
+      risk_codes: [GLIDE_MARGIN]
+      risk_levels: {GLIDE_MARGIN: caution}
+      risk_codes_forbidden: [HIGH_ARRIVAL]
+      glide_r_min: 0.905
+      glide_r_max: 0.99
+      glide_gain_vs_calm_min: 0.95
+      glide_gain_vs_calm_max: 1.01
+      glide_wind_along_track_min: -3.0
+      glide_wind_along_track_max: 3.0
+      glide_wind_credit_min: -3.0
+      glide_wind_credit_max: 0.05       # vent faible : aucun crédit de vent arrière
+      glide_arrival_height_min: 180
+      glide_arrival_height_max: 300
+
+  - id: S36
+    title: "Forclaz, N fort 24 km/h, brevet de pilote : limité par le déco et l'atterro, pas par le plané"
+    reference_time: "2026-09-12T00:00:00Z"
+    horizon: "12h"
+    filters: {difficulty: intermediate, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather: *w_n24
+    # Référence §14 : 20 km/h dans le dos, crédit plafonné à 10 km/h → finesse 8,2 pour 5,94 requise (r = 0,73) :
+    # le plané passe ; ce sont le vent au déco (24 > 20) et à l'atterro (24,7 > 20) qui interdisent le vol.
+    expect:
+      flyability: no_go
+      risk_codes: [TAKEOFF_WIND, LANDING_WIND]
+      rejected_codes_forbidden: [GLIDE_MARGIN]
+      rejected_reason_contains: "trop fortes pour ton niveau"
+
+  - id: S36b
+    title: "Idem S36, expert : marginal par le vent au déco, plané largement assuré, arrivée haute"
+    reference_time: "2026-09-12T00:00:00Z"
+    horizon: "12h"
+    filters: {difficulty: expert, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather: *w_n24
+    # Référence §14 : 20,3 dans le dos, 13 de travers ; crédit 0,70 + 0,20 = 0,90 → 18 km/h, plafonné à 15 ;
+    # finesse 9,11 (× 1,34) ; requise 5,78 (marge expert 80 m) → r = 0,63 ; arrivée ≈ 430 m (info : < 700 m).
+    expect:
+      flyability: marginal
+      flight_type: local
+      risk_codes: [TAKEOFF_WIND, HIGH_ARRIVAL]
+      risk_levels: {HIGH_ARRIVAL: info}
+      risk_codes_forbidden: [GLIDE_MARGIN, TAILWIND, LEE_SIDE]
+      glide_available_min: 8.6
+      glide_available_max: 9.6
+      glide_gain_vs_calm_min: 1.25
+      glide_wind_along_track_min: 17.0
+      glide_wind_along_track_max: 23.0
+      glide_wind_credit_min: 13.0
+      glide_wind_credit_max: 15.05      # plafond expert : 15 km/h
+      glide_arrival_height_min: 380
+      glide_arrival_height_max: 480
+      glide_comment_contains: ["dans le dos", "arrivée haute"]
+
+  - id: S37
+    title: "Forclaz → Doussard, flux de S au-dessus de 1550 m seulement : le plouf ne le rencontre pas"
+    reference_time: "2026-09-19T00:30:00Z"
+    horizon: "12h"                # cible 12:30Z = 14:30 légale
+    filters: {difficulty: advanced, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather: *w_s_aloft
+    # Référence §14 : tranche 552-1245 m : brise de pente O 9 km/h en haut, N 5 km/h en bas → vent moyen 5 km/h du
+    # 314°, 1,5 dans le dos, 5 de travers ; finesse 6,93 ; r = 0,86. Le S de 16-22 km/h (1550-3000 m) ne compte pas.
+    expect:
+      flyability: go
+      flight_type: local
+      risk_codes_forbidden: [GLIDE_MARGIN, HIGH_ARRIVAL]
+      glide_available_min: 6.5
+      glide_available_max: 7.3
+      glide_gain_vs_calm_min: 0.95
+      glide_gain_vs_calm_max: 1.08
+      glide_wind_along_track_min: -3.0
+      glide_wind_along_track_max: 4.0
+
+  - id: S38
+    title: "Forclaz → Doussard, vent du S jusqu'à Doussard : plané long face au vent, ne passe pas"
+    reference_time: "2026-09-19T00:30:00Z"
+    horizon: "12h"
+    filters: {difficulty: advanced, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather:
+      <<: *w_s_aloft
+      landing_wind_kmh: 16        # flux de S en vallée ; × 1,3 vers 14 h 45 légales → 21 km/h, rafales 29
+      landing_wind_dir: 190
+      landing_gust_kmh: 22
+    # Référence §14 : vent rencontré 12,5 km/h du 208° → 12,5 de face, × 1,19 (rafales) = 14,9 comptés ; meilleure
+    # vitesse 40 km/h (gain < 1 % sur les bras hauts) ; finesse 4,1 pour 5,94 requise → r = 1,45 : no-go, accélérateur
+    # compris. Le moteur actuel donnait 5,2 disponible.
+    expect:
+      flyability: no_go
+      risk_codes: [GLIDE_MARGIN]
+      rejected_reason_contains: "de face"
+
+  - id: S39
+    title: "Planfait → Perroix, SO 16-17 km/h de face, brevet confirmé : passe en accélérant, avec marge"
+    reference_time: "2026-09-19T04:30:00Z"
+    horizon: "12h"                # cible 16:30Z = 18:30 légale (après la brise × 1,3 : vent constant sur le créneau)
+    filters: {difficulty: advanced, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *planfait_fix
+    landing: *perroix_fix
+    weather:
+      <<: *w_s_aloft
+      takeoff_wind_kmh: 16        # SO : de face au déco (64 % du seuil advanced)
+      takeoff_wind_dir: 225
+      takeoff_gust_kmh: 20
+      landing_wind_kmh: 17
+      landing_wind_dir: 220
+      landing_gust_kmh: 22
+      winds_aloft: {1550: [18, 225], 2000: [21, 230], 3000: [25, 235]}
+    # Référence §14 : 16,6 de face × 1,15 (rafales) = 19,0 comptés ; bras hauts 3,31 ; demi-barreau (44 km/h, vitesse
+    # sol 25) 3,48 ; requise 2,50 → r = 0,72.
+    expect:
+      flyability: go
+      flight_type: local
+      risk_codes_forbidden: [GLIDE_MARGIN, HIGH_ARRIVAL, TAKEOFF_WIND]
+      glide_required_min: 2.4
+      glide_required_max: 2.6
+      glide_available_min: 3.2
+      glide_available_max: 3.8
+      glide_gain_vs_calm_max: 0.58
+      glide_wind_along_track_min: -19.0
+      glide_wind_along_track_max: -14.0
+      glide_wind_credit_min: -22.0
+      glide_wind_credit_max: -16.0      # face comptée en entier ET majorée : crédit < composante brute
+      glide_comment_contains: ["de face", "accélér"]
+
+  - id: S40
+    title: "Montmin (Chalet de l'Aulp) → Doussard, travers SSE 21 km/h, expert : la dérive mange la marge"
+    reference_time: "2026-09-19T04:30:00Z"
+    horizon: "12h"                # cible 16:30Z = 18:30 légale
+    filters: {difficulty: expert, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *montmin_aulp
+    landing: *doussard_pge
+    weather:
+      <<: *w_s_aloft
+      takeoff_wind_kmh: 21        # SSE : écart 20,75° au secteur S, travers 7 km/h (expert : 75° / 16 km/h)
+      takeoff_wind_dir: 148
+      takeoff_gust_kmh: 26
+      landing_wind_kmh: 21        # brise descendante / flux de SSE dans la vallée de Faverges (75 % de 28)
+      landing_wind_dir: 148
+      landing_gust_kmh: 26
+      winds_aloft: {1720: [22, 150], 2000: [24, 155], 3000: [28, 160]}
+    # Référence §14 : cap 238°, vent du 148° : 0 dans le dos, 21 de travers → crabe 35°, vitesse sol 30,5 km/h ;
+    # finesse 5,60 (calme 6,80) ; requise 5,21 → r = 0,93 : GLIDE_MARGIN caution. Le moteur actuel (sans travers) : r 0,77.
+    expect:
+      flyability: marginal
+      flight_type: local
+      risk_codes: [GLIDE_MARGIN]
+      risk_levels: {GLIDE_MARGIN: caution}
+      risk_codes_forbidden: [HIGH_ARRIVAL]
+      glide_r_min: 0.905
+      glide_r_max: 0.99
+      glide_available_min: 5.35
+      glide_available_max: 5.75
+      glide_gain_vs_calm_max: 0.86
+      glide_wind_along_track_min: -3.0
+      glide_wind_along_track_max: 3.0
+      glide_comment_contains: "de travers"
+
+  - id: S41
+    title: "Idem S33 à 48 h : le vent arrière est moins crédité"
+    reference_time: "2026-09-10T12:00:00Z"
+    horizon: "48h"                # cible 2026-09-12 12:00Z, comme S33
+    filters: {difficulty: intermediate, thermals: avoid, duration_min_minutes: 10, duration_max_minutes: 20, flight_types: [local]}
+    takeoff: *forclaz_pge
+    landing: *doussard_pge
+    weather: *w_n13
+    # Référence §14 : crédit 0,60 + 0,20 − 0,20 (48 h) = 0,60 → 6,5 km/h (S33 : 8,6) ; finesse 7,86 ; r = 0,76 ;
+    # arrivée attendue inchangée (≈ 370 m : vent prévu à 100 %).
+    expect:
+      flyability: go
+      flight_type: local
+      risk_codes: [HIGH_ARRIVAL]
+      risk_codes_forbidden: [GLIDE_MARGIN]
+      glide_available_min: 7.4
+      glide_available_max: 8.15
+      glide_wind_along_track_min: 9.0
+      glide_wind_along_track_max: 13.0
+      glide_wind_credit_min: 5.0
+      glide_wind_credit_max: 7.4
+      glide_arrival_height_min: 330
+      glide_arrival_height_max: 430

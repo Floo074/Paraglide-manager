@@ -201,6 +201,7 @@ export interface LandingCandidate {
   required_glide_ratio: number; // finesse sol nécessaire depuis le déco (vent compris), hauteur d'arrivée mini
   // du kind déduite (officiel : marge §2.3 ; communautaire / champ : 100-200 m)
   available_glide_ratio: number; // finesse de calcul retenue (prudente), × 0,90 communautaire / × 0,80 champ
+  wind_along_track_kmh: number | null; // composante du vent sur le plané vers ce candidat (+ = arrière), cf. FlightPlan.glide
   arrival_height_m: number; // hauteur estimée à l'arrivée au-dessus de l'atterro
   size_m: { length: number; width: number } | null;
   slope_pct: number | null;
@@ -221,6 +222,22 @@ export interface ScoreItem {
   score: number; // 0..100
   weight: number;
   comment: string;
+}
+
+/** FlightPlan.glide (le contrat le décrit en ligne ; nommé ici pour le réutiliser). Tous les champs décrivent le
+ * MÊME plané : le pire cas (déco → atterro principal, ou point de route → meilleur atterro). */
+export interface FlightPlanGlide {
+  required_ratio: number;
+  available_ratio: number; // atterro non officiel : inclut le facteur f (0,90 / 0,80) et la hauteur d'arrivée mini
+  margin_ok: boolean;
+  calm_available_ratio: number; // finesse de calcul en air calme (même k / f), pour comparaison
+  wind_along_track_kmh: number; // composante du vent sur le plané, moyennée sur la tranche d'altitude volée et
+  // sur chaque branche (contournements compris) ; + = vent arrière, − = vent de face
+  wind_credit_kmh: number; // part retenue dans available_ratio (vent arrière crédité partiellement, vent de
+  // face compté en entier, règles du moniteur)
+  expected_arrival_height_m: number | null; // hauteur d'arrivée estimée au-dessus de l'atterro avec le vent prévu
+  comment: string; // ex. « Vent du N 15 km/h dans le dos sur le plané : finesse sol ≈ 9,8 au lieu
+  // de 7,3 — arrivée haute à Doussard, prévoir de perdre de l'altitude face au N »
 }
 
 export interface PlanSource {
@@ -254,7 +271,7 @@ export interface FlightPlan {
   distance_km: number;
   est_duration_min: number;
   max_altitude_m: number;
-  glide: { required_ratio: number; available_ratio: number; margin_ok: boolean };
+  glide: FlightPlanGlide;
   weather: { takeoff: WeatherSnapshot; landing: WeatherSnapshot; timeline: WeatherSnapshot[] }; // timeline horaire au déco, fenêtre ±3h
   thermals: ThermalAnalysis;
   sounding: SoundingLevel[];

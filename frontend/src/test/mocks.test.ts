@@ -102,7 +102,8 @@ describe("finesse", () => {
     expect(forclaz.length).toBeGreaterThan(0);
     for (const p of forclaz) {
       expect(p.glide.margin_ok, p.title).toBe(true);
-      expect(p.glide.required_ratio).toBeLessThan(6);
+      // marge du CDC : r = requise / disponible ≤ 0,90 (au-delà : GLIDE_MARGIN prudence)
+      expect(p.glide.required_ratio / p.glide.available_ratio, p.title).toBeLessThanOrEqual(0.9);
     }
   });
 });

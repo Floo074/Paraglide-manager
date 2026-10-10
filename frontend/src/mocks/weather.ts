@@ -3,7 +3,8 @@
  *
  * Trois scénarios selon le jour (aujourd'hui / demain / après-demain) :
  *  0. anticyclonique, brise de NO faible, cumulus plats → bonne journée thermique ;
- *  1. flux d'ouest modéré se renforçant en altitude → conditions limites ;
+ *  1. flux de nord modéré (bise faible) et brise de lac de N l'après-midi → vent arrière sur les planés vers le S
+ *     (Forclaz → Doussard : arrivée haute), vent fort en altitude pour les élèves ;
  *  2. dégradation orageuse l'après-midi (CAPE élevée, pluie) → no-go l'après-midi.
  * Cycle diurnal basé sur la position réelle du soleil, brises de pente orientées selon le déco.
  * Les valeurs sont plausibles mais FICTIVES.
@@ -61,25 +62,25 @@ export const SCENARIOS: Scenario[] = [
     stableAloft: true,
   },
   {
-    label: "Flux d'ouest modéré se renforçant en altitude",
+    label: "Flux de nord modéré (bise faible), brise de lac de N l'après-midi",
     levels: [
-      { alt: 0, speed: 10, dir: 255 },
-      { alt: 1500, speed: 21, dir: 262 },
-      { alt: 2500, speed: 33, dir: 258 },
-      { alt: 3000, speed: 39, dir: 255 },
-      { alt: 4000, speed: 52, dir: 250 },
+      { alt: 0, speed: 15, dir: 355 },
+      { alt: 1500, speed: 19, dir: 350 },
+      { alt: 2500, speed: 25, dir: 345 },
+      { alt: 3000, speed: 30, dir: 340 },
+      { alt: 4000, speed: 38, dir: 330 },
     ],
-    tMin: 9,
-    tMax: 16,
-    spreadMin: 3,
-    spreadMax: 11,
-    blhMax: 1400,
-    thermalMax: 1.7,
-    capeMax: 60,
+    tMin: 6,
+    tMax: 15,
+    spreadMin: 4,
+    spreadMax: 13,
+    blhMax: 1500,
+    thermalMax: 1.9,
+    capeMax: 40,
     rainFromSolarHour: null,
     rainMmH: 0,
-    cloud: 55,
-    lowCloud: 25,
+    cloud: 25,
+    lowCloud: 10,
     stableAloft: true,
   },
   {

@@ -1,7 +1,7 @@
 # Scénarios de validation métier — Paraglide Manager
 
 > Rédigé par l'expert pilote (référent métier). Ces scénarios **font foi** pour le verdict, le type de vol, la durée et les risques.
-> À transformer en `backend/tests/test_expert_scenarios.py` (un test paramétré par scénario + les invariants globaux du §3). Source machine-readable : `scenarios-validation.yaml` : 32 cas actifs (`scenarios`) et 5 cas de phase 2, S28 à S32 (`scenarios_phase2`, CDC §12), à charger dès que le moteur les gère.
+> À transformer en `backend/tests/test_expert_scenarios.py` (un test paramétré par scénario + les invariants globaux du §3). Source machine-readable : `scenarios-validation.yaml` : 32 cas actifs (`scenarios`), 5 cas de phase 2, S28 à S32 (`scenarios_phase2`, CDC §12, chargés), et 10 cas de la révision 5, S33 à S41 (`scenarios_phase3`, CDC §14 : vent sur le plané), à charger avec l'implémentation du §14.
 > Codes `Risk` : catalogue du §1. Seuils : `cahier-des-charges-pilote.md` §2, §3, §11 et §12 (balises d'atterro, horizon 15 min, décollage libre, atterros non officiels).
 
 ---
@@ -13,6 +13,8 @@
 `RAIN, THUNDERSTORM, OVERDEVELOPMENT, SITE_LEVEL, FOEHN, REGIONAL_WIND, LOW_CLOUD_BASE, STRONG_WIND_ALOFT, LEE_SIDE, TAKEOFF_WIND, TAKEOFF_GUSTS, CROSSWIND, TAILWIND, LANDING_WIND, VALLEY_BREEZE, GLIDE_MARGIN, SUNSET, AIRSPACE, AIRSPACE_ACTIVATION, ALTITUDE_LIMIT, SENSITIVE_AREA, NATIONAL_PARK, SITE_CLOSED, SITE_RESTRICTED, WIND_GRADIENT, WIND_SHEAR, STRONG_THERMALS, WEAK_THERMALS, INVERSION, VENTURI, ROTOR, FRONT, FREEZING, WIND_INCREASING, BEACON_MISMATCH, STALE_BEACONS, LOW_CONFIDENCE, MOCK_DATA, ACCESS_TIME`
 
 Phase 2 (CDC §12) : `NO_LANDING_BEACON, WIND_SHIFT, FREE_TAKEOFF, UNOFFICIAL_LANDING, DETECTED_FIELD`. `NO_LANDING_BEACON` est la seule caution **non bloquante** de la liste.
+
+Révision 5 (CDC §14) : `HIGH_ARRIVAL` (« Arrivée haute » : vent arrière sur le plané et hauteur d'arrivée attendue ≥ 300 m ; info, ou caution **non bloquante** au-delà de 500 m pour beginner et intermediate, 700 m pour advanced et expert). `GLIDE_MARGIN` garde son sens, calculé avec la finesse du §14 ; il passe aussi en danger en cas de pénétration insuffisante.
 
 Niveaux : `danger` ⇒ no-go ; `caution` ⇒ marginal ou point de vigilance ; `info` ⇒ rappel.
 
@@ -47,6 +49,15 @@ Niveaux : `danger` ⇒ no-go ; `caution` ⇒ marginal ou point de vigilance ; `i
 | `pyla` | Dune du Pyla, 44.589 N 1.213 W | 100 | W, WNW | beginner | Top landing / plage | 100 / 5 | 0,3 km / 270° | ridge_soaring |
 | `deco_technique` | Site fictif, 45.500 N 6.500 E | 1600 | S | advanced | Atterro fictif | 700 | 3,0 km / 180° | local |
 | `rando` (décollage libre) | Alpage rando fictif, 45.700 N 6.400 E, pente 40 % face SE | 1500 | ESE, SE, SSE | — (vaut intermediate) | Pré communautaire, 1,6 km / 135° (alt. 800) ; pré de fauche détecté, 1,8 km / 150° (alt. 820) ; officiel à 15 km (hors de portée) | — | — | local |
+
+Révision 5 (S33-S41) : positions des fixtures / PGE (`app/fixtures/sites.json`), plus justes que les ancres ci-dessus.
+
+| Clé | Déco | Alt. déco | Orientations | Difficulté site | Atterro | Alt. atterro | Distance / cap |
+|---|---|---|---|---|---|---|---|
+| `forclaz_pge` → `doussard_pge` | Col de la Forclaz, 45.815 N 6.2465 E | 1245 | W, WNW, NW | beginner | Doussard, 45.782 N 6.2224 E (big_valley) | 452 | 4,12 km / 207° ; 4,38 km avec le contournement de la réserve |
+| `planfait_fix` → `perroix_fix` | Planfait, 45.857 N 6.2285 E | 1240 | SW, WSW, W | intermediate | Talloires – Perroix, 45.8455 N 6.2135 E (big_valley) | 450 | 1,73 km / 222° |
+| `montmin_aulp` → `doussard_pge` | Montmin – Chalet de l'Aulp, 45.804 N 6.273 E | 1420 | S, SSW, SW | intermediate | Doussard | 452 | 4,62 km / 238° |
+| `bout_du_lac` (zone) | Réserve naturelle nationale du Bout du Lac d'Annecy : vol libre interdit (`flight_prohibited`), enveloppe à 10 sommets du polygone Biodiv'Sports 1564, à ≈ 330 m au N de l'atterro | — | — | — | — | — | — |
 
 Finesse par défaut : 8,5 (EN-B), sauf mention.
 
@@ -102,6 +113,28 @@ Finesse par défaut : 8,5 (EN-B), sauf mention.
 | S31 | rando (décollage libre), 20/09/2026 10:30 | SE 8 km/h de face. Seul un champ détecté est à portée (officiel à 15 km) | beginner, avoid, 10-30, `include_fields` | **rejeté** : aucun plan | — | — | FREE_TAKEOFF (danger), DETECTED_FIELD (danger) ; raison « décollage libre » | tout plan go ou marginal |
 | S32 | rando (décollage libre), 20/09/2026 10:30 | Idem, avec un pré communautaire à 1,6 km (finesse requise ≈ 2,8 pour ≈ 4,3 de finesse de calcul) | advanced, avoid, 10-30, `include_community` | **go** | local | 10-30 | FREE_TAKEOFF (info), UNOFFICIAL_LANDING (info) ; atterro principal `community` ; warning « Non officiel » | DETECTED_FIELD, GLIDE_MARGIN, TAILWIND, CROSSWIND, TAKEOFF_WIND ; atterro `field` |
 
+**Révision 5 (CDC §14, vent sur le plané, bloc `scenarios_phase3`)**
+
+Tous ces vols sont des ploufs (`thermals: avoid`, 10-20 min). Dans la colonne « Plané », les chiffres sont les valeurs de référence du §14 :
+- requise / disponible, et r ;
+- composante brute du vent (+ = dans le dos) et part retenue ;
+- hauteur d'arrivée attendue.
+
+Entre parenthèses : la valeur du moteur actuel (un seul vent, 100 % crédité, sans travers).
+
+| ID | Site / quand | Situation | Niveau | Verdict attendu | Plané (référence §14) | Risques et contrôles obligatoires | Interdits |
+|---|---|---|---|---|---|---|---|
+| S33 | forclaz_pge → doussard_pge, 12/09/2026 14:00 (12h) | NNO 13 km/h au déco, brise du lac N 10 × 1,3 = 13 à Doussard, N 15-18 au-dessus de 1550 m (non rencontré) | intermediate | **go** | 5,94 / 8,26 (8,51), r 0,72 ; + 10,8 dans le dos, 8,6 retenus (0,60 + 0,20 brise établie) ; ≈ 370 m | HIGH_ARRIVAL (info) ; gain ≥ 1,15 sur l'air calme ; commentaire « dans le dos » + « arrivée haute » ; briefing « au vent de l'atterro » ; ZPA au vent | GLIDE_MARGIN, TAILWIND, LEE_SIDE |
+| S34 | idem + réserve du Bout du Lac, 26/09/2026 14:00 (12h) | NNO 9, brise N 8 × 1,3 ; plané contourné par l'E et le S (4,38 km) | beginner | **go** (« passe aisément ») | 6,33 / 7,70 (8,07), r 0,82 ; + 7,7, 5,4 retenus (0,50 + 0,20) ; ≈ 310 m | commentaire « dans le dos » + « contourn » ; briefing « hors de la zone « Réserve naturelle nationale du Bout du Lac » ; ZPA au vent (à l'E ou à l'O de l'atterro) | GLIDE_MARGIN, SENSITIVE_AREA, TAILWIND |
+| S35 | idem S34, calme strict | Vents de 3 à 4 km/h | beginner | **marginal** | 6,33 / 6,78 (7,00), r 0,93 ; aucun crédit (< 5 km/h) ; ≈ 240 m | GLIDE_MARGIN (caution) ; r dans [0,905 ; 0,99] | HIGH_ARRIVAL |
+| S36 | forclaz_pge, 12/09/2026 14:00 (12h) | N fort : déco NNO 24 g30, Doussard 19 × 1,3 = 24,7, 26-32 en altitude | intermediate | **rejeté** par le déco et l'atterro, pas par le plané | 5,94 / 8,2 (crédit plafonné à 10 km/h) | TAKEOFF_WIND, LANDING_WIND (danger) ; raison « trop fortes pour ton niveau » | GLIDE_MARGIN dans les raisons de rejet |
+| S36b | idem S36 | idem | expert | **marginal** (vent au déco) | 5,78 / 9,11 (9,99), r 0,63 ; + 20,3, 15 retenus (plafond expert) ; ≈ 430 m | TAKEOFF_WIND (caution), HIGH_ARRIVAL (info) | GLIDE_MARGIN, TAILWIND, LEE_SIDE |
+| S37 | forclaz_pge, 19/09/2026 14:30 (12h) | Flux de S 16-22 km/h au-dessus de 1550 m seulement ; O 9 au déco, N 4 à Doussard | advanced | **go** | 5,94 / 6,93 (6,89), r 0,86 ; + 1,5 (le S d'altitude n'est pas rencontré) | composante dans [− 3 ; + 4] | GLIDE_MARGIN, HIGH_ARRIVAL |
+| S38 | idem S37 + flux de S jusqu'à Doussard (16 × 1,3 = 21 g29) | Plané long (4,1 km) face au vent | advanced | **rejeté** | 5,94 / 4,1 (5,2), r 1,45 ; − 12,5 de face, − 14,9 comptés (rafales) ; 40 km/h, accélérateur compris | GLIDE_MARGIN (danger) ; raison « de face » | go, marginal |
+| S39 | planfait_fix → perroix_fix, 19/09/2026 18:30 (12h) | SO 16-17 km/h de face, rafales 20-22 | advanced | **go** | 2,50 / 3,48 (3,77), r 0,72 ; − 16,6 de face, − 19,0 comptés ; demi-barreau 44 km/h (bras hauts : 3,31) | commentaire « de face » + « accélér » ; part retenue ≤ composante brute | GLIDE_MARGIN, HIGH_ARRIVAL, TAKEOFF_WIND |
+| S40 | montmin_aulp → doussard_pge, 19/09/2026 18:30 (12h) | SSE 21 km/h de travers (cap 238°) | expert | **marginal** | 5,21 / 5,60 (6,80), r 0,93 ; 0 dans le dos, 21 de travers (crabe 35°) | GLIDE_MARGIN (caution) ; commentaire « de travers » | HIGH_ARRIVAL |
+| S41 | idem S33, horizon 48h | Même météo, prévision à 48 h | intermediate | **go** | 5,94 / 7,86, r 0,76 ; 6,5 retenus (0,60 + 0,20 − 0,20) au lieu de 8,6 ; ≈ 370 m | HIGH_ARRIVAL ; part retenue dans [5,0 ; 7,4] (S33 : [7,5 ; 10]) | GLIDE_MARGIN |
+
 ---
 
 ## 3. Invariants globaux (à vérifier sur TOUS les plans de TOUS les scénarios et des appels `/api/plans` de démo)
@@ -129,16 +162,21 @@ Finesse par défaut : 8,5 (EN-B), sauf mention.
 | I19 | (Phase 2) Tout atterro `community` ou `field` d'un plan (principal ou secours) porte dans `warnings` un texte qui contient « Non officiel ». Un `field` n'est jamais l'atterro principal d'un niveau intermediate. |
 | I20 | (Phase 2) Horizons 15m, 30m, 1h : `window.start` est dans les bornes du CDC §12.5 et au moins 10 min après `reference_time` ; `briefing[1]` donne la lecture des balises, ou dit qu'il n'y a pas de balise à l'atterro. |
 | I21 | (Phase 2) Une `StationReading` avec `representative = false` a un poids nul dans la correction. `weight ≤ beacon_weight_by_minutes(Δt)` (CDC §12.1). |
+| I22 | (Rév. 5) `glide.calm_available_ratio` = `wing × k × f` (± 0,01, même k et même f que `available_ratio`). `glide.available_ratio ≤ calm_available_ratio × (V_bras_hauts + plafond(niveau)) / V_bras_hauts + 0,01` : le vent arrière crédité ne dépasse jamais le plafond du niveau (8 / 10 / 12 / 15 km/h). |
+| I23 | (Rév. 5) `glide.wind_credit_kmh ≤ glide.wind_along_track_kmh + 0,05` : le vent arrière n'est crédité qu'en partie, la face est comptée en entier ou majorée. Et `wind_credit_kmh ≤ plafond(niveau) + 0,05`. |
+| I24 | (Rév. 5) `HIGH_ARRIVAL` n'est jamais `danger`. Sur un plouf (`thermal_usage = none`), il implique `wind_along_track_kmh ≥ 5` et `expected_arrival_height_m ≥ 300`. |
+| I25 | (Rév. 5) `glide.comment` est non vide, en français. Il contient « dans le dos » si `wind_along_track_kmh ≥ 5`, et « de face » si `wind_along_track_kmh ≤ − 5`. `expected_arrival_height_m` est non null, sauf en top landing. |
 
 ---
 
 ## 4. Bloc machine-readable
 
-Le fichier **`docs/expert/scenarios-validation.yaml`** fait foi. Il est au format `app.engine.scenario.run_scenario(spec)` du backend : heures en UTC, sites et météos factorisés par ancres YAML. Il contient 37 cas :
+Le fichier **`docs/expert/scenarios-validation.yaml`** fait foi. Il est au format `app.engine.scenario.run_scenario(spec)` du backend : heures en UTC, sites et météos factorisés par ancres YAML. Il contient 47 cas :
 - 32 dans `scenarios` ;
-- 5 dans `scenarios_phase2` (S28-S32), séparés pour que la suite de tests actuelle reste verte. Le backend les charge avec `scenarios + scenarios_phase2` dès qu'il gère les clés d'entrée et d'attente décrites en tête du YAML.
+- 5 dans `scenarios_phase2` (S28-S32), d'abord tenus à part, aujourd'hui chargés avec `scenarios` ;
+- 10 dans `scenarios_phase3` (S33-S41, CDC §14), tenus à part pour que la suite actuelle reste verte : le moteur actuel les manque sur `HIGH_ARRIVAL` (S33, S36b, S41), le texte « de face » du rejet (S38) et le travers (S40 : go au lieu de marginal). Le backend les charge (`scenarios + scenarios_phase2 + scenarios_phase3`) **en même temps** qu'il implémente le §14 et les nouvelles clés d'attente décrites en tête du YAML.
 
-Le tableau du §2 est la lecture humaine du YAML. Le tableau du §2 en est la lecture humaine.
+Le tableau du §2 est la lecture humaine du YAML.
 Les valeurs du YAML ont été ajustées pour éviter toute égalité avec un seuil (rafales, vario, brise). Voir les notes du §5.
 
 ## 5. Notes pour l'implémentation des tests
@@ -159,3 +197,9 @@ Les valeurs du YAML ont été ajustées pour éviter toute égalité avec un seu
 14. **Altitude inconnue (S30)** : le chargeur doit simuler un MNT indisponible (pas de `dem_elevation_m`). Avec un MNT disponible, le facteur serait 0,8 au lieu de 0,5 et le poids dépasserait 0,35.
 15. **Décollage libre (S31, S32)** : la difficulté du site vaut intermediate. Pour un beginner, toutes les raisons de rejet sont listées (`FREE_TAKEOFF` **et** `DETECTED_FIELD`), pas seulement la première.
 16. **Atterros non officiels** : `landing_policy` filtre d'abord, le niveau ensuite (CDC §12.7). En S32 le champ est exclu par la politique `include_community` : il n'apparaît dans aucun plan.
+17. **Vent rencontré (S33, S37)** : seule compte la tranche [alt. atterro + marge ; alt. de départ]. Le vent au-dessus du déco ne compte pas pour un plouf. En S37, le flux de S de 1550 à 3000 m ne doit pas toucher la finesse (composante ≈ + 1,5 km/h). Un moteur qui le projette encore sur le plané échoue S37.
+18. **Crédit du vent arrière (S33, S34, S36b, S41)** : la part retenue dépend du niveau (0,50 / 0,60 / 0,70 / 0,70), des bonus et malus et du plafond. Les plages de `glide_wind_credit` de S33 ([7,5 ; 10,05]) et de S41 ([5,0 ; 7,4]) ne se recouvrent pas : seul l'horizon les sépare (malus 48 h). La brise est « établie » à l'**heure d'arrivée** (13-17 h légales) : un créneau décalé hors de cette plage fait perdre le bonus. C'est pour cela que ces scénarios demandent 10-20 min (plouf à la cible, pas de vol de restitution le soir).
+19. **Face et travers (S38, S39, S40)** : la face est majorée par les rafales (`g` ≤ 1,2), donc `wind_credit_kmh` < `wind_along_track_kmh`. L'accélérateur n'est compté qu'à partir du niveau intermediate. En S39, sans le demi-barreau, la finesse tomberait à 3,31 (r = 0,76) : le scénario reste go, mais le commentaire doit dire d'accélérer. En S40, le travers seul fait passer r de 0,77 à 0,93 (`GLIDE_MARGIN` caution).
+20. **Contournement (S34, S35)** : `required_ratio` utilise la longueur réelle (4,38 km), et chaque branche a son cap. S35 (calme strict) est le verdict de contrôle : MARGINAL, confirmé par l'expert (CDC §14.6).
+21. **Arrivée haute** : `HIGH_ARRIVAL` est **non bloquant**. Un plan go le reste avec `HIGH_ARRIVAL` (S33, S41). La ZPA est au vent de l'atterro, en travers au plus ; à Doussard par N, elle est à l'E ou à l'O, hors de la réserve (S33, S34 : `zpa_upwind_of_landing`).
+22. **Anciens scénarios** : le calcul de référence du §14 sur les planés directs déco → atterro de S01-S30 ne fait franchir aucun seuil (r ≤ 0,78 partout). Les planés depuis un point de la route (S05, S09, S25) dépendent du vent en altitude. Si l'un d'eux change de verdict, le constructeur de route doit d'abord relever l'altitude de sécurité du point (§5.4). Si cela ne suffit pas, signaler le cas à l'expert ; ne pas modifier l'attente.

@@ -178,6 +178,10 @@ class VerticalProfile:
         f = 0.0 if zb == za else (z - za) / (zb - za)
         return wind_from_components(ua + f * (ub - ua), va + f * (vb - va))
 
+    def wind_points(self) -> list[tuple[float, float, float]]:
+        """Points du profil de vent (z, u, v), triés par altitude (interpolation linéaire entre eux)."""
+        return list(self._wind)
+
     def wind_uv(self, z: float) -> tuple[float, float]:
         s, d = self.wind(z)
         return wind_components(s, d)

@@ -12,10 +12,20 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from app.engine import rules
-from app.engine.conditions import LandingWind, dir_label, landing_wind, takeoff_wind, vector_mean
-from app.engine.context import DataContext, PointTimeline
+from app.engine.conditions import LandingWind, dir_label, landing_wind
+from app.engine.context import DataContext
 from app.engine.findings import Finding
-from app.engine.routing import GlideCheck, finesse_sol, glide_to, kind_glide_params, landing_kind_of
+from app.engine.glidewind import GlideField, big_valley, plouf_minutes, timeline_for, uniform_finesse
+from app.engine.routing import (
+    GlideCheck,
+    calm_glide,
+    finesse_sol,
+    glide_to,
+    kind_glide_params,
+    landing_kind_of,
+    path_for,
+    projector_for,
+)
 from app.engine.scoring import glide_subscore, linear
 from app.engine.stations import site_attachments
 from app.geo import angle_diff, bearing_deg, destination, haversine_km
@@ -95,41 +105,6 @@ def effective_policy(policy: str, level: str) -> str:
 
 def _lvl(level: str) -> str:
     return level if level in UNOFFICIAL_LEVELS else "intermediate"
-
-
-def big_valley(ctx: DataContext, landing: Site) -> bool:
-    """Atterro en grande vallée (brise × 1,3, §4.3) : méta du site, sinon relief ≥ 2000 m à moins de 10 km."""
-    meta = ctx.site_meta.get(landing.id)
-    if meta and meta.big_valley is not None:
-        return meta.big_valley
-    if landing.elevation_m >= rules.BIG_VALLEY_MAX_FLOOR_M:
-        return False
-    if ctx.terrain is not None:
-        for brg in range(0, 360, 30):
-            for r in (5.0, rules.BIG_VALLEY_RADIUS_KM):
-                la, lo = destination(landing.lat, landing.lon, brg, r)
-                e = ctx.terrain_at(la, lo)
-                if e is not None and e >= rules.BIG_VALLEY_MIN_RELIEF_M:
-                    return True
-        return False
-    return any(
-        s.elevation_m > rules.BIG_VALLEY_FALLBACK_TAKEOFF_M
-        and haversine_km(s.lat, s.lon, landing.lat, landing.lon) <= rules.BIG_VALLEY_FALLBACK_RADIUS_KM
-        for s in ctx.takeoffs
-    )
-
-
-def timeline_for(ctx: DataContext, site: Site, fallback: PointTimeline | None = None) -> PointTimeline | None:
-    """Prévision du terrain : la sienne, sinon celle du point de prévision d'atterro le plus proche, sinon
-    `fallback`."""
-    tl = ctx.timelines.get(site.id)
-    if tl is not None:
-        return tl
-    others = [(haversine_km(site.lat, site.lon, t.lat, t.lon), t) for k, t in ctx.timelines.items()
-              if k in ctx.landings and t.hours]  # fmt: skip
-    if others:
-        return min(others, key=lambda x: x[0])[1]
-    return fallback
 
 
 # =============================================================================================
@@ -251,9 +226,11 @@ class LandingEval:
     wind_exceeded: bool = False  # vent ou rafales à l'arrivée au-dessus du seuil du niveau
     takeoff: Site | None = None
     wing: float = 8.5
-    glide_wind: tuple[float, float] = (0.0, 0.0)
+    glide_source: object = (0.0, 0.0)  # vent sur le plané : GlideField (§14) ou (vitesse, direction) uniforme
     origin_name: str | None = None  # point de la route d'où le terrain est évalué (secours d'un local / cross)
     origin_alt_m: float = 0.0
+    t_origin: datetime | None = None  # heure de départ du plané évalué
+    path: list[tuple[float, float]] = field(default_factory=list)  # contournement d'une zone interdite (lat, lon)
 
     @property
     def kind(self) -> str:
@@ -266,10 +243,6 @@ class LandingEval:
     @property
     def can_be_main(self) -> bool:
         return self.usable and self.use in ("main", "main_marginal")
-
-
-def plouf_minutes(drop_m: float) -> float:
-    return max(0.0, drop_m) / (rules.SINK_RATE_MS["calm"] * 60.0) + rules.PLOUF_EXTRA_MIN
 
 
 def _sensitive_hit(ctx: DataContext, site: Site) -> tuple[str, str] | None:
@@ -489,19 +462,23 @@ def evaluate_spot(
     spot: LandingSpot,
     level: str,
     wing: float,
-    glide_wind: tuple[float, float],
+    glide_wind,
     arrival: datetime,
     policy: str,
     lw: LandingWind | None = None,
     main_classic: bool = False,
     origin: tuple[float, float, float, str] | None = None,
     pair: bool = False,
+    t_origin: datetime | None = None,
+    path: list[tuple[float, float]] | None = None,
 ) -> LandingEval:
     """Évalue un atterro candidat depuis le déco (ou depuis `origin` = (lat, lon, altitude, nom) : point de la route
-    d'où un secours est rejoint). `main_classic` : atterro principal d'un plan classique — un vent d'arrivée au-dessus
-    du seuil du niveau n'y est qu'un avertissement (le plan le juge, LANDING_WIND) ; partout ailleurs (secours, analyse
-    d'un décollage libre) l'atterro est écarté (décision expert, REPRISE §8). `pair` : plané direct déco → atterro
-    officiel associé par la source, relief vérifié (k = GLIDE_K_ASSOCIATED_PAIR)."""
+    d'où un secours est rejoint). `glide_wind` : champ de vent du vol (`GlideField`, vent rencontré §14) ou (vitesse,
+    direction) uniforme ; `t_origin` : heure de départ du plané ; `path` : contournement d'une zone interdite.
+    `main_classic` : atterro principal d'un plan classique — un vent d'arrivée au-dessus du seuil du niveau n'y est
+    qu'un avertissement (le plan le juge, LANDING_WIND) ; partout ailleurs (secours, analyse d'un décollage libre)
+    l'atterro est écarté (décision expert, REPRISE §8). `pair` : plané direct déco → atterro officiel associé par la
+    source, relief vérifié (k = GLIDE_K_ASSOCIATED_PAIR)."""
     site = spot.site
     kind = spot.kind
     top = site.id == takeoff.id
@@ -512,15 +489,15 @@ def evaluate_spot(
     brg = bearing_deg(src.lat, src.lon, site.lat, site.lon)
     alt = src.elevation_m
     if top:
-        fs = finesse_sol(wing, level, glide_wind[0], glide_wind[1], 0.0)
-        std = glide = GlideCheck(0.0, fs, True, True, site.name)
+        std = glide = calm_glide(wing, level, site.name)
         arrival_h = 0.0
     else:
         std = glide_to(ctx, src.lat, src.lon, alt, site, level, wing, glide_wind, kind="official",
-                       pair=pair and kind == "official")  # fmt: skip
+                       pair=pair and kind == "official", path=path, t=t_origin)  # fmt: skip
         glide = std if kind == "official" else glide_to(ctx, src.lat, src.lon, alt, site, level, wing,
-                                                         glide_wind, kind=kind)  # fmt: skip
-        arrival_h = (alt - site.elevation_m) - (dist * 1000.0 / glide.available_ratio if glide.available_ratio > 0
+                                                         glide_wind, kind=kind, path=path, t=t_origin)  # fmt: skip
+        path_km = glide.dist_km or dist
+        arrival_h = (alt - site.elevation_m) - (path_km * 1000.0 / glide.available_ratio if glide.available_ratio > 0
                                                 else 1e9)  # fmt: skip
     if lw is None and not top:
         tl = timeline_for(ctx, site, ctx.timelines.get(takeoff.id))
@@ -532,7 +509,7 @@ def evaluate_spot(
         glide=glide, arrival_height_m=arrival_h, wind=lw,
         use=kind_use(kind, level, spot.community_usage) if kind != "official" else "main",
         policy_ok=kind in rules.LANDING_POLICY_KINDS[eff_policy], top_landing=top, takeoff=src, wing=wing,
-        glide_wind=glide_wind,
+        glide_source=glide_wind, t_origin=t_origin, path=list(path or []),
     )  # fmt: skip
     if origin is not None and not top and src is not takeoff:
         ev.origin_name = origin[3]
@@ -611,6 +588,7 @@ def to_candidate(ev: LandingEval) -> LandingCandidate:
         score=ev.score,
         required_glide_ratio=round(ev.glide.required_ratio, 2) if ev.glide.required_ratio < 99 else 99.0,
         available_glide_ratio=round(ev.glide.available_ratio, 2),
+        wind_along_track_kmh=None if ev.glide.wind_along_kmh is None else round(ev.glide.wind_along_kmh, 1),
         arrival_height_m=round(ev.arrival_height_m),
         size_m=SizeM(length=round(spot.size[0]), width=round(spot.size[1])) if spot.size else None,
         slope_pct=None if spot.slope_pct is None else round(spot.slope_pct, 1),
@@ -648,27 +626,28 @@ def _rank(ev: LandingEval) -> tuple:
     return (not ev.usable, not ev.can_be_main, ev.wind_exceeded, -ev.score)
 
 
-def glide_wind_for(ctx: DataContext, takeoff: Site, spot_site: Site, t: datetime) -> tuple[float, float]:
-    """Vent moyen pour le plané : vent du déco (début) et vent au terrain (même convention que le planificateur)."""
+def glide_field_for(ctx: DataContext, takeoff: Site, t: datetime) -> GlideField | tuple[float, float]:
+    """Vent sur les planés depuis un décollage à l'heure t (§14 : vent rencontré, brise de chaque atterro à l'heure
+    d'arrivée) ; (0, 0) sans prévision au déco."""
     tl = ctx.timelines.get(takeoff.id)
     if tl is None or not tl.hours:
         return 0.0, 0.0
-    tw = takeoff_wind(ctx, takeoff, tl, t)
-    ltl = timeline_for(ctx, spot_site, tl) or tl
-    la = ltl.at(t)
-    return vector_mean([(tw.speed_kmh, tw.direction_deg), (la.wind_speed_kmh, la.wind_direction_deg)])
+    return GlideField(ctx, takeoff, tl, t)
 
 
 def select_landings(
     ctx: DataContext, takeoff: Site, level: str, wing: float, policy: str, start: datetime | None = None
 ) -> LandingSelection:
     """Évalue tous les atterros du contexte depuis `takeoff` (décollage libre) ; atterro principal = meilleur score
-    parmi ceux qui peuvent l'être à ce niveau ; secours = suivants (≤ 3)."""
+    parmi ceux qui peuvent l'être à ce niveau ; secours = suivants (≤ 3). Planés au vent rencontré (§14), en
+    contournant les zones où le vol libre est interdit."""
     start = start or ctx.target_time
     eff = effective_policy(policy, level)
     warnings: list[str] = []
     if eff != policy:
         warnings.append(rules.UNOFFICIAL_WARNINGS["beginner_policy"])
+    field = glide_field_for(ctx, takeoff, start)
+    proj = projector_for(ctx, takeoff)
     evals: list[LandingEval] = []
     for site in ctx.landings.values():
         if site.id == takeoff.id or site.elevation_m >= takeoff.elevation_m - rules.TOP_LANDING_MAX_DROP_M:
@@ -677,8 +656,8 @@ def select_landings(
             continue
         spot = spot_for(ctx, site)
         arrival = start + timedelta(minutes=plouf_minutes(takeoff.elevation_m - site.elevation_m))
-        gw = glide_wind_for(ctx, takeoff, site, start)
-        evals.append(evaluate_spot(ctx, takeoff, spot, level, wing, gw, arrival, policy))
+        path, _ = path_for(ctx, proj, takeoff.lat, takeoff.lon, site)
+        evals.append(evaluate_spot(ctx, takeoff, spot, level, wing, field, arrival, policy, t_origin=start, path=path))
     evals.sort(key=_rank)
     mains = [e for e in evals if e.can_be_main]
     main = mains[0] if mains else None
@@ -759,7 +738,8 @@ def _criteria_ok_at(ctx: DataContext, ev: LandingEval, level: str) -> bool:
     if fails:
         return False
     t = ev.takeoff
-    g = glide_to(ctx, t.lat, t.lon, t.elevation_m, ev.spot.site, level, ev.wing, ev.glide_wind, kind=ev.kind)
+    g = glide_to(ctx, t.lat, t.lon, t.elevation_m, ev.spot.site, level, ev.wing, ev.glide_source, kind=ev.kind,
+                 path=ev.path, t=ev.t_origin)  # fmt: skip
     return bool(g.margin_ok)
 
 
@@ -770,7 +750,7 @@ def candidates_for_plan(
     alternates: list[Site],
     level: str,
     wing: float,
-    glide_wind: tuple[float, float],
+    glide_wind,
     arrival: datetime,
     policy: str,
     lw_main: LandingWind | None,
@@ -778,13 +758,16 @@ def candidates_for_plan(
     alt_evals: list[LandingEval] | None = None,
     main_classic: bool = True,
     pair: bool = False,
+    t_origin: datetime | None = None,
+    main_path: list[tuple[float, float]] | None = None,
 ) -> list[LandingCandidate]:
-    """FlightPlan.landing_analysis : l'atterro du plan en premier (vent d'arrivée du plan), puis les secours retenus
-    (évalués depuis le point de la route d'où ils sont rejoints, `alt_evals`) et les autres candidats utilisables, par
-    score décroissant. Un terrain écarté (hors de portée, vent d'arrivée) n'est jamais publié comme secours."""
+    """FlightPlan.landing_analysis : l'atterro du plan en premier (vent d'arrivée du plan, même plané que le plan :
+    même heure de départ, même contournement), puis les secours retenus (évalués depuis le point de la route d'où ils
+    sont rejoints, `alt_evals`) et les autres candidats utilisables, par score décroissant. Un terrain écarté (hors de
+    portée, vent d'arrivée) n'est jamais publié comme secours."""
     main_ev = evaluate_spot(ctx, takeoff, spot_for(ctx, landing), level, wing, glide_wind, arrival, policy,
                             lw=lw_main if landing.id != takeoff.id else None, main_classic=main_classic,
-                            pair=pair)  # fmt: skip
+                            pair=pair, t_origin=t_origin, path=main_path)  # fmt: skip
     others: list[LandingEval] = []
     seen = {landing.id}
     if alt_evals is not None:
@@ -794,11 +777,14 @@ def candidates_for_plan(
             seen.add(e.spot.site.id)
             others.append(e)
     else:
+        proj = projector_for(ctx, takeoff)
         for s in alternates:
             if s.id in seen:
                 continue
             seen.add(s.id)
-            ev = evaluate_spot(ctx, takeoff, spot_for(ctx, s), level, wing, glide_wind, arrival, policy)
+            path, _ = path_for(ctx, proj, takeoff.lat, takeoff.lon, s)
+            ev = evaluate_spot(ctx, takeoff, spot_for(ctx, s), level, wing, glide_wind, arrival, policy,
+                               t_origin=t_origin, path=path)  # fmt: skip
             if ev.usable:
                 others.append(ev)
     for e in extra or []:
@@ -810,8 +796,14 @@ def candidates_for_plan(
     return [to_candidate(e) for e in [main_ev, *others][: rules.LANDING_MAX_IN_ANALYSIS]]
 
 
-def cone_finesse(level: str, wing: float, wind: tuple[float, float]):
-    """finesse(cap) pour le cône : finesse de calcul sol du niveau (k), vent compris."""
+def cone_finesse(level: str, wing: float, wind, t: datetime | None = None):
+    """finesse(cap) pour le cône de finesse (§14.1) : finesse de calcul sol du niveau (k), vent moyen du profil du
+    déco sur [alt_déco − 1000 m ; alt_déco], crédit du niveau sans bonus (champ de vent) ; vent uniforme sinon."""
+    if isinstance(wind, GlideField):
+        speed, direction = wind.cone_wind(t)
+        credit = wind.cone_credit(t)
+        k = rules.GLIDE_K[level]
+        return lambda brg: uniform_finesse(wing, level, k, speed, direction, brg, credit)
     return lambda brg: finesse_sol(wing, level, wind[0], wind[1], brg)
 
 
@@ -835,14 +827,13 @@ def analyze_free_takeoff(
             "exclu par ta politique d'atterrissage" if not e.policy_ok else "jamais proposé à ce niveau"
         )  # fmt: skip
         warnings.append(f"« {e.spot.site.name} » ({KIND_LABEL[e.kind]}) écarté : {why}.")
-    near = min(usable or sel.evals, key=lambda e: e.distance_km, default=None)
-    gw = glide_wind_for(ctx, takeoff, near.spot.site if near else takeoff, ctx.target_time)
+    gw = glide_field_for(ctx, takeoff, ctx.target_time)
     floor = min((e.spot.site.elevation_m for e in sel.evals), default=takeoff.elevation_m - 1000.0)
     # relief : MNT réel seulement (contrat) — comme terrain_clear() pour les candidats ; le MNT de démonstration,
     # lisse, coupait le cône dès le pied du déco alors que les candidats restaient atteignables
     real_terrain = ctx.terrain is not None and ctx.terrain_is_real
     ring = glide_cone(
-        takeoff.lat, takeoff.lon, takeoff.elevation_m, cone_finesse(level, wing, gw),
+        takeoff.lat, takeoff.lon, takeoff.elevation_m, cone_finesse(level, wing, gw, ctx.target_time),
         ctx.terrain_at if real_terrain else None, float(rules.LANDING_ARRIVAL_MARGIN_M[level]), floor,
     )  # fmt: skip
     return [to_candidate(e) for e in usable[: rules.LANDING_MAX_IN_ANALYSIS]], cone_geojson(ring), warnings

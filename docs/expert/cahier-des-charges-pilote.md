@@ -7,6 +7,7 @@
 > **Révision 2 (phase 2)** : finesse de calcul et marges recalibrées, facteur de rafale non bloquant, rotation mesurée au-dessus de la brise de pente, fenêtres orage, coucher, confiance relative à l'horizon. Validé par les scénarios chiffrés de `scenarios-validation.md`.
 > **Révision 3** : §12 — horizon 15 min, balises d'atterro et tendance sur 1 h, absence de balise d'atterro, décollage libre, atterros non officiels (`community` / `field`). Scénarios S28-S32.
 > **Révision 4** (revue finale 7.13) : contrôle du §2.3 corrigé (Forclaz → Doussard = 4,1 km, pas 3,4 km) et k « paire associée » = 0,80 pour le plané direct déco → atterro officiel associé par la source.
+> **Révision 5** (remarque pilote : « avec un vent du nord, Forclaz → Doussard passe aisément ») : **§14 — vent sur le plané et plané final**. Vent *rencontré* pendant la descente (par tranche d'altitude et par branche, contournements compris), composantes arrière et de travers, crédit partiel du vent arrière selon le niveau et la fiabilité, vent de face compté en entier (majoré par les rafales), polaire simplifiée et accélérateur par niveau, pénétration minimale, hauteur d'arrivée attendue et Risk `HIGH_ARRIVAL` (arrivée haute, non bloquant), zone de perte d'altitude **au vent** de l'atterro (corrige le §5.1). Bloc YAML §14.9. Scénarios S33-S41 (bloc `scenarios_phase3`).
 
 ---
 
@@ -131,6 +132,7 @@ required_ratio = distance_horizontale_m / hauteur_dispo
 margin_ok = required_ratio ≤ finesse_calcul_sol  ET  le profil de terrain ne coupe pas la ligne de plané (dégagement ≥ 50 m)
 ```
 - Exemple : polaire 8,5, intermediate → 6,0 ; vent de face 15 km/h → 6,0 × 22/37 = **3,6**. C'est réaliste : face à une brise de 15 km/h, on « ne va nulle part ».
+- **Révision 5** : la formule ci-dessus reste la forme « vent de face pur, vitesse bras hauts ». Le vent à prendre (`W_comp` = vent *rencontré* par tranche et par branche), la composante de travers, le crédit partiel du vent arrière, la majoration du vent de face par les rafales, la vitesse de vol (accélérateur) et la hauteur d'arrivée attendue sont définis au **§14**, qui prime.
 - **Paire associée (révision 4)** : pour le plané direct déco → atterro officiel **associé par la source** (FFVL, PGE, fixture ; jamais une association déduite par proximité), relief vérifié sur MNT réel, `k = 0,80` à tous les niveaux (`GLIDE_K_ASSOCIATED_PAIR`). Tous les autres planés (secours, points de la route, décollage libre) gardent le `k` du niveau.
 - Contrôle (révision 4) : Forclaz → Doussard (**4,1 km**, 800 m de dénivelé, marge 100 m) demande 5,9 ; avec la paire associée, 8,5 × 0,80 = **6,8** disponibles par vent calme → r = 0,87, GO pour un élève (plouf d'école) ; avec 10 km/h de face, 6,8 × 27/37 ≈ 5,0 → no-go. *(La révision 2 donnait 3,4 km et 4,9 : distance fausse, corrigée sur PGE pge:3046 et la balise Pioupiou 1720.)*
 - Sous-score finesse sur `r = required / available` : r ≤ 0,75 → 100 ; 0,90 → 60 ; 0,95 → 40 ; 1,0 → 0. `GLIDE_MARGIN` caution si r > 0,90, danger si r > 1.
@@ -258,8 +260,9 @@ Mapping contrat : `local` (+ `thermal_usage = "none"` pour le plouf), `ridge_soa
 
 ### 5.1 Plouf / descente (`local`, `thermal_usage: none`)
 - Conditions : vent déco dans les limites, aucun thermique requis. Meilleurs créneaux : matin (avant convection_start) ou restitution du soir.
-- Route : déco → éventuellement 1 point au-dessus d'une zone dégagée près de l'atterro pour perdre l'altitude → **zone d'approche (PTU) côté sous le vent de l'atterro** → atterro face au vent.
+- Route : déco → éventuellement 1 point au-dessus d'une zone dégagée près de l'atterro pour perdre l'altitude → PTU (branche vent arrière, **base sous le vent de l'atterro**, finale face au vent) → atterro face au vent.
 - Waypoints : `takeoff`, (`turnpoint` « zone de perte d'altitude » à 300-500 m de l'atterro, ≥ 200 m sol), `landing`.
+- **Révision 5** : la zone de perte d'altitude (ZPA) est **au vent de l'atterro et décalée sur le côté** (début de la branche vent arrière de la PTU en U), jamais sous le vent : placement chiffré au §14.4. Seules la base et la finale sont côté sous le vent.
 
 ### 5.2 Local thermique (`local`, `thermal_usage: optional|essential`)
 - Rester **en permanence dans le cône de finesse de l'atterro principal** (ou d'un atterro de secours explicite).
@@ -293,6 +296,7 @@ Mapping contrat : `local` (+ `thermal_usage = "none"` pour le plouf), `ridge_soa
 alt_securite(p) = min sur atterros a [ alt_a + marge_arrivée + dist(p,a) / finesse_calcul_sol(p→a) ]
 contrainte : alt_securite(p) ≤ plafond_utile(p) − 300 m
 ```
+- Révision 5 : `finesse_calcul_sol(p→a)` = finesse du §14 avec le vent rencontré entre l'altitude du point et l'atterro (profil modèle en altitude, brise d'atterro en bas).
 - Si violée → raccourcir la route ou insérer un atterro de secours **identifié** (officiel FFVL/ParaglidingEarth uniquement, jamais « un champ quelconque »).
 - Publier `alt_securite` par segment dans le briefing : c'est le **point de décision** (« sous 2100 m à la Tournette, retour vers Doussard »).
 
@@ -1025,3 +1029,317 @@ risk_levels:
 9. **Pondération balises/modèles décroissante avec l'horizon** (0,85 à 15 min, 0,7 à 30 min → 0 à 12 h) et confiance = base(horizon) × dispersion inter-modèles × cohérence balises ; mode mock affiché en clair.
 10. **La `difficulty` du plan = le plus petit niveau dont tous les seuils passent** (et ≥ difficulté du site / du type de vol) ; diversifier les résultats (≤ 2 plans par déco) et expliquer chaque `marginal`.
 11. **Nowcasting et hors-site (§12)** : balise d'atterro pondérée sur l'heure d'arrivée et tendance extrapolée (≤ 1 h, jamais à la baisse) ; absence de balise d'atterro = `NO_LANDING_BEACON` non bloquant, jamais un no-go ; décollage libre interdit à l'élève, atterros `community`/`field` filtrés par niveau, avec marges renforcées et avertissement « Non officiel » systématique.
+12. **Vent sur le plané (§14)** : vent *rencontré* (tranches d'altitude du plané, brise d'atterro en bas, par branche), travers `V_sol = √(Va² − w⊥²) + w∥`, vent arrière crédité de 50 à 100 % (plafonné 8 à 15 km/h), vent de face compté en entier et majoré par les rafales, accélérateur selon le niveau (jamais pour l'élève), pénétration minimale ; hauteur d'arrivée attendue (vent à 100 %) → `HIGH_ARRIVAL` non bloquant et zone de perte d'altitude au vent de l'atterro.
+
+---
+
+## 14. Vent sur le plané et paramètres du plané final
+
+> Révision 5, sur une remarque du pilote : « Avec un vent du nord, le vol Forclaz → Doussard passe aisément, il faut prendre en compte ce genre de paramètre. »
+> Constat : le moteur projetait **un seul** vent (moyenne déco / atterro) sur le cap direct, à la vitesse bras hauts, crédité à 100 % qu'il soit arrière ou de face, sans travers, sans tenir compte des contournements de zones interdites. Il n'estimait pas non plus la hauteur d'arrivée.
+> Ce paragraphe définit le vent à prendre, la part du vent arrière qu'on a le droit de compter, la vitesse de vol, la hauteur d'arrivée et les consignes d'arrivée haute. Il **remplace** `W_comp` et `V_air` du §2.3 ; `k` (niveau ou paire associée), la marge d'arrivée et le facteur `f` des atterros non officiels (§12.7) sont **inchangés**.
+> Champs du contrat (`FlightPlan.glide`, `LandingCandidate.wind_along_track_kmh`) : définitions exactes au §14.7. Nouveau code Risk : `HIGH_ARRIVAL` (§14.8). Bloc YAML : §14.9. Scénarios S33-S41 : `scenarios-validation.yaml`, bloc `scenarios_phase3`.
+
+### 14.1 Le vent à prendre : celui qu'on rencontre pendant la descente
+
+**Le plané évalué.** Il part d'un point P (le déco pour un plouf ; pour un vol local ou un cross, chaque point de contrôle de la route à son altitude de sécurité, §5.4) à l'altitude `z0`, et finit à l'entrée de l'approche, à `za = alt_atterro + marge d'arrivée` (marge du §2.3, ou hauteur mini du kind au §12.7). Le chemin suit les **branches réelles** de la route : contournement d'une zone interdite, d'un espace aérien ou d'un relief compris.
+
+**Vent par tranche d'altitude** (tranches de 50 m entre `za` et `z0`, à l'heure où le pilote les traverse) :
+
+| Tranche | Vent retenu |
+|---|---|
+| De `alt_atterro` à `alt_atterro + 300 m` (couche de brise) | Vent **retenu à l'atterro à l'heure d'arrivée** : modèle 10 m × facteur de brise (§4.3), fusion avec la balise d'atterro et tendance (§12.1-12.2). C'est la brise de vallée ou de lac qu'on traverse en fin de plané. |
+| Les 100 m sous le point de départ, quand c'est le déco | Vent **retenu au déco** (balise comprise, §12.1). |
+| Au-dessus de l'altitude du sol du profil modèle au point | Vent du **profil modèle** à cette altitude (`VerticalProfile.wind(z)`), au point de départ. |
+| Entre les deux (sous l'altitude du déco, au-dessus de la couche de brise) | Interpolation **linéaire en (u, v)** entre le vent de la couche de brise (à `alt_atterro + 300`) et le vent du déco (à `alt_déco − 100`). |
+
+- **Pondération par le temps passé** : à taux de chute constant, le temps passé dans une tranche est proportionnel à son épaisseur ; chaque tranche de 50 m pèse donc la même chose. Le vent **au-dessus** de `z0` n'est jamais pris : un plouf qui part de 1245 m ne rencontre pas le vent de 1550-3000 m (S37).
+- **Par branche** : la hauteur à perdre est répartie sur les branches au prorata de leur longueur (pente de plané constante). Pour chaque branche i, on fait la moyenne vectorielle des tranches qu'elle traverse, puis on la projette sur le cap de la branche : `w∥,i` (positif = arrière) et `w⊥,i` (travers, en valeur absolue).
+- **Vitesse sol avec du travers** (le pilote crabe pour tenir sa route) :
+
+  `V_sol,i = √(V² − w⊥,i²) + w∥,i_retenu`   (si `V ≤ w⊥,i` : branche infranchissable)
+
+  Le travers coûte toujours : 15 km/h de travers à 37 km/h = −8,6 % de vitesse sol (crabe 24°) ; 20 km/h = −16 % (33°) ; 25 km/h = −26 % (43°).
+- **Finesse sol de la branche** : `f_i = wing × k × ρ(V) × V_sol,i / V` (polaire `ρ` et vitesse V au §14.3 ; `k` du niveau ou de la paire associée ; × `f` du kind pour un atterro non officiel).
+- **Finesse du plané** : les hauteurs perdues s'additionnent, donc `f_plané = L / Σ (L_i / f_i)` (moyenne harmonique pondérée par les longueurs). `available_ratio = f_plané`, `required_ratio = L / (z0 − za)` avec L = longueur réelle du chemin.
+- Simplification admise (v1) : une seule moyenne vectorielle sur toute la tranche, projetée branche par branche. L'écart avec le calcul par branche reste de l'ordre de 2 % au plus sur les planés de moins de 5 km (vérifié sur S33, S34, S35 et S40). Le seuil de vent faible (< 5 km/h, pas de crédit) s'applique au vent moyen de chaque branche.
+- **Partout où l'on calcule une finesse sol** : plané déco → atterro, secours, points de route (§5.4), décision « hors de portée » des secours (revue 7.1), candidats de l'analyse des atterrissages (§12.7), cône de finesse. Pour le cône (pas d'atterro désigné) : vent moyen du profil du déco sur la tranche [alt_déco − 1000 m ; alt_déco], crédit du niveau sans bonus.
+
+**Contrôle sur Forclaz → Doussard** (déco 45,815 N ; 6,2465 E ; 1245 m → atterro 45,782 N ; 6,2224 E ; 452 m, cap 207°, 4,12 km). Déco NNO 13 km/h, Doussard N 10 km/h × 1,3 = 13 km/h vers 14 h 15 : vent moyen rencontré ≈ 13 km/h du 354°, soit **11 km/h dans le dos et 7 km/h de travers** (crabe 11°). Le N de 15-20 km/h prévu à 1550-3000 m n'intervient pas : le plouf ne monte pas jusque-là.
+
+### 14.2 Combien de vent arrière on a le droit de compter
+
+Le vent de face et le travers se paient toujours, en entier. Le vent arrière n'est qu'**espéré** : sa force et sa direction varient pendant le plané, la brise peut tomber ou basculer, et l'erreur des modèles près du sol vaut souvent 5 km/h. On ne crédite donc qu'une **part** de la composante arrière, selon le niveau et la fiabilité de la prévision.
+
+`w∥_retenu = min(c × w∥ ; plafond(niveau))` si `w∥ > 0` ; `w∥_retenu = w∥ × g` si `w∥ < 0` (vent de face).
+
+**Fraction créditée `c`** = base(niveau) + bonus − malus, bornée à [0 ; 1] :
+
+| Élément | beginner | intermediate | advanced | expert |
+|---|---|---|---|---|
+| **Base** (modèle seul, horizon ≤ 12 h, confiance correcte) | 0,50 | 0,60 | 0,70 | 0,70 |
+| **Plafond** du vent arrière crédité | 8 km/h | 10 km/h | 12 km/h | 15 km/h |
+| Bonus « balise confirme » : balise représentative (atterro, ou déco pour la tranche haute), horizon ≤ 2 h, direction à moins de 45° du vent retenu et vitesse ≥ 70 % du modèle | + 0,20 | + 0,20 | + 0,20 | + 0,20 |
+| Bonus « brise établie » : atterro en grande vallée ou au bord d'un lac (`big_valley`), arrivée entre 13 h et 17 h légales (plage du facteur × 1,3), vent d'atterro ≥ 8 km/h dont la composante sur le cap déco → atterro est arrière (≥ 5 km/h). Exemple type : brise de lac de N à Doussard l'après-midi | + 0,20 | + 0,20 | + 0,20 | + 0,20 |
+| Malus horizon | 24 h : − 0,10 · 48 h : − 0,20 | idem | idem | idem |
+| Malus rafales : rafale / moyenne > 1,5 au déco ou à l'atterro (vent ≥ 10 km/h) | − 0,10 | − 0,10 | − 0,10 | − 0,10 |
+| Malus bascule du soir : grande vallée, arrivée entre coucher − 1 h 30 et coucher + 1 h (la brise de lac tombe, la brise descendante peut s'installer) | − 0,20 | − 0,20 | − 0,20 | − 0,20 |
+| **Crédit nul (`c = 0`)** | vent moyen rencontré < 5 km/h ; confiance < 0,75 × base de l'horizon (`LOW_CONFIDENCE`) ; dispersion des modèles en direction > 45° ; `BEACON_MISMATCH` ou `WIND_SHIFT` actif | idem | idem | idem |
+
+- Fourchette obtenue : 50 % (élève, modèle seul) à 100 % (balise + brise établie à court terme), toujours sous le plafond. Exemples Forclaz → Doussard par N : élève l'après-midi 0,50 + 0,20 = **0,70** ; brevet de pilote 0,60 + 0,20 = **0,80** ; le même à 48 h **0,60** (S41) ; expert 0,90, plafonné à 15 km/h (S36b).
+- **Pourquoi un plafond** : un plané qui ne passe qu'avec plus de 10 km/h de vent dans le dos ne doit pas être proposé à un brevet de pilote ; si le vent tombe en route, il n'a plus de solution.
+- **Vent de face** : compté en entier et **majoré par les rafales** : `g = min(1,2 ; 1 + 0,5 × (rafale/moyenne − 1))`, avec le plus fort rapport rafale / moyenne du déco et de l'atterro (vent ≥ 10 km/h, sinon `g = 1`). Exemple : 15 km/h, rafales 22 → g = 1,2 → on compte 18 km/h de face.
+- **Travers** : jamais crédité, toujours compté en entier (§14.1).
+- **Pénétration minimale** : sur chaque branche, `V_sol` à la vitesse retenue doit atteindre **15 km/h** (beginner, intermediate), **12 km/h** (advanced), **10 km/h** (expert). Sinon : `GLIDE_MARGIN` danger, « pénétration insuffisante : tu avancerais à moins de 15 km/h sol ». En dessous, un renforcement de 5 km/h de la brise suffit à ne plus arriver.
+
+### 14.3 Vitesse de vol : polaire simplifiée et accélérateur
+
+**Polaire simplifiée** (catégorie déduite de `wing_glide_ratio`). La finesse varie linéairement entre trois points : bras hauts, demi-barreau et accélérateur à fond. `ρ(V)` = finesse(V) / finesse bras hauts. Le taux de chute vaut `V / 3,6 / (wing × ρ)`. Les valeurs données entre parenthèses correspondent à une aile typique de la catégorie.
+
+| Catégorie | `wing_glide_ratio` | V bras hauts | Chute bras hauts | V demi-barreau · `ρ` | Chute demi-barreau | V max accélérée · `ρ` | Chute à fond |
+|---|---|---|---|---|---|---|---|
+| EN-A (école) | < 8,5 | 36 km/h | 1,25 m/s (finesse 8,0) | 41 km/h · 0,92 | 1,55 m/s | 46 km/h · 0,78 | 2,05 m/s |
+| EN-B | 8,5-9,4 | 37 km/h | 1,14 m/s (9,0) ; 1,21 m/s à 8,5 | 44 km/h · 0,90 | 1,51 m/s (1,60 à 8,5) | 51 km/h · 0,74 | 2,13 m/s (2,25 à 8,5) |
+| EN-C | 9,5-10,4 | 39 km/h | 1,08 m/s (10,0) | 48 km/h · 0,88 | 1,52 m/s | 57 km/h · 0,70 | 2,26 m/s |
+| EN-D | ≥ 10,5 | 40 km/h | 1,01 m/s (11,0) | 51 km/h · 0,86 | 1,50 m/s | 62 km/h · 0,66 | 2,37 m/s |
+
+Les vitesses bras hauts EN-B (37) et EN-C (39) sont celles de `rules.py` : les scénarios existants ne bougent pas. Une valeur de `wing_glide_ratio` sous 8,5 désigne une aile école (EN-A).
+
+**Choix de la vitesse** (par branche) : on retient la vitesse `V ∈ [V_bras_hauts ; V_max(niveau)]`, au pas de 0,5 km/h, qui **maximise la finesse sol** `ρ(V) × V_sol(V) / V`. C'est la « vitesse de finesse max sol » du pilote : bras hauts par vent nul ou arrière (on ne compte jamais le freinage), et l'on accélère quand le vent de face devient fort.
+
+| Usage de l'accélérateur | beginner | intermediate | advanced | expert |
+|---|---|---|---|---|
+| Course comptée dans le calcul | **aucune** (bras hauts) | demi-barreau | à fond | à fond |
+| Conditions (sinon bras hauts) | — | air calme ou rafales ≤ 8 km/h au-dessus de la moyenne, déco et atterro | rafales ≤ 12 km/h au-dessus de la moyenne | rafales ≤ 15 km/h au-dessus de la moyenne |
+| Consigne du briefing | « Pas d'accélérateur : bras hauts, mains aux freins. » | « Face au vent : demi-barreau en ligne droite, loin du relief ; relâche-le sous 150 m sol et dans la PTU. » | idem, à fond si nécessaire | idem |
+
+- Élève : à ce stade, l'accélérateur n'est pas acquis, ou seulement découvert en air calme sous la conduite du moniteur ; une fermeture frontale accélérée près du relief ou dans la brise est l'accident type. On ne le compte donc jamais, même si l'élève en a un.
+- Le calcul ne compte jamais d'accélérateur dans la tranche de brise turbulente quand les rafales dépassent ces écarts ; l'accélérateur se relâche toujours sous 150 m sol et dans la PTU.
+
+**Ce que rapporte l'accélérateur** (aile EN-B 8,5, k paire 0,80 → 6,8 en air calme ; vent de face pur, sans rafales) :
+
+| Vent de face | Bras hauts : finesse sol (V sol) | Meilleure vitesse | Finesse sol (V sol) | Gain |
+|---|---|---|---|---|
+| 0-10 km/h | 6,8 → 5,0 | bras hauts | idem | 0 |
+| 15 km/h | 4,0 (22 km/h) | 40 km/h | 4,1 (25 km/h) | + 1 % |
+| 20 km/h | 3,1 (17 km/h) | 44 km/h (demi-barreau) | 3,3 (24 km/h) | + 7 % |
+| 25 km/h | 2,2 (12 km/h : pénétration insuffisante) | 44-46 km/h | 2,6 (19-21 km/h) | + 20 % |
+| 30 km/h | 1,3 (7 km/h) | 50 km/h | 2,1 (20 km/h) | + 60 % |
+
+Une polaire de parapente est plate autour de la vitesse bras hauts. Jusqu'à 15 km/h de face, accélérer ne gagne presque rien en finesse. Au-delà de 20 km/h, le gain devient net. Mais le vrai bénéfice est la **pénétration** : on gagne 7 à 14 km/h de vitesse sol, on ne recule pas, on sort plus vite d'une dégueulante et on arrive avant que la brise forcisse. Par vent de travers, accélérer ne rapporte rien en finesse (le crabe diminue, la chute augmente plus vite) : c'est la vitesse bras hauts qui est retenue.
+
+### 14.4 Arrivée haute avec vent arrière
+
+**Hauteur d'arrivée attendue** (`expected_arrival_height_m`) : c'est l'estimation **réaliste**, pas la valeur prudente. On reprend les mêmes branches et les mêmes vitesses, avec le vent prévu compté **à 100 %** (sans crédit ni majoration par les rafales) et une finesse `wing × 0,90 × ρ(V)` (rendement réel moyen, sans le `k` de sécurité) :
+
+`H_arr = z0 − alt_atterro − Σ L_i / f_attendue,i`
+
+Exemple Forclaz → Doussard : air calme ≈ 255 m au-dessus de Doussard ; N 13 km/h (11 dans le dos) ≈ 370 m (S33) ; N 24 km/h ≈ 430 m (S36b).
+
+**Risk `HIGH_ARRIVAL` (« Arrivée haute »)**, seulement si le vent sur le plané est arrière (`wind_along_track_kmh ≥ 5`). Il n'est **jamais bloquant** : il donne une consigne, il ne retire rien au verdict.
+
+| `H_arr` au-dessus de l'atterro | beginner | intermediate | advanced | expert |
+|---|---|---|---|---|
+| ≥ 300 m | info | info | info | info |
+| ≥ 500 m | caution (non bloquante) | caution (non bloquante) | info | info |
+| ≥ 700 m | caution (non bloquante) | caution (non bloquante) | caution (non bloquante) | caution (non bloquante) |
+
+Pour un vol local ou un cross, `HIGH_ARRIVAL` s'évalue sur le plané direct déco → atterro principal (le « plouf de référence »).
+
+**Consignes d'arrivée** (Risk `HIGH_ARRIVAL` et bloc Atterrissage du briefing) :
+1. **Perdre l'altitude au vent de l'atterro, décalé sur le côté**, au-dessus d'une zone dégagée : la dérive te ramène vers l'atterro. Jamais derrière l'atterro (sous le vent) : avec la brise de face, tu ne reviendrais pas.
+2. **En 8 face au vent** : virages de 180° alternés, toujours face au vent, sans dériver. Élève : pas de 360 du tout ; autres niveaux : pas de 360 sous 150 m sol. Les oreilles, si elles sont acquises, se font au-dessus de la ZPA et se relâchent avant 150 m sol.
+3. **Entrer dans la PTU** vers 150 m sol (beginner, intermediate), 100-120 m (advanced, expert) : branche vent arrière parallèle à la finale, décalée de 100-150 m ; base **sous le vent** de l'atterro ; **finale face au vent d'arrivée**. Le côté de la PTU est celui que fixe le site (panneau, consignes). À défaut, c'est le côté opposé aux obstacles.
+4. **Sens d'approche selon le vent à l'atterro** : la finale se fait face à la direction d'où vient le vent retenu à l'heure d'arrivée (par N à Doussard : finale vers le N). Sous 5 km/h, la finale suit l'axe long du terrain, dans le sens imposé par le site.
+5. **Gradient** : à partir de 15 km/h à l'atterro, garde de la vitesse en finale (bras hauts) : la voile perd de la vitesse en entrant dans le vent plus faible près du sol.
+
+**Placement de la ZPA** (`turnpoint` « Zone de perte d'altitude », corrige le §5.1 et le placement actuel « côté sous le vent ») :
+- à 300-500 m de l'atterro, à 200 m sol au moins ;
+- relèvement atterro → ZPA = direction **d'où vient** le vent d'arrivée ± 45°, du côté d'où arrive le pilote ;
+- si ce secteur est interdit (zone où le vol libre est interdit, avec la marge de 150 m) ou encombré, la ZPA passe en **travers** (± 90°) ; elle ne dépasse **jamais** 90°, donc n'est jamais sous le vent ;
+- vent d'arrivée sous 5 km/h : ZPA du côté d'où arrive le pilote (comme avant).
+
+À Doussard par N, le secteur au vent est la réserve du Bout du Lac, où le vol libre est interdit : la ZPA se place à l'E ou à l'O de l'atterro.
+
+Détail type du Risk : « Arrivée haute à Doussard : environ 370 m au-dessus de l'atterro avec le vent du N dans le dos (11 km/h). Perds l'altitude au vent de l'atterro et décalé sur le côté (zone de perte d'altitude hors de la réserve du Bout du Lac), en 8 face au vent, jamais derrière l'atterro : tu ne reviendrais pas contre la brise. Pas de 360 sous 150 m sol. Entre dans la PTU vers 150 m sol, finale face au N. »
+
+### 14.5 Les autres paramètres du plané final, par priorité
+
+Un moniteur intègre au plané final plus que la composante du vent. Les paramètres ci-dessous sont classés par priorité :
+- **P1** : à implémenter avec le §14 (révision 5) ;
+- **P2** : prochaine itération ;
+- **P3** : plus tard, ou texte seulement.
+
+Les facteurs s'appliquent à la finesse de la **branche** concernée.
+
+| # | Paramètre | Règle chiffrée | Priorité / données |
+|---|---|---|---|
+| 1 | Vent rencontré, travers, crédit, majoration par les rafales, accélérateur, pénétration | §14.1-14.3 | **P1** |
+| 2 | Arrivée haute, ZPA au vent, sens d'approche | §14.4 | **P1** |
+| 3 | Bascule de la brise du soir (la brise de lac ou de vallée tombe, la brise descendante s'installe) | Malus de crédit − 0,20 (§14.2). La brise descendante prévue par le modèle se compte en entier comme vent de face (à Doussard le soir : brise d'E-SE depuis Faverges, de travers ou de face sur le plané depuis la Forclaz) | **P1** |
+| 4 | Dégueulante sous le vent d'un relief sur la route | Branche à moins de 10 × H en aval d'un relief de hauteur H, avec un vent au sommet ≥ 10 km/h : finesse × 0,90 (10-20 km/h), × 0,80 (> 20 km/h). Branche dans la zone de rotor du §4.5 (5 à 10 × H, sous crête + 50 % H, vent ≥ 15 km/h) : no-go `ROTOR`. Remplace le − 10 % forfaitaire du §2.3 | **P1** si MNT réel ; sinon reste dans `UNCHECKED` |
+| 5 | Rafales et turbulence à l'arrivée | Majoration du vent de face par g (§14.2), pas d'accélérateur compté au-delà des écarts du §14.3 ; seuils `LANDING_WIND` inchangés | **P1** (fait par 1) |
+| 6 | Gradient près du sol | Aucun effet sur la finesse ; consigne de finale (§14.4, point 5) dès 15 km/h | **P1** (texte) |
+| 7 | Air au-dessus du lac l'après-midi (subsidence de la brise de lac) | Branche au-dessus de l'eau entre 12 h et 18 h légales : finesse × 0,95 | **P2** (polygones des lacs) |
+| 8 | Convergence (brise de lac ou de vallée contre un vent météo opposé ≥ 10 km/h) sur la ligne de plané | Finesse × 0,95 sur la branche qui la traverse ; turbulence → caution pour beginner et intermediate (§4.3) | **P2** |
+| 9 | Descendances entre les thermiques (plané final en pleine convection) | Vario moyen ≥ 2,5 m/s pendant le plané : finesse × 0,90 au-dessus de 300 m sol | **P2** (le `k` en couvre une partie) |
+| 10 | Turbulence de sillage des obstacles de l'atterro (haies, bois, bâtiments) | Zone turbulente sur 5 à 10 × h sous le vent de l'obstacle dès 15 km/h ; la finale passe au vent de cette zone (déjà au §12.7 pour les terrains non officiels) ; texte pour les atterros officiels | **P2** (texte) |
+| 11 | Ascendance dynamique le long d'une crête au vent sur la route | **Jamais créditée** dans la sécurité du plané ; mentionnée dans le briefing comme option (« la crête de X porte par N : possibilité de remonter, pas un dû ») | **P3** (texte) |
+| 12 | Densité de l'air (altitude, température) et charge alaire | Vitesse air vraie + 1,5 % par 300 m ; effet sur la finesse sol < 3 % en vent faible : ignoré | **P3** |
+
+### 14.6 Le cas Forclaz → Doussard
+
+**Le déco.** Col de la Forclaz de Montmin. D'après la fixture et PGE (pge:3046, ≈ 45,814 N ; 6,247 E ; 1245-1265 m), le déco regarde le lac, à l'O-NO. PGE ne note l'O que « possible ».
+**Je n'ai pas de relevé terrain de l'azimut exact de la pente** (je l'estime entre 290 et 300°). Je garde donc la valeur prudente actuelle, `orientations: [W, WNW, NW]` (axe 292,5°), **sans ajouter le N ni le NNO**. Les règles de décollage du §2 ne changent pas.
+
+| Vent au déco | Écart au secteur le plus proche (NW) | beginner | intermediate | advanced | expert |
+|---|---|---|---|---|---|
+| NNO (337,5°) | 22,5° − 11,25° = 11,25° : léger travers (composante 0,2 × vent) | OK jusqu'à 15 km/h | OK jusqu'à 20 | OK jusqu'à 25 | OK jusqu'à 30 |
+| N (360°) | 33,75° : travers par la droite | **no-go** (> 30°) | OK si travers ≤ 10 km/h, soit N ≤ 17 km/h | N ≤ 23 km/h | N ≤ 28 km/h |
+| NNE (22,5°) | 56,25° | no-go | no-go (> 45°) | marginal (94 % de 60°) | OK si N ≤ 19 km/h |
+| NE, bise (45°) | 78,75° | no-go | no-go | no-go | no-go (> 75°) |
+
+- **Bise (NE à NNE)** : en plus du travers, le col est sous le vent de la Tournette (2351 m, ≈ 3,7 km au NE du déco, 1100 m plus haut). Le déco est donc dans la zone de rotor du §4.5 (5 à 10 × H) dès 15 km/h au niveau des crêtes. La règle `LEE_SIDE` (> 120° de l'axe) ne la voit pas : la bise est à 112° de l'axe. C'est la règle `ROTOR` sur MNT réel qui doit la voir, pas une modification de la règle de décollage. Tant que `ROTOR` n'est pas vérifié au déco, le travers > 75° suffit à refuser la bise de NE. Pour la NNE, je ne suis pas sûr de l'abri réel du déco (rotor de la Tournette ou non) : seul l'expert peut décoller (travers ≤ 19 km/h), et je demande, par prudence, que le Risk `UNCHECKED` cite « rotor possible de la Tournette par NNE à NE » dès 15 km/h au niveau des crêtes, sans no-go automatique tant que ce n'est pas vérifié sur le terrain ou sur MNT réel.
+- **Le vol S02 « par vent du N »** de l'orchestrateur (élève, NNO 12 km/h au déco, N 15-20 km/h de 1550 à 3000 m) reste **MARGINAL, et c'est juste** :
+  - 12 km/h, c'est 80 % du seuil élève de 15 km/h (`TAKEOFF_WIND` caution) ;
+  - 15 km/h à 1550 m, c'est ≈ 100 % du seuil élève à cette altitude (`STRONG_WIND_ALOFT`) ;
+  - le plané n'y est pour rien.
+  
+  Avec le §14, sa finesse disponible vaut 7,5 au lieu de 6,8 sans vent (crédit 50 %, pas de bonus de brise à 19 h 30 ; le moteur actuel donnait 8,4 en comptant 100 % du vent), soit r = 0,79, et l'arrivée est attendue vers 350 m.
+- **Le chiffre attendu de l'orchestrateur (≈ 9,5-10)** est la finesse *attendue* avec 100 % d'un vent arrière de 15 km/h. Il ne vaut pas pour le calcul de sécurité :
+  - le vent réellement rencontré par un plouf qui part de 1245 m est de 9 à 11 km/h dans le dos, pas 15 ;
+  - le crédit est partiel.
+  
+  La finesse attendue sert à la hauteur d'arrivée et au commentaire (« finesse attendue ≈ 9,5 »).
+- **Contournement de la réserve du Bout du Lac.** La réserve (Biodiv'Sports : « Parapente et autres sports aériens interdits ») est à environ 340 m au N de l'atterro. Le contournement par l'E et le S de la réserve allonge le plané de 4,12 à 4,38 km : finesse requise 6,33 au lieu de 5,94.
+  - **Par calme strict**, on a r ≈ 0,93 : `GLIDE_MARGIN` caution, MARGINAL pour l'élève (S35). Je confirme ce verdict prudent. Il n'y a aucune réserve de calcul, alors que la hauteur d'arrivée réaliste reste correcte (≈ 240 m). C'est un vol d'école faisable, mais à surveiller : départ bras hauts, sans virage, cap direct vers le coin SE de la réserve.
+  - **Par vent du N**, le plané **passe aisément** : élève avec N 9 km/h l'après-midi, finesse 7,7, r = 0,82, GO (S34).
+
+| Forclaz → Doussard (4,12 km ; 4,38 avec contournement) | Requise | Disponible (avant → §14) | r | Arrivée attendue | Verdict du plané |
+|---|---|---|---|---|---|
+| Calme strict, avec contournement, élève (S35) | 6,33 | 7,00 → 6,78 | 0,93 | ≈ 240 m | caution (MARGINAL) |
+| N 9 km/h, après-midi, avec contournement, élève (S34) | 6,33 | 8,07 → 7,70 | 0,82 | ≈ 310 m | GO |
+| NNO 13 / N 13 (brise), brevet de pilote, 12 h (S33) | 5,94 | 8,51 → 8,26 | 0,72 | ≈ 370 m (`HIGH_ARRIVAL` info) | GO |
+| Idem à 48 h (S41) | 5,94 | 8,51 → 7,86 | 0,76 | ≈ 370 m | GO |
+| N 24 km/h, expert (S36b) ; brevet : no-go déco / atterro (S36) | 5,78 | 9,99 → 9,11 (plafond 15 km/h) | 0,63 | ≈ 430 m | GO (verdict MARGINAL : vent au déco) |
+| S 16-22 km/h au-dessus de 1550 m seulement, brevet confirmé (S37) | 5,94 | 6,89 → 6,93 | 0,86 | ≈ 270 m | GO |
+| S jusqu'à Doussard (16 × 1,3 = 21 km/h), brevet confirmé (S38) | 5,94 | 5,2 → 4,1 | 1,45 | sous l'atterro | **no-go** `GLIDE_MARGIN` |
+
+### 14.7 Contrat : champs `glide` et textes
+
+| Champ | Définition |
+|---|---|
+| `required_ratio` | `L / (z0 − za)`, avec L = longueur réelle du chemin (contournements compris). |
+| `available_ratio` | `f_plané` du §14.1 : crédit du §14.2, vitesse du §14.3, × `f` du kind. |
+| `calm_available_ratio` | `wing × k × f` : même k, même f, vent nul, bras hauts. |
+| `wind_along_track_kmh` | Composante **brute** (100 %) du vent rencontré sur le chemin, moyenne des `w∥,i` pondérée par les longueurs. + = arrière. |
+| `wind_credit_kmh` | Composante **retenue** dans `available_ratio`, moyenne pondérée par les longueurs. Arrière : `c × w∥` plafonné, donc ≤ `wind_along_track_kmh`. Face : `w∥ × g`, donc ≤ `wind_along_track_kmh` (plus négatif). Vent faible : 0. |
+| `expected_arrival_height_m` | `H_arr` du §14.4 sur le même plané que `required_ratio`. `null` en top landing. |
+| `comment` | Une ou deux phrases en français, selon la composante dominante (gabarits ci-dessous). |
+| `LandingCandidate.wind_along_track_kmh` | Même calcul que `wind_along_track_kmh`, sur le plané déco → candidat. |
+
+Le `glide` publié est le pire cas du lot 6.11 : déco → atterro principal, ou point de route → meilleur atterro. Tous ses champs décrivent **ce même** plané.
+
+**Gabarits de `comment`** (mots imposés en gras : les scénarios les cherchent) :
+- Arrière (`w∥ ≥ 5`) : « Vent du N ≈ 13 km/h sur le plané : 11 km/h **dans le dos** (8,6 comptés), 7 **de travers**. Finesse de calcul 8,3 au lieu de 6,8 sans vent ; finesse attendue ≈ 9,7. **Arrivée haute** à Doussard (≈ 370 m) : perds l'altitude au vent de l'atterro. » La dernière phrase seulement si `HIGH_ARRIVAL`.
+- Face (`w∥ ≤ −5`) : « Vent du SO ≈ 17 km/h **de face** sur le plané (19 comptés avec les rafales) : finesse de calcul 3,5 au lieu de 6,8 sans vent. **Accélère** (demi-barreau, ≈ 44 km/h) : vitesse sol ≈ 25 km/h. » Si l'accélérateur n'est pas compté : « Élève : pas d'accélérateur, bras hauts. » ou « Rafales : pas d'accélérateur compté. »
+- Travers dominant (`|w∥| < 5` et `w⊥ ≥ 10`) : « Vent **de travers** du SSE ≈ 21 km/h sur le plané : en crabe (≈ 35°), tu perds 6 km/h de vitesse sol ; finesse de calcul 5,6 au lieu de 6,8. »
+- Vent faible (vent moyen < 5 km/h) : « Vent faible sur le plané : finesse de calcul 6,8 (air calme), arrivée attendue ≈ 250 m au-dessus de Doussard. »
+- Avec un contournement, ajouter : « Plané allongé à 4,4 km pour contourner la réserve du Bout du Lac. »
+
+**Rejet `GLIDE_MARGIN`** (le plané ne passe pas). La raison nomme le vent et l'accélérateur, par exemple :
+« [GLIDE_MARGIN] Finesse requise 5,9 vers Doussard pour 4,1 disponible : vent du S ≈ 13 km/h **de face** sur le plané (15 avec les rafales), accélérateur compris. »
+Pour une pénétration insuffisante : « … : pénétration insuffisante (vitesse sol 12 km/h, minimum 15 à ton niveau). »
+
+**Briefing** :
+- Bloc Itinéraire : le `comment`.
+- Bloc Atterrissage : les consignes du §14.4 si `HIGH_ARRIVAL`. Dans tous les cas : sens de la finale, côté de la PTU, et position de la ZPA (« au vent de l'atterro, à l'E de Doussard »).
+
+### 14.8 Codes Risk
+
+| Code | Quand | Niveau | Titre |
+|---|---|---|---|
+| `HIGH_ARRIVAL` (nouveau) | Vent arrière sur le plané (≥ 5 km/h) et hauteur d'arrivée attendue ≥ 300 m | info ; caution **non bloquante** au-delà de 500 m (beginner, intermediate) ou 700 m (advanced, expert) | « Arrivée haute » |
+| `GLIDE_MARGIN` (existant) | Inchangé, à partir de la nouvelle `available_ratio` ; danger aussi en cas de pénétration insuffisante (§14.2) | caution si r > 0,90 ; danger si r > 1 ou pénétration insuffisante | « Marge de finesse » / « Hors de portée » |
+
+`HIGH_ARRIVAL` rejoint `NON_BLOCKING_CAUTIONS`, avec `NO_LANDING_BEACON`, `MOCK_DATA`, `ALTITUDE_LIMIT` et `ACCESS_TIME`.
+
+### 14.9 Valeurs pour `rules.py`
+
+```yaml
+# --- §14 vent sur le plané et plané final (révision 5) -----------------------------------------------
+glide_wind:
+  slice_m: 50                         # tranches d'altitude entre za = alt_atterro + marge et z0 ; poids = épaisseur
+  breeze_layer_agl_m: 300             # sous alt_atterro + 300 m : vent retenu à l'atterro À L'HEURE D'ARRIVÉE (brise, balise, tendance)
+  takeoff_layer_m: 100                # 100 m sous le déco (départ = déco) : vent retenu au déco (balise comprise)
+  between: linear_uv                  # sous l'altitude du déco : interpolation (u, v) brise ↔ déco ; au-dessus : profil modèle au point
+  per_branch: true                    # hauteur répartie sur les branches au prorata des longueurs (contournements compris)
+  single_mean_allowed_below_km: 5     # v1 : une moyenne vectorielle unique, projetée branche par branche, admise sous 5 km
+  calm_kmh: 5                         # vent moyen rencontré < 5 km/h : aucun crédit de vent arrière (la face reste comptée)
+  cone_layer_m: 1000                  # cône de finesse : vent moyen du profil du déco sur [alt_déco − 1000 ; alt_déco]
+glide_tail_credit:
+  base: {beginner: 0.50, intermediate: 0.60, advanced: 0.70, expert: 0.70}
+  cap_kmh: {beginner: 8, intermediate: 10, advanced: 12, expert: 15}
+  bonus:
+    beacon_confirms: 0.20             # balise représentative, horizon ≤ 2h, Δdir ≤ 45°, vitesse ≥ 70 % du modèle
+    beacon_confirms_max_dir_deg: 45
+    beacon_confirms_min_speed_ratio: 0.7
+    established_breeze: 0.20          # big_valley, arrivée 13-17 h légales, vent d'atterro ≥ 8 km/h, composante arrière ≥ 5 km/h sur le cap déco → atterro
+    established_breeze_min_kmh: 8
+    established_breeze_min_tail_kmh: 5
+  malus:
+    horizon: {"24h": 0.10, "48h": 0.20}
+    gust_factor: {over: 1.5, min_wind_kmh: 10, malus: 0.10}
+    evening_transition: {from_sunset_min: -90, to_sunset_min: 60, big_valley_only: true, malus: 0.20}
+  zero_if: [mean_wind_below_calm, low_confidence, model_dir_sigma_over_45, BEACON_MISMATCH, WIND_SHIFT]
+  bounds: [0.0, 1.0]
+glide_headwind_gust:                  # w_face × g, g = min(max, 1 + factor × (rafale/moyenne − 1)), plus fort rapport déco / atterro
+  factor: 0.5
+  max: 1.2
+  min_wind_kmh: 10
+glide_penetration_min_kmh: {beginner: 15, intermediate: 15, advanced: 12, expert: 10}   # V_sol par branche ; sinon GLIDE_MARGIN danger
+wing_polar:                           # finesse(V) = wing × rho(V), rho linéaire par morceaux ; catégorie selon wing_glide_ratio
+  A: {below_ratio: 8.5,  trim_kmh: 36, half_bar_kmh: 41, rho_half: 0.92, full_bar_kmh: 46, rho_full: 0.78}
+  B: {below_ratio: 9.5,  trim_kmh: 37, half_bar_kmh: 44, rho_half: 0.90, full_bar_kmh: 51, rho_full: 0.74}
+  C: {below_ratio: 10.5, trim_kmh: 39, half_bar_kmh: 48, rho_half: 0.88, full_bar_kmh: 57, rho_full: 0.70}
+  D: {below_ratio: 99,   trim_kmh: 40, half_bar_kmh: 51, rho_half: 0.86, full_bar_kmh: 62, rho_full: 0.66}
+speed_bar_max_fraction: {beginner: 0.0, intermediate: 0.5, advanced: 1.0, expert: 1.0}   # 0,5 = demi-barreau
+speed_bar_max_gust_spread_kmh: {beginner: 0, intermediate: 8, advanced: 12, expert: 15}   # rafale − moyenne au déco ou à l'atterro au-delà : bras hauts
+speed_search_step_kmh: 0.5            # V ∈ [trim ; V_max(niveau)] qui maximise rho(V) × V_sol(V) / V ; jamais sous trim (pas de freinage compté)
+speed_bar_release_agl_m: 150          # consigne : relâcher sous 150 m sol et dans la PTU
+expected_arrival:
+  efficiency: 0.90                    # finesse attendue = wing × 0,90 × rho(V), vent prévu à 100 %, sans majoration de rafale
+high_arrival:
+  min_tail_kmh: 5
+  info_m: 300
+  caution_m: {beginner: 500, intermediate: 500, advanced: 700, expert: 700}
+  blocking: false                     # à ajouter à NON_BLOCKING_CAUTIONS
+  reference_glide: takeoff_to_main_landing
+lose_height_zone:                     # ZPA, corrige le §5.1 : AU VENT de l'atterro, décalée
+  distance_m: [300, 500]
+  min_agl_m: 200
+  upwind_sector_deg: 45               # relèvement atterro → ZPA = d'où vient le vent ± 45°, côté d'arrivée du pilote
+  fallback_crosswind_deg: 90          # secteur au vent interdit / encombré : ± 90° ; jamais au-delà (jamais sous le vent)
+  prohibited_clearance_m: 150
+  calm_kmh: 5                         # vent d'arrivée < 5 km/h : côté d'arrivée du pilote
+approach:
+  ptu_entry_agl_m: {beginner: 150, intermediate: 150, advanced: 120, expert: 100}
+  no_360_below_agl_m: 150             # élève : pas de 360 du tout dans la ZPA (8 face au vent)
+  final_gradient_wind_kmh: 15         # consigne « garde de la vitesse en finale » à partir de 15 km/h à l'atterro
+glide_branch_factors:                 # §14.5 (P1 = maintenant, P2 = prochaine itération)
+  lee_sink: {within_relief_heights: 10, wind_kmh: [10, 20], factor: 0.90, strong_factor: 0.80, priority: P1, requires_real_dem: true}
+  lake_afternoon: {legal_hours: [12, 18], factor: 0.95, priority: P2}
+  convergence: {opposed_wind_kmh: 10, factor: 0.95, priority: P2}
+  thermal_sink: {vario_ms: 2.5, above_agl_m: 300, factor: 0.90, priority: P2}
+  ridge_lift_credit: 0.0              # jamais crédité
+risk_codes_add: [HIGH_ARRIVAL]
+non_blocking_cautions_add: [HIGH_ARRIVAL]
+```
+
+### 14.10 Conduite à tenir (résumé)
+
+1. **Vent rencontré** : les tranches que le pilote traverse réellement, de son altitude de départ jusqu'à l'entrée de l'approche. Brise d'atterro à l'heure d'arrivée en bas, vent du déco en haut, profil modèle au-dessus du déco. Moyenne sur chaque branche, contournements compris. Le vent au-dessus du point de départ ne compte pas.
+2. **Travers** toujours payé (`√(V² − w⊥²)`). **Face** comptée en entier, majorée jusqu'à × 1,2 par les rafales. **Arrière** crédité de 50 à 100 % selon le niveau, la balise, la brise établie et l'horizon, plafonné à 8 / 10 / 12 / 15 km/h. Pénétration minimale : 15 / 15 / 12 / 10 km/h.
+3. **Vitesse** : bras hauts par vent nul, arrière ou de travers. Face au vent, la vitesse de finesse max sol : jamais d'accélérateur pour l'élève, demi-barreau pour un brevet de pilote, à fond au-delà, et bras hauts dans la turbulence.
+4. **Arrivée haute** : hauteur attendue avec le vent à 100 % et 90 % de la polaire. `HIGH_ARRIVAL` dès 300 m avec du vent arrière, jamais bloquant. ZPA au vent de l'atterro et décalée, hors des zones interdites. 8 face au vent, PTU, finale face au vent d'arrivée.
+5. **Forclaz → Doussard par N** : GO aisé (r 0,72-0,82), arrivée haute signalée. Par S jusqu'à Doussard : no-go `GLIDE_MARGIN`. Par calme strict avec le contournement de la réserve : MARGINAL (r ≈ 0,93). Les règles de décollage de la Forclaz ne changent pas.

@@ -37,7 +37,8 @@ import { validateZone, zoneContains } from "../utils/zone";
 import { MOCK_AIRSPACES } from "./airspaces";
 import { mockBeacons } from "./beacons";
 import { RULES, arrivalMargin, thresholdSubscore } from "./rules";
-import { FREE_TAKEOFF_CHECKS, UNOFFICIAL_WARNING, canBeMain, evaluateLanding, searchLandings, sortCandidates, userTakeoffSite, type LandingContext } from "./landings";
+import { AVAILABLE_FACTOR, FREE_TAKEOFF_CHECKS, UNOFFICIAL_WARNING, canBeMain, evaluateLanding, kindOf, searchLandings, sortCandidates, userTakeoffSite, type LandingContext } from "./landings";
+import { GLIDE_RULES, computeGlide, glideComment, highArrivalRisk, isHighArrival, toPlanGlide, type GlideCalc, type WindVec } from "./glideWind";
 import { mockSensitiveAreas } from "./sensitiveAreas";
 import { nowcastFrom, stationReadings } from "./stations";
 import { CROSS_TURNPOINTS, MOCK_SITES, MOCK_SITES_BY_ID, THERMAL_TRIGGERS } from "./sites";
@@ -620,6 +621,12 @@ function nearbyBeacons(site: Site, now: Date): Beacon[] {
     .map((x) => x.b);
 }
 
+/** Heure légale (Europe/Paris) décimale. */
+function legalHourOf(d: Date): number {
+  const parts = new Intl.DateTimeFormat("fr-FR", { hour: "numeric", minute: "numeric", hour12: false, timeZone: "Europe/Paris" }).formatToParts(d);
+  return Number(parts.find((x) => x.type === "hour")?.value ?? 0) + Number(parts.find((x) => x.type === "minute")?.value ?? 0) / 60;
+}
+
 function roundTo(date: Date, minutes: number): Date {
   const step = minutes * MIN;
   return new Date(Math.round(date.getTime() / step) * step);
@@ -678,7 +685,7 @@ function scoreItems(ctx: BuildCtx, c: Conditions, _cand: Candidate, est: number,
 
 const SAFETY = new Set(["takeoff_wind", "wind_aloft", "landing", "convective_stability"]);
 /** Risques « prudence » qui n'empêchent pas un GO (CDC §12.2 : NO_LANDING_BEACON blocks_go: false). */
-const NON_BLOCKING = new Set(["MOCK_DATA", "NO_LANDING_BEACON"]);
+const NON_BLOCKING = new Set(["MOCK_DATA", "NO_LANDING_BEACON", "HIGH_ARRIVAL"]);
 
 function verdict(items: ScoreItem[], confidence: number, horizon: Horizon, risks: Risk[]): { score: number; flyability: FlightPlan["flyability"] } {
   const total = items.reduce((s, i) => s + i.score * i.weight, 0) / items.reduce((s, i) => s + i.weight, 0);
@@ -785,13 +792,24 @@ export function decodePlanId(id: string): PlanKey | null {
 
 // ───────────────────────────── atterros évalués ─────────────────────────────
 
-function landingCtx(ctx: BuildCtx, arrivalAfterMin?: number): LandingContext {
-  return { takeoff: ctx.site, level: ctx.filters.difficulty, glide: ctx.filters.wing_glide_ratio, time: ctx.target, arrivalAfterMin };
+function landingCtx(ctx: BuildCtx, arrivalAfterMin?: number, c?: Conditions): LandingContext {
+  const w = c?.wx.wind_10m;
+  return {
+    takeoff: ctx.site,
+    level: ctx.filters.difficulty,
+    glide: ctx.filters.wing_glide_ratio,
+    time: ctx.target,
+    arrivalAfterMin,
+    horizon: ctx.horizon,
+    associatedLandingIds: ctx.site.source === "user" ? [] : ctx.site.associated_landing_ids,
+    // même vent au déco et même profil que le plané du plan (CDC §14.7 : même calcul)
+    ...(w && c ? { takeoffWind: { speed: w.speed_kmh, dir: w.direction_deg, gust: w.gust_kmh }, aloft: c.wx.winds_aloft } : {}),
+  };
 }
 
 /** landing_analysis : l'atterro principal en premier, puis les autres candidats évalués (triés). */
-function landingAnalysisFor(ctx: BuildCtx, landing: Site, alternates: Site[], est: number): LandingCandidate[] {
-  const lc = landingCtx(ctx, est);
+function landingAnalysisFor(ctx: BuildCtx, landing: Site, alternates: Site[], est: number, c: Conditions): LandingCandidate[] {
+  const lc = landingCtx(ctx, est, c);
   if (ctx.custom) {
     const main = ctx.custom.candidates.find((c) => c.site.id === landing.id) ?? evaluateLanding(landing, lc).candidate;
     return [main, ...ctx.custom.candidates.filter((c) => c.site.id !== landing.id)];
@@ -812,34 +830,50 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
   const route = buildRoute(cand.variant, ctx, c, est, level);
   const pts = route.builder.pts;
   const landingWind = c.landingWx.wind_10m;
-  const finesseAir = filters.wing_glide_ratio * RULES.glideK[level];
   const alternates = ctx.custom ? ctx.custom.candidates.slice(1, 4).map((c) => c.site) : nearbyLandings(pts, landing);
+  // Plané final avec le vent RENCONTRÉ (CDC §14) : brise d'atterro à l'arrivée, vent retenu au déco, profil d'altitude.
   // Finesse requise = PIRE cas (CDC, règle backend) : (a) déco → atterro principal à l'altitude du déco,
-  // (b) chaque point de route à son altitude prévue → atterro identifié le plus proche.
-  const legRatio = (from: P3, to: Site) => {
-    const margin = arrivalMargin(level, site.elevation_m - to.elevation_m);
-    const h = from.alt - (to.elevation_m + margin);
-    const d = haversineKm(from, to) * 1000;
-    const bearing = bearingDeg(from, to);
-    // composante du vent sur la tranche, positive = vent arrière (CDC §2.3)
-    const tail = -landingWind.speed_kmh * Math.cos(((bearing - landingWind.direction_deg) * Math.PI) / 180);
-    const avail = Math.max(0, (finesseAir * (RULES.airSpeedKmh + tail)) / RULES.airSpeedKmh);
-    return { req: h > 0 ? d / h : 99, avail };
-  };
-  let worst = legRatio({ lat: site.lat, lon: site.lon, alt: site.elevation_m }, landing);
-  let allOk = worst.req <= worst.avail;
-  for (const p of pts) {
+  // (b) chaque point de route à son altitude prévue → meilleur atterro identifié.
+  const takeoffWind: WindVec = { speed: c.wx.wind_10m.speed_kmh, dir: c.wx.wind_10m.direction_deg, gust: c.wx.wind_10m.gust_kmh };
+  const arrivalWind: WindVec = { speed: landingWind.speed_kmh, dir: landingWind.direction_deg, gust: landingWind.gust_kmh };
+  const arrivalHour = legalHourOf(new Date(target.getTime() + est * MIN));
+  const leg = (from: P3, to: Site, startIsTakeoff: boolean): { calc: GlideCalc; to: Site } => ({
+    to,
+    calc: computeGlide({
+      from,
+      to,
+      takeoffAlt: site.elevation_m,
+      startIsTakeoff,
+      takeoffWind,
+      landingWind: arrivalWind,
+      aloft: c.wx.winds_aloft,
+      level,
+      wing: filters.wing_glide_ratio,
+      // k « paire associée » pour le plané direct déco → atterro officiel associé (CDC rév. 4), sinon k du niveau
+      k: startIsTakeoff && site.source !== "user" && kindOf(to) === "official" && site.associated_landing_ids.includes(to.id) ? RULES.glideKAssociatedPair : RULES.glideK[level],
+      kindFactor: AVAILABLE_FACTOR[kindOf(to)],
+      arrivalMarginM: arrivalMargin(level, site.elevation_m - to.elevation_m),
+      horizon,
+      arrivalLegalHour: arrivalHour,
+    }),
+  });
+  const passes = (g: GlideCalc) => g.required <= g.available && g.penetrationOk;
+  const reference = leg({ lat: site.lat, lon: site.lon, alt: site.elevation_m }, landing, true); // plouf de référence
+  let worst = reference;
+  let allOk = passes(reference.calc);
+  // CDC §14.1 : plouf = le seul plané déco → atterro ; vol local / cross = aussi chaque point de la route (hors déco)
+  for (const p of cand.variant === "plouf" ? [] : pts.slice(1)) {
     // CDC §5.4 : il suffit qu'UN atterro identifié soit dans le cône → meilleur atterro pour ce point
     if (haversineKm(p, landing) < 0.6) continue; // approche finale : PTU et dernier virage
-    const options = [landing, ...alternates].filter((l) => haversineKm(p, l) >= 0.3).map((l) => legRatio(p, l));
+    const options = [landing, ...alternates].filter((l) => haversineKm(p, l) >= 0.3).map((l) => leg(p, l, false));
     if (options.length === 0) continue;
-    const r = options.reduce((best, o) => (o.req / Math.max(0.1, o.avail) < best.req / Math.max(0.1, best.avail) ? o : best));
-    if (r.req > r.avail) allOk = false;
-    if (r.req > worst.req) worst = r;
+    const r = options.reduce((best, o) =>
+      o.calc.required / Math.max(0.1, o.calc.available) < best.calc.required / Math.max(0.1, best.calc.available) ? o : best,
+    );
+    if (!passes(r.calc)) allOk = false;
+    if (r.calc.required > worst.calc.required) worst = r;
   }
-  const required = worst.req;
-  const available = worst.avail;
-  const glide = { required_ratio: Math.round(required * 10) / 10, available_ratio: Math.round(available * 10) / 10, margin_ok: allOk };
+  const glide = toPlanGlide(worst.calc, allOk, glideComment(worst.calc, { landingName: worst.to.name, level }));
 
   // créneau
   const roundMin = horizonToMinutes(horizon) >= 1440 ? 60 : 15;
@@ -880,7 +914,19 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     else if (a.min_distance_km < 1) risks.push({ code: "AIRSPACE", level: "caution", title: `${a.name} à ${formatNumber(a.min_distance_km, 1)} km`, detail: `Classe ${a.airspace_class}, plancher ${fmtAlt(a.floor_m)} : garder 1 km de marge latérale.` });
   }
   risks.push(...sensitiveRisks(pts, target));
-  if (!glide.margin_ok) risks.push({ code: "GLIDE_MARGIN", level: "danger", title: "Marge de finesse insuffisante", detail: `Finesse requise ${formatNumber(glide.required_ratio, 1)} pour ${formatNumber(glide.available_ratio, 1)} disponible vers ${landing.name}.` });
+  if (!glide.margin_ok) {
+    const w = worst.calc;
+    const why = !w.penetrationOk
+      ? ` : pénétration insuffisante (vitesse sol ${Math.round(w.groundKmh)} km/h, minimum ${GLIDE_RULES.penetrationMinKmh[level]} à ton niveau)`
+      : w.along <= -GLIDE_RULES.calmKmh
+        ? ` : vent du ${degToCardinalFr(w.wind.dir)} ≈ ${Math.round(-w.along)} km/h de face sur le plané${-w.credit >= -w.along + 0.5 ? ` (${Math.round(-w.credit)} avec les rafales)` : ""}`
+        : "";
+    risks.push({ code: "GLIDE_MARGIN", level: "danger", title: "Marge de finesse insuffisante", detail: `Finesse requise ${formatNumber(glide.required_ratio, 1)} vers ${worst.to.name} pour ${formatNumber(glide.available_ratio, 1)} disponible${why}.` });
+  } else if (glide.available_ratio > 0 && glide.required_ratio / glide.available_ratio > 0.9) {
+    risks.push({ code: "GLIDE_MARGIN", level: "caution", title: "Marge de finesse faible", detail: `Finesse requise ${formatNumber(glide.required_ratio, 1)} vers ${worst.to.name} pour ${formatNumber(glide.available_ratio, 1)} disponible : aucune réserve, départ bras hauts sans virage.` });
+  }
+  const highArrival = highArrivalRisk(reference.calc, { landingName: landing.name, level, landingWind: arrivalWind });
+  if (highArrival) risks.push(highArrival);
   const valleyBreeze = landingWind.speed_kmh >= 12 && new Date(target.getTime() + est * MIN).getUTCHours() >= 11;
   if (valleyBreeze) risks.push({ code: "VALLEY_BREEZE", level: "info", title: `Brise à l'atterro : ${degToCardinalFr(landingWind.direction_deg)} ${landingWind.speed_kmh} km/h`, detail: "Brise de vallée/lac établie l'après-midi : approche face au vent, arriver haut." });
   if (c.wx.thermal_strength_ms > 2 && cand.thermal_usage !== "none") risks.push({ code: "STRONG_THERMALS", level: "info", title: "Thermiques soutenus", detail: `Vario ≈ ${formatNumber(c.wx.thermal_strength_ms, 1, 1)} m/s (pics ≈ ${formatNumber(c.wx.thermal_strength_ms * 2, 0)} m/s) : air turbulent près du relief.` });
@@ -1001,8 +1047,8 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
       ? `Aérologie : thermiques de ${fmtT(new Date(conv.convection_start))} à ${conv.convection_end ? fmtT(new Date(conv.convection_end)) : "?"}, pic vers ${conv.peak_time ? fmtT(new Date(conv.peak_time)) : "?"} (≈ ${formatNumber(conv.peak_strength_ms, 1, 1)} m/s) ; plafond utile ${fmtAlt(c.ceiling)}${c.wx.cloud_base_m ? `, base des cumulus ${fmtAlt(c.wx.cloud_base_m)}` : ", thermiques bleus"} ; surdéveloppement ${c.overdev === "low" ? "peu probable" : c.overdev === "moderate" ? "possible" : "probable"}.`
       : "Aérologie : pas de convection exploitable, air calme.",
     `Décollage : orientations ${site.orientations.map(compassFr).join(", ")} ; ${technique}.${site.restrictions && site.source !== "user" ? ` Consignes : ${site.restrictions}` : ""}${freeTakeoffText}`,
-    `Itinéraire : ${route.waypoints.filter((w) => w.type !== "takeoff").map((w) => w.name).join(" → ")} → ${landing.name} (${formatNumber(route.distanceKm, 1)} km).${route.decision.length ? " Points de décision : " + route.decision.join(" ") : ""}`,
-    `Atterrissage : ${landing.name} (${fmtAlt(landing.elevation_m)}), approche face au ${degToCardinalFr(landingWind.direction_deg)}, PTU côté sous le vent ; finesse requise ${formatNumber(glide.required_ratio, 1)} pour ${formatNumber(glide.available_ratio, 1)} de finesse de calcul.${landingWarnText}`,
+    `Itinéraire : ${route.waypoints.filter((w) => w.type !== "takeoff").map((w) => w.name).join(" → ")} → ${landing.name} (${formatNumber(route.distanceKm, 1)} km).${route.decision.length ? " Points de décision : " + route.decision.join(" ") : ""} Plané final : ${glide.comment}`,
+    `Atterrissage : ${landing.name} (${fmtAlt(landing.elevation_m)}), approche face au ${degToCardinalFr(landingWind.direction_deg)}, PTU côté sous le vent ; finesse requise ${formatNumber(glide.required_ratio, 1)} pour ${formatNumber(glide.available_ratio, 1)} de finesse de calcul.${isHighArrival(reference.calc) ? " Arrivée haute : perds l'altitude au vent de l'atterro, décalé sur le côté, en 8 face au vent, jamais derrière l'atterro ; entre dans la PTU vers " + GLIDE_RULES.ptuEntryAglM[level] + " m sol." : ""}${landingWarnText}`,
     airspaces.length
       ? `Espaces aériens : ${airspaces.map((a) => `${a.name} (${a.airspace_class}, plancher ${fmtAlt(a.floor_m)}, à ${formatNumber(a.min_distance_km, 1)} km)`).join(" ; ")}. Vérifier NOTAM / SUP AIP.`
       : "Espaces aériens : rien à moins de 8 km de la route (vérifier NOTAM / SUP AIP).",
@@ -1065,7 +1111,7 @@ function buildPlan(ctx: BuildCtx, cand: Candidate, c: Conditions, planLevel: Dif
     takeoff: site,
     landing,
     alternate_landings: alternates,
-    landing_analysis: landingAnalysisFor(ctx, landing, alternates, est),
+    landing_analysis: landingAnalysisFor(ctx, landing, alternates, est, c),
     waypoints: route.waypoints,
     route: { type: "LineString", coordinates: route.builder.coordinates() },
     distance_km: Math.round(route.distanceKm * 10) / 10,

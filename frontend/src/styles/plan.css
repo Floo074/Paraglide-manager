@@ -732,6 +732,132 @@
   width: 2px;
   background: var(--text);
 }
+.glide__calm {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 0;
+  border-left: 2px dashed var(--text-faint);
+}
+.glide__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+.glide__calm-sw {
+  display: inline-block;
+  height: 10px;
+  border-left: 2px dashed var(--text-faint);
+  vertical-align: -1px;
+  margin-right: 2px;
+}
+
+/* 8a. Plané final (CDC pilote §14) */
+.glide-block {
+  border-left: 4px solid var(--go);
+}
+.glide-block--marginal {
+  border-left-color: var(--marginal);
+}
+.glide-block--nogo {
+  border-left-color: var(--nogo);
+}
+.glide-block--high {
+  border-left-color: var(--info);
+}
+.glide-block .block__title .badge {
+  margin-left: 2px;
+}
+.glide-facts {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.glide-wind__v {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.glide-wind--tail .glide-wind__v {
+  color: var(--info);
+}
+.glide-wind--head .glide-wind__v {
+  color: var(--marginal);
+}
+.glide-arrival--high,
+.glide-arrival--very_high {
+  background: var(--info-soft);
+  border-color: color-mix(in srgb, var(--info) 45%, transparent);
+}
+.glide-arrival--high .fact__v,
+.glide-arrival--very_high .fact__v {
+  color: var(--info);
+}
+.glide-arrival--low {
+  background: var(--marginal-soft);
+  border-color: color-mix(in srgb, var(--marginal) 45%, transparent);
+}
+.glide-arrival--low .fact__v {
+  color: var(--marginal);
+}
+.glide-arrival--below {
+  background: var(--nogo-soft);
+  border-color: color-mix(in srgb, var(--nogo) 45%, transparent);
+}
+.glide-arrival--below .fact__v {
+  color: var(--nogo);
+}
+.glide-calm {
+  color: var(--text-faint);
+  text-decoration-thickness: 1.5px;
+}
+.glide-comment {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  background: var(--bg);
+  font-size: 0.88rem;
+}
+.glide-comment--high {
+  background: var(--info-soft);
+  border-left-color: var(--info);
+}
+.glide-comment--marginal {
+  background: var(--marginal-soft);
+  border-left-color: var(--marginal);
+}
+.glide-comment--nogo {
+  background: var(--nogo-soft);
+  border-left-color: var(--nogo);
+}
+
+/* Flèche du vent sur le plané, relative au cap (fiche plan, fiches candidats) */
+.gw-arrow {
+  flex: none;
+  overflow: visible;
+  vertical-align: middle;
+}
+.gw-arrow__cap {
+  stroke: var(--text-faint);
+}
+.gw-arrow__cap-head {
+  fill: var(--text-faint);
+}
+.gw-arrow--tail .gw-arrow__wind {
+  stroke: var(--info);
+}
+.gw-arrow--tail .gw-arrow__wind-head {
+  fill: var(--info);
+}
+.gw-arrow--head .gw-arrow__wind {
+  stroke: var(--marginal);
+}
+.gw-arrow--head .gw-arrow__wind-head {
+  fill: var(--marginal);
+}
+.gw-arrow--weak .gw-arrow__wind {
+  stroke: var(--text-faint);
+}
 
 /* 10. Checklist, urgence */
 .checklist {

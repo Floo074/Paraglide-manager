@@ -182,3 +182,21 @@ export function freeTakeoffIcon(orientations: string[]): L.DivIcon {
   </svg>`;
   return L.divIcon({ html, className: "site-icon free-takeoff-icon", iconSize: [size, size], iconAnchor: [c, c], popupAnchor: [0, -c + 4] });
 }
+
+/**
+ * Indicateur du vent sur la ligne de plané (fiche plan) : flèche orientée sur la carte le long de la route
+ * (vers l'atterro = vent arrière, vers le déco = vent de face, rond = vent faible) + composante et effet sur la finesse.
+ */
+export function glideWindIcon(kind: "tail" | "head" | "weak", rotateDeg: number, label: string, sub: string | null): L.DivIcon {
+  const shape =
+    kind === "weak"
+      ? `<circle cx="13" cy="13" r="5" class="gw-map__dot"/>`
+      : `<g transform="rotate(${normalizeDeg(rotateDeg).toFixed(1)} 13 13)">
+           <path d="M13 1.5 L20.5 12.5 L15.6 11.6 L15.6 24.5 L10.4 24.5 L10.4 11.6 L5.5 12.5 Z" class="gw-map__arrow"/>
+         </g>`;
+  const html = `<div class="gw-map gw-map--${kind}">
+    <svg width="26" height="26" viewBox="0 0 26 26">${shape}</svg>
+    <span class="gw-map__label"><strong>${esc(label)}</strong>${sub ? `<span class="gw-map__sub">${esc(sub)}</span>` : ""}</span>
+  </div>`;
+  return L.divIcon({ html, className: "gw-map-icon", iconSize: [26, 26], iconAnchor: [13, 13], tooltipAnchor: [14, 0] });
+}

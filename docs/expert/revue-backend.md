@@ -291,6 +291,14 @@ Chaque constat a été reproduit (mock ou scénario hors ligne) avant correction
 | Mineurs | corrigés | Verrou par clé (prévisions, sites, MNT, zones) ; confiance × 0,8 avec un seul modèle et modèles réels par heure ; seuils de tendance du front alignés ; mots entiers pour « fermé » ; `<ele>` omis si inconnu ; pluie « 3 h avant » à la convention Open-Meteo ; caution AIRSPACE < 100 m vertical ; tests renforcés (assertion tautologique, `risk_codes_forbidden` à tout niveau, contenu GPX / .xctsk). |
 | Doussard démo | **refusé** | Le constat demande de replacer Doussard à ≈ 3,4 km du déco ; le constat 7.13 de l'expert établit que la vraie distance est 4,1 km (PGE pge:3046, balise Pioupiou 1720) et règle le plouf par k = 0,80 : la fixture reste sur le vrai terrain. |
 
+## Décisions de l'expert sur les points « à juger » (révision 5 du CDC, 10/10/2026)
+
+- **7.13, contournement de la réserve du Bout du Lac** (Forclaz → Doussard) :
+  - Par **calme strict** : r ≈ 0,91 en live (+ 150 m), et 0,93 dans le scénario S35 (+ 260 m, avec l'enveloppe de la couche Biodiv'Sports). Le verdict est MARGINAL pour l'élève (`GLIDE_MARGIN` caution), et je le **confirme** : il ne reste aucune réserve de calcul, même si la hauteur d'arrivée réaliste reste d'environ 240 m.
+  - Par **vent du N** : le plané passe aisément, GO (S34). Voir le CDC §14.6.
+- **7.3 (b)**, secteurs notés 2 préférés seulement quand au moins 6 secteurs sont notés : l'interprétation est **confirmée** pour la Forclaz. Le déco garde O, ONO et NO (lac à l'O-NO). Le N et le NNO ne sont pas ajoutés, faute de relevé terrain de l'azimut (CDC §14.6, valeur prudente).
+- **Vent sur le plané** (remarque du pilote) : doctrine au CDC §14. Scénarios S33-S41 dans le bloc `scenarios_phase3`, à charger avec l'implémentation. La revue de l'implémentation fera l'objet du lot 8.
+
 ## Désaccords remontés au coordinateur
 
 _(aucun pour l'instant)_

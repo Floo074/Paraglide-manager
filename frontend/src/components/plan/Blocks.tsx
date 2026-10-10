@@ -136,12 +136,10 @@ export function RisksBlock({ risks }: { risks: Risk[] }) {
   );
 }
 
-/** Bloc 8 : atterrissage principal, vent à l'arrivée, atterros de secours, marge de finesse. */
+/** Bloc 8 : atterrissage principal, vent à l'arrivée, atterros de secours (le plané final est dans GlideBlock, juste avant). */
 export function LandingBlock({ plan, level }: { plan: FlightPlan; level: Difficulty }) {
   const land = plan.weather.landing;
   const lim: WindLimits = landingLimits(level, plan.flight_type);
-  const g = plan.glide;
-  const ratio = g.available_ratio > 0 ? Math.min(1.2, g.required_ratio / g.available_ratio) : 1.2;
   const kind = landingKindOf(plan.landing);
   return (
     <section className="block" aria-labelledby="b-landing">
@@ -165,20 +163,6 @@ export function LandingBlock({ plan, level }: { plan: FlightPlan; level: Difficu
           {LANDING_KIND[kind].description} Repérage et autorisation du propriétaire à vérifier.
         </p>
       ) : null}
-      <div className="glide">
-        <div className="row row--between small">
-          <span>
-            Finesse requise <strong className="num">{formatNumber(g.required_ratio, 1)}</strong> / disponible{" "}
-            <strong className="num">{formatNumber(g.available_ratio, 1)}</strong>
-          </span>
-          <span className={g.margin_ok ? "text-go" : "text-nogo"}>{g.margin_ok ? "marge OK" : "marge insuffisante"}</span>
-        </div>
-        <div className="glide__bar" aria-hidden>
-          <span className="glide__fill" style={{ width: `${(ratio / 1.2) * 100}%`, background: g.margin_ok ? (ratio > 0.85 ? "var(--marginal)" : "var(--go)") : "var(--nogo)" }} />
-          <span className="glide__limit" style={{ left: `${(1 / 1.2) * 100}%` }} />
-        </div>
-        <p className="tiny faint">Finesse de calcul sol (prudente, selon le niveau et le vent) vers l'atterro principal.</p>
-      </div>
       {plan.alternate_landings.length ? (
         <>
           <h3 className="block__sub">Atterrissages de secours</h3>

@@ -4,6 +4,7 @@ import type L from "leaflet";
 import type { GeoJsonPolygon, LandingCandidate } from "../../api/types";
 import { LANDING_KIND } from "../../config/labels";
 import { formatAltitude, formatNumber } from "../../utils/format";
+import { formatCandidateWind, known } from "../../utils/glide";
 import { compassFr } from "../../utils/units";
 import type { FreeTakeoff } from "../planner/criteria";
 import { freeTakeoffIcon, landingCandidateIcon } from "./icons";
@@ -65,6 +66,11 @@ export function LandingCandidateMarkers({
                   <div>
                     <span className="muted">Finesse :</span> requise {formatNumber(c.required_glide_ratio, 1)} / disponible {formatNumber(c.available_glide_ratio, 1)}
                   </div>
+                  {known(c.wind_along_track_kmh) ? (
+                    <div>
+                      <span className="muted">Vent sur le plané :</span> {formatCandidateWind(c.wind_along_track_kmh)}
+                    </div>
+                  ) : null}
                   <div>
                     <span className="muted">Arrivée :</span> {formatNumber(Math.round(c.arrival_height_m))} m au-dessus
                   </div>

@@ -581,6 +581,92 @@ RISK_LEVELS: Final = {
 
 
 # =============================================================================================
+# PARTIE 4 — Bloc YAML du §14.9 (révision 5 : vent sur le plané et paramètres du plané final). Copie fidèle :
+# mêmes clés en MAJUSCULES (niveau 1), mêmes valeurs. Les deux dernières clés du bloc (risk_codes_add,
+# non_blocking_cautions_add) existent déjà pour le §12.9 : suffixe _REV5.
+# =============================================================================================
+GLIDE_WIND: Final = {
+    "slice_m": 50,  # tranches d'altitude entre za = alt_atterro + marge et z0 ; poids = épaisseur
+    "breeze_layer_agl_m": 300,  # sous alt_atterro + 300 m : vent retenu à l'atterro À L'HEURE D'ARRIVÉE
+    "takeoff_layer_m": 100,  # 100 m sous le déco (départ = déco) : vent retenu au déco (balise comprise)
+    "between": "linear_uv",  # sous l'altitude du déco : interpolation (u, v) brise ↔ déco ; au-dessus : profil modèle
+    "per_branch": True,  # hauteur répartie sur les branches au prorata des longueurs (contournements compris)
+    "single_mean_allowed_below_km": 5,  # v1 : une moyenne vectorielle unique admise sous 5 km
+    "calm_kmh": 5,  # vent moyen rencontré < 5 km/h : aucun crédit de vent arrière (la face reste comptée)
+    "cone_layer_m": 1000,  # cône de finesse : vent moyen du profil du déco sur [alt_déco − 1000 ; alt_déco]
+}
+GLIDE_TAIL_CREDIT: Final = {
+    "base": by_level(0.50, 0.60, 0.70, 0.70),
+    "cap_kmh": by_level(8, 10, 12, 15),
+    "bonus": {
+        "beacon_confirms": 0.20,  # balise représentative, horizon ≤ 2h, Δdir ≤ 45°, vitesse ≥ 70 % du modèle
+        "beacon_confirms_max_dir_deg": 45,
+        "beacon_confirms_min_speed_ratio": 0.7,
+        # big_valley, arrivée 13-17 h légales, vent d'atterro ≥ 8 km/h, composante arrière ≥ 5 km/h sur le cap
+        # déco → atterro
+        "established_breeze": 0.20,
+        "established_breeze_min_kmh": 8,
+        "established_breeze_min_tail_kmh": 5,
+    },
+    "malus": {
+        "horizon": {"24h": 0.10, "48h": 0.20},
+        "gust_factor": {"over": 1.5, "min_wind_kmh": 10, "malus": 0.10},
+        "evening_transition": {"from_sunset_min": -90, "to_sunset_min": 60, "big_valley_only": True, "malus": 0.20},
+    },
+    "zero_if": ("mean_wind_below_calm", "low_confidence", "model_dir_sigma_over_45", "BEACON_MISMATCH", "WIND_SHIFT"),
+    "bounds": (0.0, 1.0),
+}
+# w_face × g, g = min(max, 1 + factor × (rafale/moyenne − 1)), plus fort rapport déco / atterro
+GLIDE_HEADWIND_GUST: Final = {"factor": 0.5, "max": 1.2, "min_wind_kmh": 10}
+GLIDE_PENETRATION_MIN_KMH: Final = by_level(15, 15, 12, 10)  # V_sol par branche ; sinon GLIDE_MARGIN danger
+WING_POLAR: Final = {  # finesse(V) = wing × rho(V), rho linéaire par morceaux ; catégorie selon wing_glide_ratio
+    "A": {"below_ratio": 8.5, "trim_kmh": 36, "half_bar_kmh": 41, "rho_half": 0.92, "full_bar_kmh": 46,
+          "rho_full": 0.78},
+    "B": {"below_ratio": 9.5, "trim_kmh": 37, "half_bar_kmh": 44, "rho_half": 0.90, "full_bar_kmh": 51,
+          "rho_full": 0.74},
+    "C": {"below_ratio": 10.5, "trim_kmh": 39, "half_bar_kmh": 48, "rho_half": 0.88, "full_bar_kmh": 57,
+          "rho_full": 0.70},
+    "D": {"below_ratio": 99, "trim_kmh": 40, "half_bar_kmh": 51, "rho_half": 0.86, "full_bar_kmh": 62,
+          "rho_full": 0.66},
+}  # fmt: skip
+SPEED_BAR_MAX_FRACTION: Final = by_level(0.0, 0.5, 1.0, 1.0)  # 0,5 = demi-barreau
+SPEED_BAR_MAX_GUST_SPREAD_KMH: Final = by_level(0, 8, 12, 15)  # rafale − moyenne au déco ou à l'atterro : bras hauts
+SPEED_SEARCH_STEP_KMH: Final = 0.5  # V ∈ [trim ; V_max(niveau)] qui maximise rho(V) × V_sol(V) / V ; jamais sous trim
+SPEED_BAR_RELEASE_AGL_M: Final = 150  # consigne : relâcher sous 150 m sol et dans la PTU
+EXPECTED_ARRIVAL: Final = {"efficiency": 0.90}  # finesse attendue = wing × 0,90 × rho(V), vent prévu à 100 %
+HIGH_ARRIVAL: Final = {
+    "min_tail_kmh": 5,
+    "info_m": 300,
+    "caution_m": by_level(500, 500, 700, 700),
+    "blocking": False,  # ajouté à NON_BLOCKING_CAUTIONS
+    "reference_glide": "takeoff_to_main_landing",
+}
+LOSE_HEIGHT_ZONE: Final = {  # ZPA, corrige le §5.1 : AU VENT de l'atterro, décalée
+    "distance_m": (300, 500),
+    "min_agl_m": 200,
+    "upwind_sector_deg": 45,  # relèvement atterro → ZPA = d'où vient le vent ± 45°, côté d'arrivée du pilote
+    "fallback_crosswind_deg": 90,  # secteur au vent interdit / encombré : ± 90° ; jamais au-delà (jamais sous le vent)
+    "prohibited_clearance_m": 150,
+    "calm_kmh": 5,  # vent d'arrivée < 5 km/h : côté d'arrivée du pilote
+}
+APPROACH: Final = {
+    "ptu_entry_agl_m": by_level(150, 150, 120, 100),
+    "no_360_below_agl_m": 150,  # élève : pas de 360 du tout dans la ZPA (8 face au vent)
+    "final_gradient_wind_kmh": 15,  # consigne « garde de la vitesse en finale » à partir de 15 km/h à l'atterro
+}
+GLIDE_BRANCH_FACTORS: Final = {  # §14.5 (P1 = maintenant, P2 = prochaine itération)
+    "lee_sink": {"within_relief_heights": 10, "wind_kmh": (10, 20), "factor": 0.90, "strong_factor": 0.80,
+                 "priority": "P1", "requires_real_dem": True},
+    "lake_afternoon": {"legal_hours": (12, 18), "factor": 0.95, "priority": "P2"},
+    "convergence": {"opposed_wind_kmh": 10, "factor": 0.95, "priority": "P2"},
+    "thermal_sink": {"vario_ms": 2.5, "above_agl_m": 300, "factor": 0.90, "priority": "P2"},
+    "ridge_lift_credit": 0.0,  # jamais crédité
+}  # fmt: skip
+RISK_CODES_ADD_REV5: Final = ("HIGH_ARRIVAL",)
+NON_BLOCKING_CAUTIONS_ADD_REV5: Final = ("HIGH_ARRIVAL",)
+
+
+# =============================================================================================
 # Fonctions utilitaires (aucune logique métier cachée : uniquement des lectures de tables)
 # =============================================================================================
 def level_index(level: str) -> int:
@@ -621,8 +707,17 @@ def xc_speed_kmh(vario_ms: float, level: str, glide_ratio: float) -> float:
     return speed
 
 
+def wing_class(glide_ratio: float) -> str:
+    """Catégorie de polaire (§14.3) déduite de `wing_glide_ratio` : A < 8,5 ≤ B < 9,5 ≤ C < 10,5 ≤ D."""
+    for cls, p in WING_POLAR.items():
+        if glide_ratio < p["below_ratio"]:
+            return cls
+    return "D"
+
+
 def trim_speed_kmh(glide_ratio: float) -> float:
-    return AIR_SPEED_TRIM_HIGH_PERF_KMH if glide_ratio >= HIGH_PERF_GLIDE_RATIO else AIR_SPEED_TRIM_KMH
+    """Vitesse bras hauts de la catégorie (§14.3 : 36 / 37 / 39 / 40 km/h ; EN-B et EN-C inchangées)."""
+    return float(WING_POLAR[wing_class(glide_ratio)]["trim_kmh"])
 
 
 def beacon_weight_by_minutes(dt_min: float) -> float:

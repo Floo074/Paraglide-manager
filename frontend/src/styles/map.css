@@ -514,3 +514,57 @@
   height: 8px;
   border-radius: 3px;
 }
+
+/* vent sur la ligne de plané (fiche plan) */
+.gw-map-icon {
+  background: transparent;
+  border: 0;
+}
+.gw-map {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: max-content;
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.45));
+}
+.gw-map svg {
+  flex: none;
+  overflow: visible;
+}
+.gw-map__arrow {
+  stroke: #0f172a;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+.gw-map--tail .gw-map__arrow {
+  fill: #2563eb;
+}
+.gw-map--head .gw-map__arrow {
+  fill: #ea580c;
+}
+.gw-map__dot {
+  fill: #94a3b8;
+  stroke: #0f172a;
+  stroke-width: 1.2;
+}
+.gw-map__label {
+  display: flex;
+  flex-direction: column;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgb(15 23 42 / 0.88);
+  color: #fff;
+  font: 700 11px/1.25 var(--font);
+  white-space: nowrap;
+}
+.gw-map--tail .gw-map__label strong {
+  color: #93c5fd;
+}
+.gw-map--head .gw-map__label strong {
+  color: #fdba74;
+}
+.gw-map__sub {
+  font-weight: 600;
+  font-size: 10px;
+  color: #cbd5e1;
+}

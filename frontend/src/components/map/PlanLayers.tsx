@@ -4,7 +4,9 @@ import type { FlightPlan, Site } from "../../api/types";
 import { altitudeColor } from "../../utils/colors";
 import { waypointTypeLabel } from "../../utils/exports";
 import { formatAltitude, formatNumber, formatTime } from "../../utils/format";
-import { waypointIcon } from "./icons";
+import { bearingDeg } from "../../utils/geo";
+import { alongWindKind, formatAlongWind, formatSignedKmh, formatWindCredit, glideMapSummary, known, showCalmRatio } from "../../utils/glide";
+import { glideWindIcon, waypointIcon } from "./icons";
 
 /** Route 3D colorée par altitude (segments), avec liseré pour la lisibilité sur le relief. */
 export function RouteLayer({ plan, dim = false, highlight = false, onClick }: { plan: FlightPlan; dim?: boolean; highlight?: boolean; onClick?: () => void }) {
@@ -139,8 +141,39 @@ export function GlideRangeLayer({ plan }: { plan: FlightPlan }) {
         <Tooltip sticky>
           Plané déco → {plan.landing.name} : finesse requise {formatNumber(plan.glide.required_ratio, 1)} / disponible{" "}
           {formatNumber(plan.glide.available_ratio, 1)}
+          {showCalmRatio(plan.glide) ? ` (${formatNumber(plan.glide.calm_available_ratio, 1)} sans vent)` : ""}
+          {known(plan.glide.wind_along_track_kmh) ? ` · vent ${formatAlongWind(plan.glide.wind_along_track_kmh)}` : ""}
         </Tooltip>
       </Polyline>
+      <GlideWindMarker plan={plan} />
     </>
+  );
+}
+
+/**
+ * Indicateur du vent sur la ligne de plané (milieu du segment déco → atterro) : flèche le long de la route
+ * (vers l'atterro = dans le dos, vers le déco = de face), composante et effet sur la finesse de calcul.
+ */
+export function GlideWindMarker({ plan }: { plan: FlightPlan }) {
+  const g = plan.glide;
+  if (!known(g.wind_along_track_kmh) || g.required_ratio <= 0) return null;
+  const kind = alongWindKind(g.wind_along_track_kmh);
+  const cap = bearingDeg(plan.takeoff, plan.landing);
+  const sub = showCalmRatio(g) ? `finesse ${formatNumber(g.calm_available_ratio, 1)} → ${formatNumber(g.available_ratio, 1)}` : null;
+  const icon = glideWindIcon(kind, kind === "head" ? cap + 180 : cap, formatSignedKmh(g.wind_along_track_kmh), sub);
+  const credit = formatWindCredit(g.wind_along_track_kmh, g.wind_credit_kmh);
+  return (
+    <Marker
+      position={[(plan.takeoff.lat + plan.landing.lat) / 2, (plan.takeoff.lon + plan.landing.lon) / 2]}
+      icon={icon}
+      zIndexOffset={650}
+      keyboard={false}
+      title={`Vent sur le plané : ${formatAlongWind(g.wind_along_track_kmh)}`}
+    >
+      <Tooltip direction="right" offset={[60, 0]}>
+        {glideMapSummary(g)}
+        {credit ? ` (${credit})` : ""}
+      </Tooltip>
+    </Marker>
   );
 }

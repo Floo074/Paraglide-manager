@@ -24,6 +24,8 @@ export const RULES = {
   localCeilingMinAboveTakeoff: { beginner: 700, intermediate: 600, advanced: 400, expert: 300 } as PerLevel<number>,
   xcCeilingMinAboveTakeoff: { beginner: Infinity, intermediate: 1200, advanced: 1000, expert: 800 } as PerLevel<number>,
   glideK: { beginner: 0.65, intermediate: 0.7, advanced: 0.72, expert: 0.75 } as PerLevel<number>, // CDC rév. 2
+  /** k « paire associée » (CDC rév. 4) : plané DIRECT déco → atterro officiel associé par la source, tous niveaux. */
+  glideKAssociatedPair: 0.8,
   /** Marge d'arrivée (m), bornée à 25 % du dénivelé (CDC rév. 2). */
   arrivalMargin: { beginner: 100, intermediate: 100, advanced: 100, expert: 80 } as PerLevel<number>,
   xcMaxDistanceKm: { beginner: 0, intermediate: 25, advanced: 80, expert: 250 } as PerLevel<number>,

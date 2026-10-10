@@ -9,19 +9,22 @@ import type {
   CustomTakeoff,
   Difficulty,
   GeoJsonPolygon,
+  Horizon,
   LandingAnalyzeRequest,
   LandingAnalyzeResponse,
   LandingCandidate,
   LandingKind,
   LandingPolicy,
   Site,
+  WindLevel,
 } from "../api/types";
 import { ApiError } from "../api/errors";
 import { DIFFICULTY_ORDER } from "../config/labels";
-import { bearingDeg, destinationPoint, haversineKm, type Pt } from "../utils/geo";
+import { destinationPoint, haversineKm, type Pt } from "../utils/geo";
 import { horizonToMinutes, isHorizon, targetTimeFromHorizon } from "../utils/horizon";
 import { formatNumber } from "../utils/format";
 import { compassFr, degToCardinalFr, degToCompass, normalizeDeg } from "../utils/units";
+import { GLIDE_RULES, computeGlide, trackComponents, type WindVec } from "./glideWind";
 import { RULES, arrivalMargin } from "./rules";
 import { MOCK_SITES } from "./sites";
 import { slopeAspect, terrainAt, valleyFloor, weatherAt } from "./weather";
@@ -142,7 +145,8 @@ const POLICY_KINDS: Record<LandingPolicy, LandingKind[]> = {
   include_community: ["official", "community"],
   include_fields: ["official", "community", "field"],
 };
-const AVAILABLE_FACTOR: Record<LandingKind, number> = { official: 1, community: 0.85, field: 0.75 };
+/** Facteur f de la finesse de calcul des atterros non officiels (CDC §12.7 : communautaire 0,90, champ 0,80). */
+export const AVAILABLE_FACTOR: Record<LandingKind, number> = { official: 1, community: 0.9, field: 0.8 };
 const ARRIVAL_MIN: Record<Exclude<LandingKind, "official">, Partial<Record<Difficulty, number>>> = {
   community: { intermediate: 150, advanced: 120, expert: 100 },
   field: { advanced: 150, expert: 120 },
@@ -172,28 +176,50 @@ export interface LandingContext {
   time: Date;
   /** Durée de vol supposée avant l'arrivée (min) pour le vent à l'atterro. */
   arrivalAfterMin?: number;
+  /** Vent retenu au déco et profil d'altitude (plan de vol) ; sinon : météo synthétique au point. */
+  takeoffWind?: WindVec;
+  aloft?: WindLevel[];
+  horizon?: Horizon;
+  /** Atterros officiels associés au déco par la source : k « paire associée » pour le plané direct (CDC rév. 4). */
+  associatedLandingIds?: string[];
 }
 
-/** Vent de transition (niveau d'altitude le plus proche du milieu du plané). */
-function glideWind(ctx: LandingContext, landingElev: number): { speed: number; dir: number } {
+/** Vent au déco (retenu) et profil d'altitude, pour le vent rencontré sur le plané (CDC §14.1). */
+function takeoffWinds(ctx: LandingContext): { wind: WindVec; aloft: WindLevel[] } {
+  if (ctx.takeoffWind && ctx.aloft) return { wind: ctx.takeoffWind, aloft: ctx.aloft };
   const wx = weatherAt(ctx.takeoff.lat, ctx.takeoff.lon, ctx.takeoff.elevation_m, ctx.time, { key: `glide:${ctx.takeoff.lat.toFixed(3)},${ctx.takeoff.lon.toFixed(3)}` });
-  const mid = (ctx.takeoff.elevation_m + landingElev) / 2;
-  let best: { speed: number; dir: number } = { speed: wx.wind_10m.speed_kmh, dir: wx.wind_10m.direction_deg };
-  let bestD = Infinity;
-  for (const l of wx.winds_aloft) {
-    const d = Math.abs(l.altitude_m - mid);
-    if (d < bestD && d < 600) {
-      bestD = d;
-      best = { speed: l.speed_kmh, dir: l.direction_deg };
-    }
-  }
-  return best;
+  return { wind: { speed: wx.wind_10m.speed_kmh, dir: wx.wind_10m.direction_deg, gust: wx.wind_10m.gust_kmh }, aloft: wx.winds_aloft };
 }
 
-/** Finesse sol avec le vent sur la trajectoire de cap `bearing` (vent arrière > 0). */
-function groundRatio(airRatio: number, wind: { speed: number; dir: number }, bearing: number): number {
-  const tail = wind.speed * Math.cos(((bearing - (wind.dir + 180)) * Math.PI) / 180);
-  return Math.max(0, (airRatio * (RULES.airSpeedKmh + tail)) / RULES.airSpeedKmh);
+/** Heure légale (Europe/Paris) décimale, pour le bonus « brise établie ». */
+function legalHour(d: Date): number {
+  const parts = new Intl.DateTimeFormat("fr-FR", { hour: "numeric", minute: "numeric", hour12: false, timeZone: "Europe/Paris" }).formatToParts(d);
+  return Number(parts.find((p) => p.type === "hour")?.value ?? 0) + Number(parts.find((p) => p.type === "minute")?.value ?? 0) / 60;
+}
+
+/**
+ * Cône de finesse (CDC §14.1) : vent moyen du profil du déco sur [alt_déco − 1000 ; alt_déco], crédit du niveau sans
+ * bonus (plafonné), face comptée en entier, travers payé, vitesse bras hauts.
+ */
+function coneRatio(airRatio: number, wind: WindVec, bearing: number, level: Difficulty): number {
+  const { along, cross } = trackComponents(wind, bearing);
+  const credit = wind.speed < GLIDE_RULES.calmKmh ? Math.min(0, along) : along > 0 ? Math.min(GLIDE_RULES.tailBase[level] * along, GLIDE_RULES.tailCapKmh[level]) : along;
+  const v = RULES.airSpeedKmh;
+  if (cross >= v) return 0;
+  return Math.max(0, (airRatio * (Math.sqrt(v * v - cross * cross) + credit)) / v);
+}
+
+function coneWind(ctx: LandingContext): WindVec {
+  const { wind, aloft } = takeoffWinds(ctx);
+  const layer = aloft.filter((l) => l.altitude_m <= ctx.takeoff.elevation_m && l.altitude_m >= ctx.takeoff.elevation_m - 1000);
+  let u = 0;
+  let v = 0;
+  for (const w of [wind, ...layer.map((l) => ({ speed: l.speed_kmh, dir: l.direction_deg }))]) {
+    u += w.speed * Math.sin(((w.dir + 180) * Math.PI) / 180);
+    v += w.speed * Math.cos(((w.dir + 180) * Math.PI) / 180);
+  }
+  const n = 1 + layer.length;
+  return { speed: Math.hypot(u / n, v / n), dir: normalizeDeg((Math.atan2(u / n, v / n) * 180) / Math.PI + 180) };
 }
 
 function detailsFor(site: Site): LandingDetails {
@@ -217,18 +243,32 @@ export function evaluateLanding(site: Site, ctx: LandingContext): { candidate: L
   const kind = kindOf(site);
   const det = detailsFor(site);
   const d = haversineKm(ctx.takeoff, site);
-  const bearing = bearingDeg(ctx.takeoff, site);
-  const wind = glideWind(ctx, site.elevation_m);
-  const airRatio = ctx.glide * RULES.glideK[ctx.level];
   const drop = ctx.takeoff.elevation_m - site.elevation_m;
   const margin = arrivalMin(kind, ctx.level, drop);
-  const available = groundRatio(airRatio, wind, bearing) * AVAILABLE_FACTOR[kind];
-  const usable = drop - margin;
-  const required = usable > 0 ? (d * 1000) / usable : 99;
-  const arrival = available > 0 ? drop - (d * 1000) / available : -drop;
-  const reachable = required <= available && arrival >= margin - 1;
   const arrivalTime = new Date(ctx.time.getTime() + (ctx.arrivalAfterMin ?? Math.max(5, Math.round((d / 30) * 60))) * 60_000);
   const w = weatherAt(site.lat, site.lon, site.elevation_m, arrivalTime, { isLanding: true, key: site.id }).wind_10m;
+  // plané final avec le vent rencontré (CDC §14) : brise du candidat à l'arrivée, vent du déco, profil
+  const tw = takeoffWinds(ctx);
+  const glide = computeGlide({
+    from: { lat: ctx.takeoff.lat, lon: ctx.takeoff.lon, alt: ctx.takeoff.elevation_m },
+    to: site,
+    takeoffAlt: ctx.takeoff.elevation_m,
+    startIsTakeoff: true,
+    takeoffWind: tw.wind,
+    landingWind: { speed: w.speed_kmh, dir: w.direction_deg, gust: w.gust_kmh },
+    aloft: tw.aloft,
+    level: ctx.level,
+    wing: ctx.glide,
+    k: kind === "official" && ctx.associatedLandingIds?.includes(site.id) ? RULES.glideKAssociatedPair : RULES.glideK[ctx.level],
+    kindFactor: AVAILABLE_FACTOR[kind],
+    arrivalMarginM: margin,
+    horizon: ctx.horizon,
+    arrivalLegalHour: legalHour(arrivalTime),
+  });
+  const available = glide.available;
+  const required = glide.required;
+  const arrival = available > 0 ? drop - (d * 1000) / available : -drop;
+  const reachable = required <= available && arrival >= margin - 1 && glide.penetrationOk;
 
   // score (CDC §12.2 landing_candidate_weights, somme 100)
   const marginRatio = available > 0 ? 1 - required / available : -1;
@@ -261,6 +301,8 @@ export function evaluateLanding(site: Site, ctx: LandingContext): { candidate: L
         ? `Marge de finesse juste (requise ${formatNumber(required, 1)} / disponible ${formatNumber(available, 1)})`
         : `Marge de finesse insuffisante (requise ${formatNumber(required, 1)} / disponible ${formatNumber(available, 1)})`,
   );
+  if (Math.abs(glide.along) >= GLIDE_RULES.calmKmh)
+    reasons.push(`Vent sur le plané ${glide.along > 0 ? `${Math.round(glide.along)} km/h dans le dos` : `${Math.round(-glide.along)} km/h de face`}`);
   reasons.push(kind === "official" ? "Atterrissage officiel référencé" : kind === "community" ? "Utilisé par la communauté, non validé FFVL" : "Champ candidat détecté, jamais repéré");
   if (det.size_m) reasons.push(`Terrain de ${det.size_m.length} × ${det.size_m.width} m${det.slope_pct !== null ? `, pente ${formatNumber(det.slope_pct)} %` : ""}`);
   reasons.push(det.obstacles.length ? `${det.obstacles.length} obstacle${det.obstacles.length > 1 ? "s" : ""} signalé${det.obstacles.length > 1 ? "s" : ""}` : "Aucun obstacle signalé");
@@ -276,6 +318,7 @@ export function evaluateLanding(site: Site, ctx: LandingContext): { candidate: L
       score,
       required_glide_ratio: Math.round(Math.min(99, required) * 10) / 10,
       available_glide_ratio: Math.round(available * 10) / 10,
+      wind_along_track_kmh: Math.round(glide.along * 10) / 10,
       arrival_height_m: Math.round(arrival),
       size_m: det.size_m,
       slope_pct: det.slope_pct,
@@ -304,11 +347,11 @@ function meetsMinimum(site: Site, level: Difficulty): boolean {
 export function glideCone(ctx: LandingContext): GeoJsonPolygon {
   const floor = valleyFloor(ctx.takeoff.lat, ctx.takeoff.lon);
   const h = Math.max(0, ctx.takeoff.elevation_m - floor - arrivalMargin(ctx.level, ctx.takeoff.elevation_m - floor));
-  const wind = glideWind(ctx, floor);
+  const wind = coneWind(ctx);
   const air = ctx.glide * RULES.glideK[ctx.level];
   const ring: [number, number][] = [];
   for (let b = 0; b < 360; b += 10) {
-    const r = clamp((h * groundRatio(air, wind, b)) / 1000, 0.3, 30);
+    const r = clamp((h * coneRatio(air, wind, b, ctx.level)) / 1000, 0.3, 30);
     const p = destinationPoint(ctx.takeoff, b, r);
     ring.push([Number(p.lon.toFixed(5)), Number(p.lat.toFixed(5))]);
   }
@@ -411,7 +454,7 @@ export function mockAnalyzeLandings(req: LandingAnalyzeRequest, now: Date = new 
   const site = userTakeoffSite(t);
   const reference = req.reference_time ? new Date(req.reference_time) : now;
   const target = targetTimeFromHorizon(reference, req.horizon);
-  const ctx: LandingContext = { takeoff: site, level: req.difficulty, glide: req.wing_glide_ratio ?? 8.5, time: target };
+  const ctx: LandingContext = { takeoff: site, level: req.difficulty, glide: req.wing_glide_ratio ?? 8.5, time: target, horizon: req.horizon };
   const { candidates, warnings } = searchLandings(ctx, req.landing_policy ?? "official_only");
   const head = ["Démo hors-ligne : relief, atterros et vent simulés (atterros non officiels FICTIFS). Ne pas utiliser pour voler."];
   if (req.difficulty === "beginner") head.push("Décollage libre jamais proposé au niveau élève : vole sur un site officiel encadré.");

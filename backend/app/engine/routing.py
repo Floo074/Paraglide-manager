@@ -1,10 +1,12 @@
 """Construction des routes (plouf, local thermique, soaring, cross) et contrôles de finesse.
 
-Formules (cahier des charges §2.3, §5) :
-- finesse de calcul sol = finesse polaire × k(niveau) × (V_air + W_comp) / V_air, W_comp = composante
-  du vent moyen projetée sur la route (positive = vent arrière) ;
+Formules (cahier des charges §2.3, §5, §14) :
+- finesse de calcul sol (§14, `app.engine.glidewind`) : vent RENCONTRÉ sur chaque branche du plané (tranches d'altitude
+  traversées, brise d'atterro à l'heure d'arrivée, vent du déco, profil au-dessus du déco), travers payé
+  (V_sol = √(V² − w⊥²) + w∥), vent arrière crédité en partie, face majorée par les rafales, accélérateur selon le
+  niveau ; f_plané = L / Σ (L_i / f_i) ;
 - hauteur disponible = altitude du point − (altitude atterro + marge d'arrivée), marge bornée à 25 %
-  du dénivelé ; required_ratio = distance / hauteur disponible ; margin_ok = required ≤ available ;
+  du dénivelé ; required_ratio = longueur réelle du chemin / hauteur disponible ; margin_ok = required ≤ available ;
 - cross : « toujours un atterro dans le cône » vérifié tous les 500 m :
   alt_sécurité(p) = min_a [alt_a + marge + dist(p, a) / finesse_sol(p→a)] ≤ plafond utile − 300 m.
 """
@@ -18,8 +20,19 @@ from itertools import pairwise
 
 from app.engine import rules
 from app.engine.airspace import Projector, route_conflicts, route_sensitive_conflict
-from app.engine.conditions import along_track_component, dir_label
+from app.engine.conditions import dir_label
 from app.engine.context import DataContext, ReliefPoint
+from app.engine.glidewind import (
+    GlideWind,
+    as_source,
+    au,
+    compute_glide,
+    legs_of,
+    plouf_minutes,
+    quarter,
+    uniform_finesse,
+    zpa_bearings,
+)
 from app.geo import angle_diff, bearing_deg, destination, haversine_km, sector_to_deg
 from app.meteo.solar import sun_azimuth_deg, sun_elevation_deg
 from app.models import Site, Waypoint
@@ -34,12 +47,36 @@ class GlideCheck:
     margin_ok: bool
     terrain_ok: bool = True
     landing_name: str | None = None
+    calm_ratio: float = 0.0  # finesse de calcul en air calme (même k, même f), §14.7
+    wind: GlideWind | None = None  # vent sur le plané (§14) ; None : top landing ou glide non calculé
+    expected_arrival_m: float | None = None  # hauteur d'arrivée attendue (vent prévu à 100 %, 0,90 × polaire)
+    dist_km: float = 0.0  # longueur réelle du chemin (contournements compris)
+    level: str = ""
+    detour_zones: list[str] | None = None  # zones interdites contournées par ce plané
+
+    @property
+    def penetration_ok(self) -> bool:
+        return self.wind is None or self.wind.penetration_ok
 
     @property
     def ratio(self) -> float:
-        if self.available_ratio <= 0:
+        if self.available_ratio <= 0 or not self.penetration_ok:
             return 9.9
         return self.required_ratio / self.available_ratio
+
+    @property
+    def wind_along_kmh(self) -> float | None:
+        return None if self.wind is None else self.wind.along_kmh
+
+    @property
+    def wind_credit_kmh(self) -> float:
+        return 0.0 if self.wind is None else self.wind.credit_kmh
+
+
+def calm_glide(wing: float, level: str, landing_name: str | None = None, pair: bool = False) -> GlideCheck:
+    """Top landing (posé au décollage) : pas de plané, finesse de calcul en air calme pour mémoire."""
+    k = rules.GLIDE_K_ASSOCIATED_PAIR if pair else rules.GLIDE_K[level]
+    return GlideCheck(0.0, wing * k, True, True, landing_name, calm_ratio=wing * k, level=level)
 
 
 @dataclass
@@ -57,6 +94,9 @@ class Route:
     used_landings: list[Site] = field(default_factory=list)  # cross : atterros qui couvrent la route (cône)
     glide_dist_km: float | None = None  # plané déco → atterro allongé par un contournement de zone interdite
     avoided_zones: list[str] = field(default_factory=list)  # zones interdites contournées (briefing)
+    glide_path: list[tuple[float, float]] = field(default_factory=list)  # points du contournement (lat, lon)
+    glide_zones: list[str] = field(default_factory=list)  # zones contournées par le plané déco → atterro
+    zpa_bearing: float | None = None  # relèvement atterro → zone de perte d'altitude (plouf)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -65,12 +105,12 @@ class Route:
 def finesse_sol(
     wing: float, level: str, wind_speed: float, wind_dir: float, track: float, pair: bool = False
 ) -> float:
-    """`pair` : plané direct déco → atterro officiel associé par la source (k = GLIDE_K_ASSOCIATED_PAIR, tous niveaux,
-    décision expert 7.13) ; sinon k du niveau (§11)."""
-    v_air = rules.trim_speed_kmh(wing)
-    w = along_track_component(wind_speed, wind_dir, track)
+    """Finesse de calcul sol par un vent UNIFORME sur le cap `track` (§14 : polaire, travers payé, vent arrière crédité
+    à la part de base du niveau et plafonné, face comptée en entier, accélérateur du niveau). `pair` : plané direct
+    déco → atterro officiel associé par la source (k = GLIDE_K_ASSOCIATED_PAIR, décision expert 7.13) ; sinon k du
+    niveau (§11). Les planés du plan utilisent le vent rencontré (`glide_to`)."""
     k = rules.GLIDE_K_ASSOCIATED_PAIR if pair else rules.GLIDE_K[level]
-    return max(0.0, wing * k * (v_air + w) / v_air)
+    return uniform_finesse(wing, level, k, wind_speed, wind_dir, track)
 
 
 def arrival_margin(level: str, drop_m: float) -> float:
@@ -92,6 +132,33 @@ def kind_glide_params(kind: str, level: str, drop_m: float) -> tuple[float, floa
     return float(g["arrival_height_min_m"][kind][lv]), float(g["available_factor"][kind])
 
 
+def _glide_wind(
+    ctx: DataContext,
+    src,
+    lat: float,
+    lon: float,
+    alt: float,
+    landing: Site,
+    level: str,
+    wing: float,
+    k: float,
+    factor: float,
+    za: float,
+    path: list[tuple[float, float]] | None,
+    t: datetime | None,
+    t_arrival: datetime | None,
+) -> tuple[list[tuple[float, float]], GlideWind]:
+    pts = [(lat, lon), *(path or []), (landing.lat, landing.lon)]
+    legs = legs_of(pts)
+    t0 = t if t is not None else getattr(src, "start", None)
+    ta = t_arrival
+    if ta is None and t0 is not None:
+        ta = t0 + timedelta(minutes=plouf_minutes(alt - landing.elevation_m))
+    col = src.column(landing, t0, ta, alt)
+    credit = src.credit(landing, t0, ta, (lat, lon))
+    return pts, compute_glide(legs, alt, za, col, credit, level, wing, k, factor)
+
+
 def glide_to(
     ctx: DataContext,
     lat: float,
@@ -100,33 +167,50 @@ def glide_to(
     landing: Site,
     level: str,
     wing: float,
-    wind: tuple[float, float],
+    wind,
     drop_ref: float | None = None,
     kind: str | None = None,
     pair: bool = False,
-    dist_km: float | None = None,
+    path: list[tuple[float, float]] | None = None,
+    t: datetime | None = None,
+    t_arrival: datetime | None = None,
+    detour_zones: list[str] | None = None,
 ) -> GlideCheck:
-    """Finesse requise vers un atterro. Atterro non officiel (§12.7) : hauteur d'arrivée mini du kind au lieu de la
-    marge standard, et finesse disponible × f (0,90 communautaire, 0,80 champ). `kind="official"` force les règles
-    d'un atterro officiel (portée « géométrique » d'un candidat). `pair` : plané direct déco → atterro officiel
-    associé par la source ; k = GLIDE_K_ASSOCIATED_PAIR seulement si le relief est vérifié (`pair_k_allowed`)."""
-    dist_m = (dist_km if dist_km is not None else haversine_km(lat, lon, landing.lat, landing.lon)) * 1000.0
-    track = bearing_deg(lat, lon, landing.lat, landing.lon)
+    """Plané vers un atterro (§14) : `wind` = champ de vent du vol (`GlideField`, vent rencontré) ou (vitesse,
+    direction) uniforme ; `path` = points intermédiaires du chemin (contournement), `t` = heure de départ du point,
+    `t_arrival` = heure d'arrivée (défaut : t + durée d'un plouf de ce dénivelé). Atterro non officiel (§12.7) :
+    hauteur d'arrivée mini du kind au lieu de la marge standard, et finesse × f (0,90 communautaire, 0,80 champ).
+    `kind="official"` force les règles d'un atterro officiel (portée « géométrique » d'un candidat). `pair` : plané
+    direct déco → atterro officiel associé par la source ; k = GLIDE_K_ASSOCIATED_PAIR seulement si le relief est
+    vérifié (`pair_k_allowed`)."""
+    src = as_source(wind)
     k_kind = kind or landing_kind_of(landing)
     margin, factor = kind_glide_params(
         k_kind, level, drop_ref if drop_ref is not None else alt - landing.elevation_m
     )
-    height = alt - (landing.elevation_m + margin)
+    za = landing.elevation_m + margin
+    height = alt - za
     use_pair = pair and k_kind == "official" and pair_k_allowed(ctx)
-    available = finesse_sol(wing, level, wind[0], wind[1], track, pair=use_pair) * factor
-    required = dist_m / height if height > 1 else 99.0
-    terrain_ok = terrain_clear(ctx, lat, lon, alt, landing, available)
+    k = rules.GLIDE_K_ASSOCIATED_PAIR if use_pair else rules.GLIDE_K[level]
+    pts, gw = _glide_wind(ctx, src, lat, lon, alt, landing, level, wing, k, factor, za, path, t, t_arrival)
+    dist_km = sum(d for d, _ in legs_of(pts))
+    available = gw.available
+    required = dist_km * 1000.0 / height if height > 1 else 99.0
+    terrain_ok = terrain_clear(ctx, pts, alt, gw.leg_ratios)
+    drop = alt - landing.elevation_m
+    expected = drop - gw.expected_loss_m if gw.expected_loss_m != math.inf else -drop
     return GlideCheck(
         required_ratio=required,
         available_ratio=available,
-        margin_ok=required <= available and terrain_ok,
+        margin_ok=required <= available and terrain_ok and gw.penetration_ok,
         terrain_ok=terrain_ok,
         landing_name=landing.name,
+        calm_ratio=gw.calm,
+        wind=gw,
+        expected_arrival_m=max(-drop, expected),
+        dist_km=dist_km,
+        level=level,
+        detour_zones=detour_zones,
     )
 
 
@@ -145,26 +229,33 @@ def is_source_pair(takeoff: Site, landing: Site) -> bool:
     )
 
 
-def terrain_clear(ctx: DataContext, lat: float, lon: float, alt: float, landing: Site, finesse: float) -> bool:
-    """La ligne de plané (pente 1/finesse) reste-t-elle ≥ 50 m au-dessus du terrain ?"""
-    if ctx.terrain is None or not ctx.terrain_is_real or finesse <= 0:
+def terrain_clear(ctx: DataContext, pts: list[tuple[float, float]], alt: float, finesses: list[float]) -> bool:
+    """La ligne de plané (pente 1/finesse de chaque branche, le long du chemin réel) reste-t-elle ≥ 50 m au-dessus du
+    terrain ? MNT réel seulement ; on ignore les 500 premiers mètres et les 600 derniers (pente du déco, approche)."""
+    if ctx.terrain is None or not ctx.terrain_is_real or not finesses or min(finesses) <= 0:
         return True
-    dist = haversine_km(lat, lon, landing.lat, landing.lon)
-    if dist < 1.0:
+    legs = [(a, b, haversine_km(a[0], a[1], b[0], b[1])) for a, b in pairwise(pts)]
+    legs = [x for x in legs if x[2] > 1e-4]
+    total = sum(x[2] for x in legs)
+    if total < 1.0 or len(legs) != len(finesses):
         return True
-    brg = bearing_deg(lat, lon, landing.lat, landing.lon)
-    n = max(2, int(dist / 0.25))
-    for i in range(1, n):
-        d = dist * i / n
-        if d < 0.5 or dist - d < 0.6:
-            continue
-        la, lo = destination(lat, lon, brg, d)
-        terrain = ctx.terrain_at(la, lo)
-        if terrain is None:
-            continue
-        glide_alt = alt - d * 1000.0 / finesse
-        if glide_alt < terrain + rules.TERRAIN_CLEARANCE_M:
-            return False
+    s0, z0 = 0.0, alt
+    for (a, b, dist), fin in zip(legs, finesses, strict=True):
+        brg = bearing_deg(a[0], a[1], b[0], b[1])
+        n = max(1, int(dist / 0.25))
+        for i in range(1, n + 1):
+            d = dist * i / n
+            s = s0 + d
+            if s < 0.5 or total - s < 0.6:
+                continue
+            la, lo = destination(a[0], a[1], brg, d)
+            terrain = ctx.terrain_at(la, lo)
+            if terrain is None:
+                continue
+            if z0 - d * 1000.0 / fin < terrain + rules.TERRAIN_CLEARANCE_M:
+                return False
+        s0 += dist
+        z0 -= dist * 1000.0 / fin
     return True
 
 
@@ -176,25 +267,66 @@ def best_landing_glide(
     landings: list[Site],
     level: str,
     wing: float,
-    wind: tuple[float, float],
+    wind,
+    t: datetime | None = None,
 ) -> tuple[GlideCheck | None, float]:
-    """Meilleur atterro joignable depuis un point ; renvoie (glide, altitude de sécurité)."""
+    """Meilleur atterro joignable depuis un point (vent rencontré vers chaque atterro, §14) ; renvoie (glide,
+    altitude de sécurité)."""
+    src = as_source(wind)
     best_ldg: Site | None = None
     best_alt = 1e9
+    k = rules.GLIDE_K[level]
     for ldg in landings:
-        dist_m = haversine_km(lat, lon, ldg.lat, ldg.lon) * 1000.0
-        track = bearing_deg(lat, lon, ldg.lat, ldg.lon)
-        fs = finesse_sol(wing, level, wind[0], wind[1], track)
-        if fs <= 0:
-            continue
         margin = arrival_margin(level, alt - ldg.elevation_m)
-        alt_sec = ldg.elevation_m + margin + dist_m / fs
+        pts, gw = _glide_wind(ctx, src, lat, lon, alt, ldg, level, wing, k, 1.0, ldg.elevation_m + margin, None, t,
+                              None)  # fmt: skip
+        if gw.available <= 0 or not gw.penetration_ok:
+            continue
+        dist_m = sum(d for d, _ in legs_of(pts)) * 1000.0
+        alt_sec = ldg.elevation_m + margin + dist_m / gw.available
         if alt_sec < best_alt:
             best_alt = alt_sec
             best_ldg = ldg
     if best_ldg is None:
         return None, best_alt
-    return glide_to(ctx, lat, lon, alt, best_ldg, level, wing, wind), best_alt
+    return glide_to(ctx, lat, lon, alt, best_ldg, level, wing, src, t=t), best_alt
+
+
+def transition_finesse(
+    src, lat1: float, lon1: float, lat2: float, lon2: float, z_hi: float, z_lo: float, landing: Site, level: str,
+    wing: float, t: datetime | None,
+) -> float:
+    """Finesse de calcul sol d'une transition en altitude (point A → point B, tranche [z_lo ; z_hi]), vent rencontré
+    de la colonne de l'atterro de repli (§14.1)."""
+    src = as_source(src)
+    legs = legs_of([(lat1, lon1), (lat2, lon2)])
+    if not legs:
+        return wing * rules.GLIDE_K[level]
+    col = src.column(landing, t, None, z_hi)
+    credit = src.credit(landing, t, None, (lat1, lon1))
+    return compute_glide(legs, z_hi, z_lo, col, credit, level, wing, rules.GLIDE_K[level]).available
+
+
+def projector_for(ctx: DataContext, site: Site) -> Projector:
+    """Projection locale centrée sur un décollage, partagée (les caches de contournement sont indexés par elle)."""
+    key = ("projector", site.id, round(site.lat, 5), round(site.lon, 5))
+    proj = ctx.station_cache.get(key)
+    if proj is None:
+        proj = Projector(site.lat, site.lon)
+        ctx.station_cache[key] = proj
+    return proj
+
+
+def path_for(
+    ctx: DataContext, proj: Projector | None, lat: float, lon: float, landing: Site
+) -> tuple[list[tuple[float, float]], list[str]]:
+    """Chemin d'un plané qui évite les zones où le vol libre est interdit : (points intermédiaires, zones)."""
+    if proj is None:
+        return [], []
+    d = detour(ctx, proj, (lat, lon), (landing.lat, landing.lon))
+    if d is None or not d[0]:
+        return [], []
+    return list(d[0]), list(d[2])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -348,11 +480,18 @@ def inside_prohibited(ctx: DataContext, proj: Projector, lat: float, lon: float)
 
 
 def apply_detours(ctx: DataContext, proj: Projector, route: Route, takeoff: Site, landing: Site) -> Route:
-    """Insère dans la route les points de contournement des zones interdites (segment par segment) et allonge le plané
-    déco → atterro du détour nécessaire. Un segment impossible à dévier reste tel quel (le constat le rejette)."""
+    """Insère dans la route les points de contournement des zones interdites (segment par segment) et donne au plané
+    déco → atterro son chemin réel (branches du contournement, §14.1). Un segment impossible à dévier reste tel quel
+    (le constat le rejette)."""
     union, _, _ = _obstacles(ctx, proj)
     if union is None:
         return route
+    if landing.id != takeoff.id:
+        g = detour(ctx, proj, (takeoff.lat, takeoff.lon), (landing.lat, landing.lon))
+        if g is not None and g[0]:
+            route.glide_dist_km = g[1]
+            route.glide_path = list(g[0])
+            route.glide_zones = list(g[2])
     coords: list[Coord] = [route.coords[0]]
     zones: list[str] = []
     for a, b in pairwise(route.coords):
@@ -369,10 +508,26 @@ def apply_detours(ctx: DataContext, proj: Projector, route: Route, takeoff: Site
     route.coords = coords
     route.distance_km = path_length_km(coords)
     route.avoided_zones = list(dict.fromkeys(zones + route.avoided_zones))
-    g = detour(ctx, proj, (takeoff.lat, takeoff.lon), (landing.lat, landing.lon))
-    if g is not None and g[0]:
-        route.glide_dist_km = g[1]
     return route
+
+
+def lose_height_point(
+    ctx: DataContext, proj: Projector | None, landing: Site, arrival_from: float, landing_wind: tuple[float, float]
+) -> tuple[float, float, float]:
+    """Zone de perte d'altitude (§14.4, corrige le §5.1) : au vent de l'atterro, décalée du côté d'où arrive le
+    pilote (± 45°), en travers (± 90°) si ce secteur est interdit ; jamais sous le vent. Vent < 5 km/h : côté
+    d'arrivée. Renvoie (lat, lon, relèvement atterro → ZPA)."""
+    z = rules.LOSE_HEIGHT_ZONE
+    lo_km, hi_km = z["distance_m"][0] / 1000.0, z["distance_m"][1] / 1000.0
+    dists = [rules.PLOUF_LOSE_HEIGHT_POINT_KM, lo_km, hi_km]
+    brgs = zpa_bearings(landing_wind[0], landing_wind[1], arrival_from)
+    for brg in brgs:
+        for d in dists:
+            la, lo = destination(landing.lat, landing.lon, brg, d)
+            if proj is None or not inside_prohibited(ctx, proj, la, lo):
+                return la, lo, brg
+    la, lo = destination(landing.lat, landing.lon, brgs[0], dists[0])
+    return la, lo, brgs[0]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -385,25 +540,17 @@ def build_plouf(
     alternates: list[Site],
     level: str,
     wing: float,
-    glide_wind: tuple[float, float],
+    glide_wind,
     landing_wind: tuple[float, float],
     duration_min: float,
     top_landing: bool = False,
     proj: Projector | None = None,
+    t_start: datetime | None = None,
 ) -> Route:
-    lw_speed, lw_dir = landing_wind
-    if lw_speed >= rules.CALM_WIND_KMH:
-        lose_brg = (lw_dir + 180.0) % 360.0  # côté sous le vent de l'atterro (PTU)
-    else:
-        lose_brg = bearing_deg(landing.lat, landing.lon, takeoff.lat, takeoff.lon)
-    lla, llo = destination(landing.lat, landing.lon, lose_brg, rules.PLOUF_LOSE_HEIGHT_POINT_KM)
-    if proj is not None and inside_prohibited(ctx, proj, lla, llo):
-        # revue 7.4 : zone de perte d'altitude hors d'une zone interdite (PTU hors de la réserve)
-        for off in (30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180):
-            la2, lo2 = destination(landing.lat, landing.lon, (lose_brg + off) % 360, rules.PLOUF_LOSE_HEIGHT_POINT_KM)
-            if not inside_prohibited(ctx, proj, la2, lo2):
-                lla, llo = la2, lo2
-                break
+    """Plouf déco → atterro. `glide_wind` : champ de vent du vol (§14) ; `landing_wind` : vent retenu à l'atterro à
+    l'heure d'arrivée (place la zone de perte d'altitude AU VENT de l'atterro, §14.4)."""
+    arrival_from = bearing_deg(landing.lat, landing.lon, takeoff.lat, takeoff.lon)
+    lla, llo, lose_brg = lose_height_point(ctx, proj, landing, arrival_from, landing_wind)
     lose_alt = landing.elevation_m + max(rules.PLOUF_LOSE_HEIGHT_MIN_AGL_M, 250.0)
     coords: list[Coord] = [
         (takeoff.lon, takeoff.lat, takeoff.elevation_m),
@@ -414,15 +561,21 @@ def build_plouf(
         coords = [(takeoff.lon, takeoff.lat, takeoff.elevation_m), (landing.lon, landing.lat, landing.elevation_m)]
     dist = path_length_km(coords)
     glide = (
-        GlideCheck(0.0, finesse_sol(wing, level, *glide_wind, 0.0), True)
+        calm_glide(wing, level, landing.name)
         if top_landing
         else glide_to(ctx, takeoff.lat, takeoff.lon, takeoff.elevation_m, landing, level, wing, glide_wind,
-                         pair=is_source_pair(takeoff, landing))
-    )
+                      pair=is_source_pair(takeoff, landing), t=t_start)
+    )  # fmt: skip
     wps = [
         _wp(takeoff.name, takeoff.lat, takeoff.lon, takeoff.elevation_m, "takeoff", rules.TAKEOFF_RADIUS_M, 0.0),
     ]
     if not top_landing:
+        min_agl = rules.LOSE_HEIGHT_ZONE["min_agl_m"]
+        if landing_wind[0] >= rules.LOSE_HEIGHT_ZONE["calm_kmh"]:
+            note = (f"Au vent de l'atterro ({au(dir_label(lose_brg))} de {landing.name}), décalée sur le côté, "
+                    f"≥ {min_agl} m sol : perds l'altitude en 8 face au vent, jamais derrière l'atterro, puis PTU")
+        else:
+            note = f"Côté d'arrivée ({au(dir_label(lose_brg))} de {landing.name}), ≥ {min_agl} m sol, puis PTU"
         wps.append(
             _wp(
                 "Zone de perte d'altitude",
@@ -432,14 +585,16 @@ def build_plouf(
                 "turnpoint",
                 rules.TURNPOINT_RADIUS_M,
                 max(0.0, duration_min - 4.0),
-                f"Côté sous le vent de l'atterro, ≥ {rules.PLOUF_LOSE_HEIGHT_MIN_AGL_M:.0f} m sol, puis PTU",
+                note,
             )
-        )
+        )  # fmt: skip
     wps.append(
         _wp(landing.name, landing.lat, landing.lon, landing.elevation_m, "landing", rules.GOAL_RADIUS_M, duration_min)
     )
     wps += alternates_waypoints(alternates)
-    return Route("plouf", coords, wps, dist, takeoff.elevation_m, glide)
+    route = Route("plouf", coords, wps, dist, takeoff.elevation_m, glide)
+    route.zpa_bearing = None if top_landing else lose_brg
+    return route
 
 
 # ---------------------------------------------------------------------------------------------
@@ -489,7 +644,7 @@ def build_local_thermal(
     alternates: list[Site],
     level: str,
     wing: float,
-    glide_wind: tuple[float, float],
+    glide_wind,
     layer_wind: tuple[float, float],
     t_start: datetime,
     duration_min: float,
@@ -497,6 +652,8 @@ def build_local_thermal(
     max_alt: float,
     vario: float = 1.0,
 ) -> Route:
+    """Vol local thermique : déclencheurs au soleil, dans le cône (r ≤ 0,80) ; planés au vent rencontré (§14) à
+    l'heure de passage."""
     cands = _local_trigger_candidates(ctx, takeoff, t_start + timedelta(minutes=duration_min / 3), usable)
     landings = [landing, *alternates]
     scored: list[tuple[float, ReliefPoint]] = []
@@ -505,7 +662,7 @@ def build_local_thermal(
         if not face_is_sunny(p.faces, eta_t, p.lat, p.lon):
             continue
         work_alt = min(max_alt, max(takeoff.elevation_m, p.elevation_m + 150.0))
-        g, _ = best_landing_glide(ctx, p.lat, p.lon, work_alt, landings, level, wing, glide_wind)
+        g, _ = best_landing_glide(ctx, p.lat, p.lon, work_alt, landings, level, wing, glide_wind, t=quarter(eta_t))
         if g is None or not g.margin_ok or g.ratio > rules.LOCAL_TRIGGER_MAX_GLIDE_RATIO:
             continue  # lot 6.6 : un vol local reste confortablement dans le cône (r ≤ 0,80)
         coords = [(takeoff.lon, takeoff.lat, max_alt), (p.lon, p.lat, max_alt)]
@@ -525,11 +682,13 @@ def build_local_thermal(
     # revue 7.21 : ETA = transition au vent nul (vitesse bras hauts) + montée jusqu'à l'altitude du point au vario
     eta, prev_alt, prev_lat, prev_lon = 0.0, takeoff.elevation_m, takeoff.lat, takeoff.lon
     v_air = rules.trim_speed_kmh(wing)
+    etas: dict[str, datetime] = {}
     for p in chosen:
         alt = min(max_alt, max(p.elevation_m + 300.0, takeoff.elevation_m + 200.0))
         coords.append((p.lon, p.lat, alt))
         eta += haversine_km(prev_lat, prev_lon, p.lat, p.lon) / v_air * 60.0
         eta += max(0.0, alt - prev_alt) / max(vario, 0.3) / 60.0
+        etas[p.name] = quarter(t_start + timedelta(minutes=eta))
         prev_alt, prev_lat, prev_lon = alt, p.lat, p.lon
         wps.append(
             _wp(
@@ -552,11 +711,11 @@ def build_local_thermal(
     )
     wps += alternates_waypoints(alternates)
     glide = glide_to(ctx, takeoff.lat, takeoff.lon, takeoff.elevation_m, landing, level, wing, glide_wind,
-                         pair=is_source_pair(takeoff, landing))
-    # pire point de la boucle (déclencheurs à l'altitude de travail)
+                     pair=is_source_pair(takeoff, landing), t=t_start)
+    # pire point de la boucle (déclencheurs à l'altitude de travail, à leur heure de passage)
     for p in chosen:
         work_alt = min(max_alt, max(takeoff.elevation_m, p.elevation_m + 150.0))
-        g, _ = best_landing_glide(ctx, p.lat, p.lon, work_alt, landings, level, wing, glide_wind)
+        g, _ = best_landing_glide(ctx, p.lat, p.lon, work_alt, landings, level, wing, glide_wind, t=etas[p.name])
         if g is not None and g.ratio > glide.ratio:
             glide = g
     route = Route("local_thermal", coords, wps, path_length_km(coords), max_alt, glide)
@@ -564,12 +723,15 @@ def build_local_thermal(
     # (alt + marge + dist / finesse sol) ; pour rejoindre B depuis A, il faut alt_sécurité(B) + dist(A, B) / finesse
     prev_name, prev_lat, prev_lon = "au déco", takeoff.lat, takeoff.lon
     for p in chosen:
-        g, alt_sec = best_landing_glide(ctx, p.lat, p.lon, max_alt, landings, level, wing, glide_wind)
+        g, alt_sec = best_landing_glide(ctx, p.lat, p.lon, max_alt, landings, level, wing, glide_wind, t=etas[p.name])
         if g is None:
             continue
         back = g.landing_name or landing.name
+        back_site = next((x for x in landings if x.name == back), landing)
         sec = max(alt_sec, p.elevation_m + rules.LOCAL_TRIGGER_MIN_HEIGHT_M)  # jamais sous le relief + 150 m
-        fs = finesse_sol(wing, level, glide_wind[0], glide_wind[1], bearing_deg(prev_lat, prev_lon, p.lat, p.lon))
+        # transition A → B au vent rencontré dans la tranche [sec ; sec + 300 m] (§14.1)
+        fs = transition_finesse(glide_wind, prev_lat, prev_lon, p.lat, p.lon, sec + 300.0, sec, back_site, level, wing,
+                                etas[p.name])  # fmt: skip
         need = sec + haversine_km(prev_lat, prev_lon, p.lat, p.lon) * 1000.0 / max(fs, 1.0)
         need_r, sec_r = math.ceil(need / 50.0) * 50, math.ceil(sec / 50.0) * 50
         if need_r <= takeoff.elevation_m and prev_name == "au déco":
@@ -592,7 +754,7 @@ def build_ridge(
     alternates: list[Site],
     level: str,
     wing: float,
-    glide_wind: tuple[float, float],
+    glide_wind,
     wind_dir: float,
     duration_min: float,
     top_landing: bool,
@@ -622,7 +784,7 @@ def build_ridge(
     ]  # fmt: skip
     wps += alternates_waypoints(alternates)
     if top_landing:
-        glide = GlideCheck(0.0, finesse_sol(wing, level, glide_wind[0], glide_wind[1], 0.0), True)
+        glide = calm_glide(wing, level, landing.name)
     else:
         glide = glide_to(ctx, takeoff.lat, takeoff.lon, takeoff.elevation_m, landing, level, wing, glide_wind,
                          pair=is_source_pair(takeoff, landing))
@@ -729,8 +891,11 @@ def build_cross(
     usable: float,
     max_alt: float,
     vario: float,
+    glide_wind=None,
 ) -> tuple[XcPlan | None, str | None]:
-    """Construit le meilleur circuit fermé ; renvoie (plan, raison si impossible)."""
+    """Construit le meilleur circuit fermé ; renvoie (plan, raison si impossible). `layer_wind` = vent moyen de la
+    couche (forme du circuit, vitesse effective) ; `glide_wind` = champ de vent du vol pour les planés du cône (§14 :
+    vent rencontré à l'heure de passage ; défaut : vent de la couche, uniforme)."""
     v_xc = rules.xc_speed_kmh(vario, level, wing)
     if v_xc <= 0:
         return None, "[WEAK_THERMALS] Thermiques trop faibles pour un cross à ce niveau"
@@ -774,7 +939,7 @@ def build_cross(
                 break
             plan = _search_shape(
                 ctx, proj, takeoff, landing, landings_pool, level, wing, layer_wind, shape, d, upwind,
-                usable, max_alt, pool, v_eff, t_climb, t_start,
+                usable, max_alt, pool, v_eff, t_climb, t_start, glide_wind,
             )  # fmt: skip
             if plan is None:
                 continue
@@ -815,6 +980,7 @@ def _search_shape(
     v_eff: float,
     t_climb: float,
     t_start: datetime,
+    glide_wind=None,
 ) -> XcPlan | None:
     radius = d / 2.0 + 3.0 if shape == "out_and_return" else d / 2.5 + 3.0
     cands = [p for p in pool if haversine_km(takeoff.lat, takeoff.lon, p.lat, p.lon) <= radius]
@@ -880,7 +1046,8 @@ def _search_shape(
             continue
         if route_sensitive_conflict(ctx, proj, flight_coords[:-1]):
             continue
-        cone = _cone_check(ctx, coords, landings, level, wing, layer_wind, usable)
+        cone = _cone_check(ctx, coords, landings, level, wing, glide_wind if glide_wind is not None else layer_wind,
+                           usable, lambda km: t_start + timedelta(minutes=t_climb + km / v_eff * 60.0))  # fmt: skip
         if cone is None:
             continue
         glide, decisions, used_landings = cone
@@ -924,16 +1091,19 @@ def _cone_check(
     landings: list[Site],
     level: str,
     wing: float,
-    wind: tuple[float, float],
+    wind,
     usable: float,
+    eta=None,
 ) -> tuple[GlideCheck, list[str], list[Site]] | None:
-    """Vérifie tous les 500 m qu'un atterro identifié reste dans le cône ; renvoie le pire glide."""
+    """Vérifie tous les 500 m qu'un atterro identifié reste dans le cône ; renvoie le pire glide. `eta(km)` = heure de
+    passage au km `km` de la route (planés au vent rencontré à cette heure, §14.1)."""
     limit = usable - rules.SAFETY_ALT_BELOW_CEILING_M
     # lot 6.11 : on contrôle depuis l'altitude de point bas (plafond utile − 300 m) avec r ≤ 0,90
     # (pas de GLIDE_MARGIN caution) ; le glide publié = pire cas à cette altitude.
     worst: GlideCheck | None = None
     decisions: list[str] = []
     used: dict[str, Site] = {}
+    cum = 0.0
     for idx, (a, b) in enumerate(zip(coords[:-1], [*coords[1:-1], coords[-1]], strict=False)):
         seg = haversine_km(a[1], a[0], b[1], b[0])
         n = max(1, int(seg / rules.GLIDE_CHECK_STEP_KM))
@@ -943,7 +1113,8 @@ def _cone_check(
             f = i / n
             lat = a[1] + f * (b[1] - a[1])
             lon = a[0] + f * (b[0] - a[0])
-            g, alt_sec = best_landing_glide(ctx, lat, lon, limit, landings, level, wing, wind)
+            t = quarter(eta(cum + f * seg)) if eta is not None else None
+            g, alt_sec = best_landing_glide(ctx, lat, lon, limit, landings, level, wing, wind, t=t)
             if g is None or alt_sec > limit or g.ratio > rules.GLIDE_CAUTION_RATIO:
                 return None
             if alt_sec > seg_worst_alt:
@@ -954,6 +1125,7 @@ def _cone_check(
             for ldg in landings:
                 if ldg.name == g.landing_name:
                     used[ldg.id] = ldg
+        cum += seg
         if idx < len(coords) - 2 and seg_landing:
             decisions.append(
                 f"Segment {idx + 1} : sous {round(seg_worst_alt, -2):.0f} m, rentrer vers {seg_landing}"
