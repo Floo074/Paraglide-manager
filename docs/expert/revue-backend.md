@@ -250,6 +250,47 @@ Gravité : **B** = bloquant (danger possible pour le pilote ou résultat absurde
 **À faire avant usage pilote** : 7.1 à 7.4 corrigés et testés (scénarios hors ligne fournis plus haut). Puis plans live
 de 30m et 24h à juger sur Annecy et Chamonix, comparés à la prévision brute Open-Meteo, dès que le quota revient.
 
+## Réponse du backend à la revue finale (10/10/2026)
+
+Chaque constat a été reproduit (mock ou scénario hors ligne) avant correction ; un test de non-régression le couvre
+(`backend/tests/test_review_fixes.py`, sauf mention). Requêtes et seuils cités : ceux du lot 7.
+
+| # | Statut | Correction |
+|---|---|---|
+| 7.1 | corrigé | Secours = atterros officiels atteignables (r ≤ 1, relief dégagé) depuis le déco (plouf, soaring) ou depuis un point de la route à son altitude de sécurité (déclencheur − 150 m en local, plafond − 300 m tous les 2 km en cross), vent d'arrivée dans les seuils ; sinon hors des `alternate_landings`, des waypoints, du briefing et de `landing_analysis`. « hors de portée (finesse requise X pour Y) » ; score plafonné à 40 + min(finesse, vent d'arrivée). Planfait (24h) : plus de Doussard / Montmin village / Saint-Jorioz en secours. |
+| 7.2 | corrigé | `moderate` (et `high`) : vol à l'heure du surdéveloppement, après, ou posé moins d'1 h avant → rejet « [OVERDEVELOPMENT] … plus de créneau (il fallait être posé avant hh:mm) » ; `latest_landing` jamais remonté au-dessus du plafond ; `window.end + durée ≤ latest_landing` garanti. S22 modifié : rejeté. |
+| 7.3 | corrigé (b interprété) | (a) ≥ 6 secteurs notés sur 8 : orientation incertaine, déduite de l'exposition MNT ± 22,5° (4 points à ± 150 m, MNT réel), caution TAKEOFF_WIND « Orientation du déco incertaine … vérifie sur place » ; (c) secteurs à plus de 90° de l'exposition écartés (NE de Plan Praz) ; (d) sans MNT : site non proposé, raison donnée. (b) appliqué seulement quand ≥ 6 secteurs sont notés (sinon Forclaz perdait son W, noté 1, axe principal) : **à confirmer par l'expert**. S04 et S18 avec 16 secteurs : no_go (sans MNT, et avec exposition imposée). |
+| 7.4 | corrigé | `flight_prohibited` (code PARAGLIDING-FORBIDDEN, « interdits dans la zone », « survol / vol libre interdit » ; pas une interdiction limitée en hauteur) : traverser = no-go à toute hauteur, déco / atterro dedans = no-go ; le routeur contourne (graphe de visibilité, marge 150 m, plané allongé d'autant) ; briefing « PTU et approche hors de la zone … ». Survol réglementé sous sa hauteur : no-go. OpenAIP `LOW_OVERFLIGHT` = zone réglementée, plafond lu comme hauteur sol. Fixture des Aiguilles Rouges alignée sur Biodiv'Sports. |
+| 7.5 | corrigé | Le créneau GO s'arrête au pas précédant l'entrée du vent dans la bande 80-100 % (Risk info « Fin du créneau à hh:mm : le vent forcit ensuite ») ; dans les 30 premières minutes : caution WIND_INCREASING et verdict MARGINAL. |
+| 7.6 | corrigé | Fin de créneau = min(heure limite − durée, cible + 3 h, coucher − 30 min − durée, élève : convection + 1 h) pour toutes les variantes ; chaque pas revérifié avec les constats bloquants horaires (vent arrière, déco E à l'ombre, dévent, vent hors limites, orage / surdéveloppement). |
+| 7.7 | corrigé | « être posé avant » : « fin du créneau à hh:mm + durée de vol ; cause » quand c'est le créneau qui borne ; durée : « limite élève 45 min », « dénivelé de X m » (plouf), cause réelle sinon. |
+| 7.8 | corrigé | Local thermique : « Pour aller à B, sois au-dessus de X m à A ; en dessous, retour vers L. À B, sous Y m, rentre vers L » (alt_sécurité au cône des atterros, jamais sous relief + 150 m). |
+| 7.9 | corrigé | Rafale fusionnée = rafale modèle + poids × (rafale balise − rafale modèle à l'heure de la mesure), ≥ vent fusionné ; max avec la rafale balise 10 min aux horizons courts. Lumbin 30m : 6 km/h, rafales 14 (et non 21). |
+| 7.10 | corrigé | Difficulté = plus petit niveau dont le VERDICT (score compris) n'est pas no_go ; au moins « brevet de pilote » si le vol dépasse 45 min ou si le créneau thermique déborde convection + 1 h ; élève en thermique : décollage avant convection + 1 h. |
+| 7.11 | corrigé | `XC_MIN_VARIO_MS` 1,5 (inter., conf.) / 1,2 (expert) : « [WEAK_THERMALS] Thermiques trop faibles pour un cross (0,9 m/s ; 1,5 requis) » ; points tournants nommés d'après le sommet connu le plus proche (≤ 2 km). |
+| 7.12 | corrigé | Vent / rafales d'arrivée au-dessus du seuil : écarté dans l'analyse et en secours (« vent d'arrivée 17 km/h, rafales 31 (seuils 20 / 25) ») ; gardé pour l'atterro principal d'un plan classique (jugé par LANDING_WIND). |
+| 7.13 | corrigé | `GLIDE_K_ASSOCIATED_PAIR = 0,80` pour le plané direct déco → atterro officiel associé par la source (jamais une association déduite par proximité, marquée `deduced_landing_ids`), relief vérifié sur MNT réel (démo / scénario : données réputées exactes). Forclaz → Doussard élève par vent calme : 6,8 disponible, GO ; 10 km/h de face : pas de GO. CDC §2.3 corrigé (rév. 4). En live, le contournement de la réserve du Bout du Lac allonge le plané (+ 150 m environ) : r ≈ 0,91, **à juger par l'expert**. |
+| 7.14 | corrigé (partiel) | Atterro de Plaine-Joux = Chedde (45,9285 ; 6,7246 ; 603 m) : GO élève par vent calme. Le déco de démo reste en (45,9545 ; 6,7420), à 3,2 km de Chedde (2,6 km pour le déco PGE pge:3021) : position à vérifier sur PGE (injoignable le 10/10, « connection reset »). |
+| 7.15 | corrigé | Déco au-dessus de FL115 − 100 m : ALTITUDE_LIMIT caution BLOQUANTE (« … réglementation locale (Mont-Blanc, R30) à vérifier ; réservé aux pilotes experts »), difficulté expert ; rejet clair « Plafond limité par le FL115 (≈ 3405 m) sous l'altitude du déco ». |
+| 7.16 | corrigé | Limites sol gardées comme hauteurs (`ceiling_reference`, `floor_height_m`, `ceiling_height_m` au contrat), converties point par point sur la route ; R30C sous 305 m/sol → AIRSPACE_ACTIVATION. |
+| 7.17 | partiel | Lus : baisse de pression ≥ 3 hPa / 3 h (FRONT no-go, `pressure_msl` Open-Meteo), rotor à l'atterro (5 / 10 × la hauteur du relief au vent, vent de crête ≥ 15 km/h, MNT réel), plafond d'un cross ≥ relief de la route + 500/400/300 m (MNT réel). Non vérifiés, listés dans un Risk info `UNCHECKED` et le README : venturi, Δp du foehn, hauteur d'arrivée sur la face suivante, −10 % sous le vent. |
+| 7.18 | corrigé | Une raison par code (la plus grave) ; STRONG_WIND_ALOFT pour le vent en altitude ; plus de « (seuil de ton niveau appliqué) » ; chiffres de finesse dans « Score global insuffisant » ; pente à une décimale près du seuil ; terrain communautaire exclu par la politique nommé. |
+| 7.19 | corrigé | « être posé avant » au quart d'heure dès 12 h d'horizon (jamais au-dessus du plafond horaire). |
+| 7.20 | corrigé | Restitution proposée dès que son créneau recoupe [cible − 30 min ; cible + 3 h] (sauf no-go absolu à l'heure cible : S13). |
+| 7.21 | corrigé | « FAI » ; « confiance plafonnée (démo) » ; aérologie du jour (pic, plafond du jour) puis l'heure du vol ; atterro PGE « null » → « Atterrissage PGE n° … » ; `stale` = mesure ancienne (mesure absente = vent null) ; tendance dans /api/beacons (≤ 8 balises) ; verdict de pente dans l'analyse ; SSS autour du déco ; ETA = transition + montée au vario. |
+| 7.22 | corrigé | /api/sources : suspension du quota Open-Meteo propagée aux trois API. Plans live 30m / 24h sur Annecy et Chamonix **toujours à juger**. |
+| B5 | corrigé | Jamais d'altitude tirée du MNT de démo hors `DATA_MODE=mock` (sites, /api/forecast/point, /api/forecast/grid) ; site sans altitude écarté, avertissement, cache 10 min. |
+| B6 | corrigé | OpenAIP par tuiles de 1° (cache 24 h, un appel / 5 min, verrou) ; jamais d'espaces de démo hors mock ; sinon `unverified` + Risk « Espaces aériens non vérifiés ». |
+| B7 | corrigé | Voir 7.16 ; cache indépendant du MNT. |
+| TMA | corrigé | Espace interdit au-dessus du déco, de l'atterro et du relief : vol thermique reconstruit sous plancher − 100 m (ALTITUDE_LIMIT non bloquant) au lieu d'un rejet. |
+| ids | corrigé | Id de plan = hachage de toute la requête normalisée. |
+| Balises auto | corrigé | Balises de démo seulement en mode démo ou météo synthétique ; sinon aucune, avertissement. |
+| Altitude saisie | corrigé | Écart au MNT > 100 m : avertissement + caution FREE_TAKEOFF ; > 300 m : plané calculé avec min(saisie, MNT + 50 m). |
+| Tendance | corrigé | Régression linéaire sur tous les échantillons. |
+| Heure cible | corrigé | Même arrondi (15 min jusqu'à 1 h, l'heure au-delà, demie vers le haut) au front, au moteur et dans les réponses. |
+| Mineurs | corrigés | Verrou par clé (prévisions, sites, MNT, zones) ; confiance × 0,8 avec un seul modèle et modèles réels par heure ; seuils de tendance du front alignés ; mots entiers pour « fermé » ; `<ele>` omis si inconnu ; pluie « 3 h avant » à la convention Open-Meteo ; caution AIRSPACE < 100 m vertical ; tests renforcés (assertion tautologique, `risk_codes_forbidden` à tout niveau, contenu GPX / .xctsk). |
+| Doussard démo | **refusé** | Le constat demande de replacer Doussard à ≈ 3,4 km du déco ; le constat 7.13 de l'expert établit que la vraie distance est 4,1 km (PGE pge:3046, balise Pioupiou 1720) et règle le plouf par k = 0,80 : la fixture reste sur le vrai terrain. |
+
 ## Désaccords remontés au coordinateur
 
 _(aucun pour l'instant)_

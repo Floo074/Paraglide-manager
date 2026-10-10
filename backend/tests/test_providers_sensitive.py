@@ -147,7 +147,7 @@ def test_area_feature_contract(areas):
     p = f["properties"]
     assert set(p) == {
         "id", "name", "species", "kind", "period_months", "active_now", "recommendation", "min_height_agl_m",
-        "source", "url",
+        "source", "url", "flight_prohibited",
     }  # fmt: skip
     assert p["active_now"] is True and p["source"] == "biodivsports"
     october = area_feature(areas["biodivsports:749"], datetime(2026, 10, 1, tzinfo=UTC))

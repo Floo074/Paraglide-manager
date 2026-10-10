@@ -119,6 +119,8 @@ class Attachment:
     model_speed_kmh: float = 0.0  # vent modèle « maintenant » comparable à la balise
     model_dir_deg: float = 0.0
     dv: float = 0.0  # balise − modèle (maintenant)
+    model_gust_kmh: float = 0.0  # rafale modèle « maintenant »
+    dg: float | None = None  # rafale balise − rafale modèle (maintenant), None si la balise n'a pas de rafale
     dd: float = 0.0
     dd_valid: bool = False
 
@@ -316,17 +318,22 @@ def breeze_factor(t: datetime, big_valley: bool) -> float:
     return 1.0
 
 
-def _model_now(ctx: DataContext, at: Attachment, tl: PointTimeline, big_valley: bool) -> tuple[float, float]:
+def _model_now(
+    ctx: DataContext, at: Attachment, tl: PointTimeline, big_valley: bool
+) -> tuple[float, float, float]:
+    """(vent, direction, rafale) du modèle à l'heure de la mesure, comparables à la balise."""
     a = tl.at(ctx.reference_time)
+    gf = a.wind_gust_kmh / a.wind_speed_kmh if a.wind_speed_kmh >= 1.0 else rules.GUST_FACTOR_DEFAULT
     if at.role == "takeoff":
         if at.elevation_m is not None and abs(at.elevation_m - at.site.elevation_m) > 50:
-            return a.profile.wind(at.elevation_m)  # même altitude que la balise (synoptique si 300-600 m)
+            v, d = a.profile.wind(at.elevation_m)  # même altitude que la balise (synoptique si 300-600 m)
+            return v, d, v * gf
         from app.engine.conditions import model_takeoff_wind
 
-        v, d, _ = model_takeoff_wind(a, at.site.elevation_m)
-        return v, d
-    v10, d10, _ = tl.wind10_at(ctx.reference_time) or (a.wind_speed_kmh, a.wind_direction_deg, 0.0)
-    return v10 * breeze_factor(ctx.reference_time, big_valley), d10
+        return model_takeoff_wind(a, at.site.elevation_m)
+    v10, d10, g10 = tl.wind10_at(ctx.reference_time) or (a.wind_speed_kmh, a.wind_direction_deg, a.wind_gust_kmh)
+    bf = breeze_factor(ctx.reference_time, big_valley)
+    return v10 * bf, d10, (g10 or v10 * gf) * bf
 
 
 def site_attachments(
@@ -346,8 +353,10 @@ def site_attachments(
         if not at.attached:
             continue
         if not at.stale and b.wind_speed_kmh is not None:
-            at.model_speed_kmh, at.model_dir_deg = _model_now(ctx, at, tl, big_valley)
+            at.model_speed_kmh, at.model_dir_deg, at.model_gust_kmh = _model_now(ctx, at, tl, big_valley)
             at.dv = b.wind_speed_kmh - at.model_speed_kmh
+            if b.wind_gust_kmh is not None:
+                at.dg = b.wind_gust_kmh - at.model_gust_kmh
             if (
                 b.wind_direction_deg is not None
                 and b.wind_speed_kmh >= DIR_MIN_WIND_KMH
@@ -483,6 +492,7 @@ class StationNowcast:
     attachments: list[Attachment]
     representative: list[Attachment] = field(default_factory=list)
     speed_bias_kmh: float = 0.0  # moyenne pondérée des écarts balise − modèle (maintenant)
+    gust_bias_kmh: float | None = None  # idem pour la rafale (revue 7.9), None sans rafale balise
     dir_bias_deg: float = 0.0
     dir_valid: bool = False
     weight: float = 0.0  # poids de fusion W (meilleure balise représentative)
@@ -543,6 +553,10 @@ def station_nowcast(
     gust_src = [a for a in gust_all if not a.outlier] or gust_all
     if gust_src:
         nc.beacon_gust_kmh = max(a.beacon.wind_gust_kmh or 0.0 for a in gust_src)
+    g_rep = [(w, a) for w, a in zip(ws, rep, strict=True) if a.dg is not None and not a.synoptic]
+    if g_rep:
+        dg = sum(w * a.dg for w, a in g_rep) / sum(w for w, _ in g_rep)
+        nc.gust_bias_kmh = max(-rules.NOWCAST_MAX_SPEED_BIAS_KMH, min(rules.NOWCAST_MAX_SPEED_BIAS_KMH, dg))
     if role == "takeoff":
         nc.mismatch = (
             abs(nc.speed_bias_kmh) > rules.BEACON_CONTRADICTION_KMH
@@ -580,7 +594,9 @@ def fuse(
     d = model_d
     if nc.dir_valid and model_v >= DIR_MIN_WIND_KMH:
         d = (model_d + nc.weight * nc.dir_bias_deg) % 360.0
-    g = max(v, model_g * (v / model_v) if model_v > 1 else v * rules.GUST_FACTOR_DEFAULT)
+    # revue 7.9 : rafale corrigée comme le vent moyen (additif, §12.1), jamais un facteur de rafale non borné
+    bias_g = nc.gust_bias_kmh if nc.gust_bias_kmh is not None else nc.speed_bias_kmh
+    g = max(v, model_g + nc.weight * bias_g)
     if nc.beacon_gust_kmh is not None and horizon in rules.BEACON_GUST_HORIZONS:
         g = max(g, nc.beacon_gust_kmh)
     v_ret, g_ret = v, g

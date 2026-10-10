@@ -140,7 +140,7 @@ def test_airspace_feature_contract(by_name):
     assert f["type"] == "Feature" and f["geometry"]["type"] == "Polygon"
     assert f["properties"] == {
         "name": "TMA CHAMBERY 1", "airspace_class": "E", "type": "TMA", "floor_m": 914, "ceiling_m": 2896,
-        "floor_reference": "AMSL",
+        "floor_reference": "AMSL", "ceiling_reference": "AMSL", "floor_height_m": None, "ceiling_height_m": None,
     }  # fmt: skip
 
 

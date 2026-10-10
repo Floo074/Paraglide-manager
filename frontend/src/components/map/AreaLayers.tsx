@@ -42,6 +42,11 @@ export function SensitiveAreasLayer({ features }: { features: SensitiveAreaFeatu
                   <span className="muted">Sensibilité :</span> {formatMonths(p.period_months)}{" "}
                   <strong className={active ? "text-nogo" : "muted"}>{active ? "(active)" : "(inactive à cette date)"}</strong>
                 </div>
+                {p.flight_prohibited ? (
+                  <div>
+                    <strong className="text-nogo">Vol libre interdit dans la zone, à toute hauteur</strong>
+                  </div>
+                ) : null}
                 {p.min_height_agl_m !== null ? (
                   <div>
                     <span className="muted">Survol :</span> au moins {formatAltitude(p.min_height_agl_m)} sol
@@ -91,7 +96,15 @@ export function AirspacesLayer({ features }: { features: AirspaceFeature[] }) {
                     <tr>
                       <th>Plafond</th>
                       <td>
-                        {formatAltitude(p.ceiling_m)} <span className="muted">({ft(p.ceiling_m)} · {fl(p.ceiling_m)})</span>
+                        {p.ceiling_reference === "GND" && p.ceiling_height_m !== null && p.ceiling_height_m !== undefined ? (
+                          <>
+                            {formatAltitude(p.ceiling_height_m)} sol <span className="muted">— publié par rapport au sol (≈ {formatAltitude(p.ceiling_m)} au centre)</span>
+                          </>
+                        ) : (
+                          <>
+                            {formatAltitude(p.ceiling_m)} <span className="muted">({ft(p.ceiling_m)} · {fl(p.ceiling_m)})</span>
+                          </>
+                        )}
                       </td>
                     </tr>
                     <tr>

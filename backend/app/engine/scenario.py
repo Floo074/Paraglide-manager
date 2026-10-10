@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from shapely.geometry import Polygon
 
 from app.engine import rules
+from app.engine.airspace import low_overflight_areas
 from app.engine.context import Airspace, DataContext, PointTimeline, ReliefPoint, SensitiveArea, SiteMeta
 from app.engine.landings import LandingSpot
 from app.engine.planner import evaluate_sites
@@ -154,6 +155,7 @@ def _analysis(
         rh700_pct=rh700,
         el_m=None,
         models=["scenario"],
+        pressure_msl_hpa=None if vals.get("pressure_msl_hpa") is None else float(vals["pressure_msl_hpa"]),
     )
 
 
@@ -234,6 +236,9 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
         landing.id: SiteMeta(big_valley=landing_spec.get("big_valley"), top_landing=False),
         **{a.id: SiteMeta(big_valley=s.get("big_valley")) for a, s in zip(alternates, alt_specs, strict=False)},
     }
+    if mode != "custom_takeoff" and spec["takeoff"].get("dem_aspect_deg") is not None:
+        # exposition mesurée sur le MNT réel (revue 7.3) : imposée par le scénario
+        meta[takeoff.id] = SiteMeta(dem_aspect_deg=float(spec["takeoff"]["dem_aspect_deg"]))
     day0 = target.replace(hour=0, minute=0, second=0, microsecond=0)
     hours = [day0 - timedelta(hours=6) + timedelta(hours=i) for i in range(36)]
     conv = weather.get("convection") or {}
@@ -245,7 +250,9 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
         vals = _hour_values(weather, t)
         day = t.replace(hour=0, minute=0)
         in_conv = bool(conv) and _hm(conv["start"], day) <= t <= _hm(conv["end"], day)
-        if prev3 > 0 and target_hour - timedelta(hours=3) <= t < target_hour and "precipitation_mm_h" not in (
+        # pluie des 3 h avant la cible : valeurs horodatées cible − 2 h … cible (cumul de l'heure précédente, comme
+        # Open-Meteo)
+        if prev3 > 0 and target_hour - timedelta(hours=2) <= t <= target_hour and "precipitation_mm_h" not in (
             (weather.get("hourly") or {}).get(str(t.hour)) or {}
         ):
             vals["precipitation_mm_h"] = max(float(vals.get("precipitation_mm_h", 0.0)), prev3 / 3.0)
@@ -342,6 +349,9 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
             name=a["name"], airspace_class=str(a["airspace_class"]), type=str(a.get("type", a["airspace_class"])),
             floor_m=float(a["floor_m"]), ceiling_m=float(a["ceiling_m"]), geometry=Polygon(a["polygon"]),
             activity_known=bool(a.get("activity_known", False)), active=bool(a.get("active", False)),
+            floor_agl=bool(a.get("floor_agl", False)), ceiling_agl=bool(a.get("ceiling_agl", False)),
+            floor_height_m=float(a["floor_m"]) if a.get("floor_agl") else None,
+            ceiling_height_m=float(a["ceiling_m"]) if a.get("ceiling_agl") else None,
         )
         for a in spec.get("airspaces") or []
     ]
@@ -355,9 +365,11 @@ def build_context(spec: dict) -> tuple[DataContext, PlanFilters]:
             recommendation=z.get("recommendation", ""),
             min_height_agl_m=z.get("min_height_agl_m"),
             geometry=Polygon(z["polygon"]),
+            flight_prohibited=bool(z.get("flight_prohibited", False)),
         )
         for i, z in enumerate(spec.get("sensitive_areas") or [])
     ]
+    areas += low_overflight_areas(airspaces)
     relief = [
         ReliefPoint(
             p["name"], p["lat"], p["lon"], float(p["elevation_m"]), list(p.get("faces", [])), bool(p.get("valley"))

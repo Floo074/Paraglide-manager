@@ -48,6 +48,7 @@ SURFACE_VARS = (
     "freezing_level_height",
     "boundary_layer_height",
     "shortwave_radiation",
+    "pressure_msl",  # revue 7.17 : tendance de pression (front, CDC §3 #13)
 )
 # niveaux demandés (ECMWF n'a pas 950/900/800, ICON-D2 les a)
 REQUEST_LEVELS = (1000, 950, 925, 900, 850, 800, 700, 600, 500)

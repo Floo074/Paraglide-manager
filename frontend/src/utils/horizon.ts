@@ -28,17 +28,17 @@ export function horizonToMinutes(h: Horizon): number {
 }
 
 /**
- * Pas de prévision utilisé pour arrondir l'heure cible : 15 min pour l'horizon « 15 min »
- * (AROME HD au quart d'heure ; sinon l'arrondi à l'heure pourrait tomber AVANT maintenant),
- * 1 h au-delà.
+ * Pas de prévision utilisé pour arrondir l'heure cible, IDENTIQUE au backend (`round_target`,
+ * `rules.NOWCAST_WINDOW_START_MIN`) : 15 min pour « 15 min », « 30 min » et « 1 h » (nowcasting
+ * au quart d'heure), 1 h au-delà.
  */
 export function forecastStepMinutes(horizon: Horizon): number {
-  return horizon === "15m" ? 15 : 60;
+  return horizon === "15m" || horizon === "30m" || horizon === "1h" ? 15 : 60;
 }
 
 /**
- * Heure cible = heure de référence + horizon, arrondie au pas de prévision (au plus proche, comme
- * le backend : 15 min pour « 15 min », 1 h sinon). stepMinutes = 0 désactive l'arrondi.
+ * Heure cible = heure de référence + horizon, arrondie au pas de prévision (au plus proche, la demie
+ * vers le haut, comme le backend). stepMinutes = 0 désactive l'arrondi.
  */
 export function targetTimeFromHorizon(reference: Date, horizon: Horizon, stepMinutes = forecastStepMinutes(horizon)): Date {
   const raw = reference.getTime() + horizonToMinutes(horizon) * 60_000;

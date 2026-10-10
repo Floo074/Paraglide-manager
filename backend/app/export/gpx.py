@@ -43,7 +43,8 @@ def plan_to_gpx(plan: FlightPlan) -> str:
 
     def wpt(lat, lon, ele, name, desc, sym, typ):
         w = _sub(root, "wpt", lat=f"{lat:.6f}", lon=f"{lon:.6f}")
-        _sub(w, "ele", f"{ele:.0f}")
+        if ele is not None:  # revue (m) : altitude inconnue → <ele> omis (optionnel en GPX 1.1), jamais « 0 »
+            _sub(w, "ele", f"{ele:.0f}")
         _sub(w, "name", name)
         if desc:
             _sub(w, "desc", desc)
@@ -56,7 +57,7 @@ def plan_to_gpx(plan: FlightPlan) -> str:
         desc = f"Balise {b.source}"
         if b.wind_speed_kmh is not None:
             desc += f" : {b.wind_speed_kmh:.0f} km/h ({b.observed_at})"
-        wpt(b.lat, b.lon, b.elevation_m or 0.0, f"Balise {b.name}", desc, "Weather Station", "beacon")
+        wpt(b.lat, b.lon, b.elevation_m, f"Balise {b.name}", desc, "Weather Station", "beacon")
 
     rte = _sub(root, "rte")
     _sub(rte, "name", plan.title)

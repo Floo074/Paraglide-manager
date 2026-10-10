@@ -133,6 +133,12 @@ LEVEL_LABEL_FR: Final = {
 }
 
 # --- §0 / §2.1 vent au déco ---------------------------------------------------------------------
+# revue 7.3 : orientation de déco « incertaine » dès 6 secteurs principaux sur 8 (source « tous secteurs ») ; elle est
+# alors déduite de l'exposition MNT ± 22,5° ; un secteur à plus de 90° de l'exposition MNT est écarté
+ORIENTATION_UNCERTAIN_MIN_SECTORS: Final = 6
+ORIENTATION_MAX_FROM_DEM_ASPECT_DEG: Final = 90.0
+ORIENTATION_DEM_STEP_M: Final = 150.0  # exposition MNT : 4 points à ± 150 m (N, S, E, O) du déco
+ORIENTATION_DEM_MIN_SLOPE_PCT: Final = 10.0  # en dessous, l'exposition MNT n'est pas significative (replat, sommet)
 SECTOR_HALF_WIDTH_DEG: Final = 11.25  # écart = angle au centre du secteur − 11,25°, borné à 0
 TAILWIND_ANGLE_DEG: Final = 90.0  # écart > 90° = vent arrière
 GUST_FACTOR_MIN_MEAN_KMH: Final = 15.0  # lot 2.2 : facteur de rafale = simple caution, si moyenne ≥ 15 km/h
@@ -178,6 +184,7 @@ LOCAL_THERMAL_BEGINNER_MAX_MIN: Final = 45.0
 LOCAL_THERMAL_DURATION_CAPS: Final = ((1.2, 60.0), (2.0, 120.0))
 LOCAL_THERMAL_LOW_CEILING_M: Final = 400.0
 LOCAL_THERMAL_LOW_CEILING_MAX_MIN: Final = 45.0
+LOCAL_TRIGGER_MIN_HEIGHT_M: Final = 150.0  # revue 7.8 : altitude de sécurité d'un déclencheur ≥ relief + 150 m
 LOCAL_TRIGGER_MAX_GLIDE_RATIO: Final = 0.80  # lot 6.6 : déclencheur gardé si r ≤ 0,80 vers un atterro
 ALLOWED_GENTLE_THERMAL_FRACTION: Final = 0.6  # lot 6.4 : « allowed » → 100 jusqu'à 60 % du seuil
 COLD_AT_CEILING_BEGINNER_C: Final = -10.0  # §3 #14
@@ -243,11 +250,28 @@ GLIDE_RATIO_SUBSCORE: Final = ((0.75, 100.0), (0.90, 60.0), (0.95, 40.0), (1.0, 
 GLIDE_CAUTION_RATIO: Final = 0.90  # GLIDE_MARGIN caution au-delà ; danger (no-go) si r > 1
 TOP_LANDING_MAX_DROP_M: Final = 50.0  # lot 2.4c : atterro ≥ alt déco − 50 m = top landing
 GLIDE_LEE_PENALTY: Final = 0.9
+# décision expert (revue finale 7.13, CDC §2.3 rév. 4) : plané direct déco → atterro officiel ASSOCIÉ PAR LA SOURCE
+# (FFVL, PGE, fixture ; jamais une association déduite par proximité), relief vérifié : k = 0,80 à tous les niveaux
+GLIDE_K_ASSOCIATED_PAIR: Final = 0.80
 TERRAIN_CLEARANCE_M: Final = 50.0
 GLIDE_CHECK_STEP_KM: Final = 0.5
 SAFETY_ALT_BELOW_CEILING_M: Final = 300.0
 XC_WINDOW_USAGE: Final = 0.85  # backend : objectif de distance = 85 % de la fenêtre (marge, médiane ≠ record)
-XC_MIN_DURATION_MIN: Final = 60.0  # backend : en dessous, un cross n'a pas de sens
+# revue 7.11 (§4.8) : 0,8-1,5 m/s = local doux ; un cross demande au moins 1,5 m/s (1,2 pour un expert)
+XC_MIN_VARIO_MS: Final = by_level(None, 1.5, 1.5, 1.2)
+XC_RELIEF_NAME_RADIUS_KM: Final = 2.0  # point tournant nommé d'après le sommet connu le plus proche
+XC_MIN_DURATION_MIN: Final = 60.0
+SINGLE_MODEL_CONFIDENCE_FACTOR: Final = 0.8  # revue (m) : moins de 2 modèles couvrent l'heure cible
+# §4.5 rotor sous le vent (revue 7.17) : vent à la crête ≥ 15 km/h ; 5 × la hauteur du relief (15-25 km/h), 10 × au-delà
+ROTOR_MIN_CREST_WIND_KMH: Final = 15.0
+ROTOR_STRONG_WIND_KMH: Final = 25.0
+ROTOR_MIN_RELIEF_M: Final = 150.0  # relief significatif au-dessus du point
+ROTOR_SEARCH_KM: Final = 10.0
+ROTOR_STEP_KM: Final = 0.25
+UNCHECKED_RULES_TEXT: Final = (
+    "Non vérifié par l'outil : venturi aux cols et brèches (§4.5), écart de pression entre versants du foehn (§3 #4), "
+    "hauteur d'arrivée sur la face suivante d'un cross (§5.4), finesse −10 % sous le vent (§2.3)"
+)  # backend : en dessous, un cross n'a pas de sens
 XC_SPEED_HIGH_PERF_FACTOR: Final = 1.15
 XC_MIN_EFFECTIVE_SPEED_KMH: Final = 8.0
 XC_TRIANGLE_WIND_FACTOR: Final = 0.7
@@ -342,6 +366,11 @@ MISTRAL_SECTOR_DEG: Final = (320.0, 30.0)
 # --- §12.6 / §12.7 compléments backend (décollage libre, atterros candidats, cône de finesse) ----------
 FREE_TAKEOFF_DEM: Final = {"grid_n": 5, "grid_step_m": 100.0}  # grille MNT autour du point (1 appel Open-Meteo)
 FREE_TAKEOFF_FLIGHT_TYPES: Final = ("local", "cross_country")  # pas de soaring (top landing) depuis un point libre
+# revue : altitude saisie d'un décollage libre comparée au MNT (avertissement au-delà de 100 m ; au-delà de 300 m,
+# altitude retenue pour le plané = min(saisie, MNT + 50 m))
+CUSTOM_ELEVATION_WARN_DIFF_M: Final = 100.0
+CUSTOM_ELEVATION_MAX_DIFF_M: Final = 300.0
+CUSTOM_ELEVATION_CLIFF_M: Final = 50.0
 GLIDE_CONE: Final = {"bearings": 36, "step_km": 0.25, "max_km": 40.0, "clearance_from_km": 0.5}
 LANDING_SEARCH_RADIUS_KM: Final = 20.0  # atterros candidats cherchés autour d'un décollage libre
 LANDING_MAX_CANDIDATES: Final = 40  # au plus 40 candidats évalués (les plus proches, dans la portée de plané)

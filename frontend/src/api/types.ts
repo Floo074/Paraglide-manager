@@ -312,9 +312,12 @@ export interface AirspaceProperties {
   name: string;
   airspace_class: string; // A…G, R, Q (dangereuse), P, SIV, UNCLASSIFIED
   type: string;
-  floor_m: number; // m AMSL (FL convertis en atmosphère standard)
-  ceiling_m: number; // m AMSL
-  floor_reference: "AMSL" | "GND"; // plancher publié par rapport au sol, converti en AMSL
+  floor_m: number; // m AMSL (FL convertis en atmosphère standard ; limite sol convertie au centre de la zone)
+  ceiling_m: number; // m AMSL (idem)
+  floor_reference: "AMSL" | "GND"; // plancher publié par rapport au sol
+  ceiling_reference: "AMSL" | "GND"; // plafond publié par rapport au sol (ex. « 1000 ft ASFC », R30C, parcs)
+  floor_height_m: number | null; // hauteur publiée au-dessus du sol (référence GND), sinon null
+  ceiling_height_m: number | null; // idem pour le plafond
 }
 
 export type GeoJsonPosition = [number, number] | [number, number, number];
@@ -333,6 +336,9 @@ export interface AirspaceFeature {
 export interface AirspaceFeatureCollection {
   type: "FeatureCollection";
   features: AirspaceFeature[];
+  /** OpenAIP indisponible (hors démo, jamais d'espaces fictifs) : liste vide ou partielle, à vérifier */
+  unverified?: boolean;
+  warning?: string | null;
 }
 
 /** GET /api/sensitive-areas?bbox=… → GeoJSON FeatureCollection (Biodiv'Sports + cœurs de parcs nationaux) */
@@ -347,6 +353,8 @@ export interface SensitiveAreaProperties {
   min_height_agl_m: number | null; // hauteur de survol recommandée
   source: "biodivsports" | "fixture";
   url: string | null;
+  /** parapente / sports aériens interdits dans la zone, à toute hauteur (no-go, la route la contourne) */
+  flight_prohibited?: boolean;
 }
 
 export interface SensitiveAreaFeature {

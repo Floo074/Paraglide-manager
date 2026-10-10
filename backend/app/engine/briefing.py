@@ -53,7 +53,7 @@ def summary(c: Candidate) -> str:
     kind = TYPE_LABEL.get(c.variant, c.variant)
     if c.variant == "xc" and c.route.xc_subtype:
         kind = f"cross en {XC_SHAPE_LABEL[c.route.xc_subtype]} de {c.route.distance_km:.0f} km"
-    s = f"{kind.capitalize()} de {duration_label(c.duration_min)} depuis {c.takeoff.name}, {wind}"
+    s = f"{kind[0].upper()}{kind[1:]} de {duration_label(c.duration_min)} depuis {c.takeoff.name}, {wind}"
     if c.vario >= rules.THERMAL_USABLE_MIN_MS and c.variant in ("local_thermal", "xc"):
         s += f", thermiques {c.vario:.1f} m/s jusqu'à {round_alt(c.max_alt, c.horizon)} m"
     s += "."
@@ -115,11 +115,16 @@ def briefing(c: Candidate) -> list[str]:
 
     # 2. créneau
     end_reason = c.landing_cap_reason or "fin de la fenêtre de vol"
+    if c.window_end is None or c.window_end <= c.window_start:
+        deco = (f"décoller à {fmt_hm(c.window_start)} (heure légale), pas plus tard (aucune marge entre le "
+                f"décollage et l'heure limite)")  # fmt: skip
+    else:
+        deco = f"décoller entre {fmt_hm(c.window_start)} et {fmt_hm(c.window_end)} (heure légale)"
     out.append(
-        f"Créneau : décoller entre {fmt_hm(c.window_start)} et {fmt_hm(c.window_end)} (heure légale), "
-        f"être posé avant {fmt_hm(c.latest_landing)} ({end_reason}). Coucher du soleil à {fmt_hm(c.sunset)}."
+        f"Créneau : {deco}, être posé avant {fmt_hm(c.latest_landing)} ({end_reason}). Coucher du soleil à "
+        f"{fmt_hm(c.sunset)}."
         if c.sunset
-        else f"Créneau : décoller entre {fmt_hm(c.window_start)} et {fmt_hm(c.window_end)} (heure légale)."
+        else f"Créneau : {deco}."
     )
     # 3. situation générale
     a = c.takeoff_wind.hour
@@ -162,12 +167,19 @@ def briefing(c: Candidate) -> list[str]:
     # 5. aérologie
     cw = c.convection
     if cw.start and cw.end:
+        # revue 7.21 : aérologie de la journée (pic, plafond du jour), puis ce qu'il en est à l'heure du vol
+        day_ceiling = c.day_ceiling if c.day_ceiling is not None else c.usable
         thermo = (
             f"Aérologie : thermiques de {fmt_hm(cw.start)} à {fmt_hm(cw.end)} (pic vers "
-            f"{fmt_hm(cw.peak) if cw.peak else '—'}), "
-            f"vario moyen {c.vario:.1f} m/s ({thermal_quality_label(c.vario)}), plafond utile "
-            f"{round_alt(c.usable, c.horizon)} m"
+            f"{fmt_hm(cw.peak) if cw.peak else '—'}, vario {cw.peak_strength_ms:.1f} m/s), plafond utile du jour "
+            f"{round_alt(day_ceiling, c.horizon)} m"
         )
+        if c.vario < rules.THERMAL_USABLE_MIN_MS:
+            thermo += f" ; à l'heure du vol ({fmt_hm(c.start)}) : pas de thermique exploitable"
+        else:
+            q = thermal_quality_label(c.vario)
+            thermo += (f" ; à l'heure du vol ({fmt_hm(c.start)}) : vario moyen {c.vario:.1f} m/s ({q}), plafond "
+                       f"utile {round_alt(c.usable, c.horizon)} m")  # fmt: skip
     else:
         thermo = f"Aérologie : pas de convection exploitable prévue (vario {c.vario:.1f} m/s)"
     if a.cloud_base_m is not None:
@@ -216,6 +228,8 @@ def briefing(c: Candidate) -> list[str]:
             for a_ in c.alternates[:3]
         )
     land += "."
+    for note in c.zone_notes:
+        land += f" {note}."
     if c.landing.restrictions:
         land += f" Consigne : {c.landing.restrictions}"
     if c.landing_warnings:  # avertissements obligatoires d'un atterro non officiel (§12.7)
@@ -305,7 +319,8 @@ def beacons_line(c: Candidate) -> str:
                     f"{fmt_hm(lw.time)}, "
                     f"alors que le modèle en prévoit {lw.model_speed_kmh:.0f}")  # fmt: skip
         parts.append(txt)
-    conf = f"confiance réduite ({c.confidence * 100:.0f} %)"
+    conf = ("confiance plafonnée (démo)" if c.mock
+            else f"confiance réduite ({c.confidence * 100:.0f} %)")  # fmt: skip
     if not parts:
         return (
             f"Pas de balise représentative au déco ni à l'atterro ({nearest_reading_text_safe(c)}) : vent estimé "

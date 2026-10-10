@@ -38,6 +38,7 @@ class TakeoffTerrain:
     axis_deg: float | None = None  # axe de décollage retenu (orientations du pilote, sinon exposition)
     source: str = "dem"  # dem (Open-Meteo / Copernicus 90 m) | demo (MNT de démonstration) | scenario | none
     notes: list[str] = field(default_factory=list)
+    elevation_note: str | None = None  # altitude saisie très différente du MNT (revue)
 
     @property
     def measured(self) -> bool:
@@ -197,3 +198,36 @@ def glide_cone(
 
 def cone_geojson(ring: list[tuple[float, float]]) -> dict:
     return {"type": "Polygon", "coordinates": [[list(p) for p in ring]]}
+
+
+# ---------------------------------------------------------------------------------------------
+# Orientation d'un déco référencé : exposition MNT (revue 7.3)
+# ---------------------------------------------------------------------------------------------
+def cross_points(lat: float, lon: float, step_m: float = rules.ORIENTATION_DEM_STEP_M) -> list[tuple[float, float]]:
+    """4 points à ± step_m du déco : nord, sud, est, ouest (dans cet ordre)."""
+    return [_offset(lat, lon, 0.0, step_m), _offset(lat, lon, 0.0, -step_m),
+            _offset(lat, lon, step_m, 0.0), _offset(lat, lon, -step_m, 0.0)]  # fmt: skip
+
+
+def aspect_from_cross(z: list[float], step_m: float = rules.ORIENTATION_DEM_STEP_M) -> tuple[float, float]:
+    """(pente en %, exposition en degrés) à partir des altitudes N, S, E, O de `cross_points`."""
+    zn, zs, ze, zw = z
+    a = (ze - zw) / (2.0 * step_m)
+    b = (zn - zs) / (2.0 * step_m)
+    return math.hypot(a, b) * 100.0, (math.degrees(math.atan2(-a, -b)) + 360.0) % 360.0
+
+
+def dem_aspect(terrain: Callable[[float, float], float], lat: float, lon: float) -> float | None:
+    """Exposition MNT au point (None si la pente est trop faible pour être significative)."""
+    try:
+        z = [terrain(la, lo) for la, lo in cross_points(lat, lon)]
+    except Exception:  # pragma: no cover - MNT indisponible
+        return None
+    slope, aspect = aspect_from_cross(z)
+    return aspect if slope >= rules.ORIENTATION_DEM_MIN_SLOPE_PCT else None
+
+
+def filter_by_aspect(orientations: list[str], aspect_deg: float) -> list[str]:
+    """Revue 7.3 (c) : secteurs à 90° au plus de l'exposition MNT (le NE d'un déco sud est un vent arrière)."""
+    lim = rules.ORIENTATION_MAX_FROM_DEM_ASPECT_DEG
+    return [o for o in orientations if o in COMPASS_16 and angle_diff(COMPASS_16.index(o) * 22.5, aspect_deg) <= lim]

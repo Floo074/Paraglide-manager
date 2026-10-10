@@ -399,7 +399,9 @@ if (!SKIP_FREE)
       err = await page.locator(".planner__panel .field__error").allInnerTexts();
     }
     const nLc = await page.locator(".lc-card").count();
-    ok("analyse des atterrissages", nLc > 0 || err.length > 0, `${nLc} candidat(s), ${Date.now() - tA} ms${err.length ? ` — erreur : ${err.join(" / ").slice(0, 200)}` : ""}`);
+    // 0 candidat est une réponse valide (vent d'arrivée hors seuils…) à condition que chaque rejet soit expliqué.
+    const rejected = nLc === 0 ? clean(await page.locator(".planner__scroll").innerText()).match(/écarté/g)?.length ?? 0 : 0;
+    ok("analyse des atterrissages", nLc > 0 || rejected > 0 || err.length > 0, `${nLc} candidat(s)${rejected ? `, ${rejected} rejet(s) expliqué(s)` : ""}, ${Date.now() - tA} ms${err.length ? ` — erreur : ${err.join(" / ").slice(0, 200)}` : ""}`);
     if (nLc) {
       const cone = await page.locator(".planner__map path.leaflet-interactive").count();
       ok("cône de finesse / tracés sur la carte", cone > 0, `${cone} tracés`);

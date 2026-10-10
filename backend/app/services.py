@@ -11,25 +11,32 @@ import asyncio
 import logging
 import math
 import re
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
+from shapely.geometry import box
 
 from app.cache import TTLCache
 from app.config import Settings
+from app.engine import rules
 from app.engine.context import Airspace, PointTimeline, SensitiveArea, SiteMeta
 from app.engine.landings import LandingSpot
 from app.engine.terrain import (
     GRID_N,
     TakeoffTerrain,
     analyze_grid,
+    aspect_from_cross,
     axis_from_orientations,
     axis_points,
     axis_profile,
+    cross_points,
     dem_grid_points,
     downslope_slope_pct,
+    filter_by_aspect,
+    orientations_from_aspect,
     profile_distances,
     slope_distances,
 )
@@ -39,7 +46,7 @@ from app.meteo.snapshot import iso
 from app.meteo.thermals import analyze_hour
 from app.meteo.types import PointForecast
 from app.models import Beacon, BeaconTrend, Site, SourceRef, SourceStatus
-from app.providers.airspaces import OpenAipAirspaces, OpenAirFiles, fixture_airspace_list
+from app.providers.airspaces import OpenAipAirspaces, OpenAirFiles, fixture_airspace_list, with_ground
 from app.providers.base import ProviderDisabled, ProviderError, SourceState, make_client, now_utc
 from app.providers.beacons import (
     FfvlBeacons,
@@ -74,6 +81,9 @@ log = logging.getLogger("paraglide.services")
 MAX_TREND_CALLS = 10  # appels /v1/archive Pioupiou au plus par requête de plans
 BEACON_DEM_RADIUS_KM = 8.0  # MNT demandé pour les balises sans altitude à moins de 8 km d'un site (rattachement ≤ 5 km)
 MAX_BEACON_DEM_POINTS = 100  # un seul appel Open-Meteo Elevation (100 coordonnées par appel)
+MAX_ASPECT_SITES = 50  # exposition MNT des décos PGE : 4 points chacun, 2 appels groupés au plus
+AIRSPACE_TILE_DEG = 1.0  # tuiles OpenAIP (cache 24 h), revue B6
+OPENAIP_MIN_INTERVAL_S = 300.0  # Cloudflare : au plus un appel toutes les 5 min
 MINUTELY_TTL_S = 15 * 60
 TERRAIN_STEPS_DEG = (0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.075, 0.1)
 MAX_TERRAIN_POINTS = 2500
@@ -133,6 +143,8 @@ class DataService:
         self.overpass = OverpassLandings(self.client, settings.overpass_url, settings.overpass_enabled)
         self.spots_cache = TTLCache(settings.cache_ttl_sites_s, 100)
         self._openaip_last_call = 0.0
+        self._openaip_lock = asyncio.Lock()
+        self._key_locks: dict = {}  # revue (m) : un seul appel en vol par clé (requêtes concurrentes identiques)
         self.states = self._init_states()
 
     async def aclose(self) -> None:
@@ -261,6 +273,13 @@ class DataService:
                 continue
             if mode == "mock":
                 eff, healthy, msg = "mock", True, "DATA_MODE=mock : données de démonstration."
+            elif st.blocked() and not st.last_error:
+                # revue 7.22 : quota partagé (Open-Meteo) : la suspension vaut pour les trois API, même jamais appelées
+                eff = "mock" if mode == "auto" else "live"
+                healthy = False
+                msg = f"Source suspendue : {st.blocked_reason}." + (
+                    " Repli sur les données de démonstration." if mode == "auto" else ""
+                )
             elif st.last_error and (st.last_success is None or (st.last_failure or 0) > st.last_success):
                 eff = "mock" if mode == "auto" else "live"
                 healthy = False
@@ -341,13 +360,16 @@ class DataService:
         keys = [(round(la, 4), round(lo, 4)) for la, lo in points]
         missing = [k for k in dict.fromkeys(keys) if self.elev_cache.get(("e", *k)) is None]
         if missing:
-            res = await self._try_live("open-meteo-elevation", lambda: self.om_elev.fetch(missing))
-            if res is not None:
-                for k, v in zip(missing, res, strict=True):
-                    self.elev_cache.set(("e", *k), (v, "live"))
-            else:
-                for k in missing:
-                    self.elev_cache.set(("e", *k), (terrain_elevation(*k), "mock"), ttl_s=600)
+            async with self._lock(("elevation",)):
+                missing = [k for k in missing if self.elev_cache.get(("e", *k)) is None]
+                if missing:
+                    res = await self._try_live("open-meteo-elevation", lambda: self.om_elev.fetch(missing))
+                    if res is not None:
+                        for k, v in zip(missing, res, strict=True):
+                            self.elev_cache.set(("e", *k), (v, "live"))
+                    else:
+                        for k in missing:
+                            self.elev_cache.set(("e", *k), (terrain_elevation(*k), "mock"), ttl_s=600)
         return [self.elev_cache.get(("e", *k)) for k in keys]
 
     async def elevations(self, points: list[tuple[float, float]]) -> tuple[list[float], str]:
@@ -609,6 +631,13 @@ class DataService:
         cached = self.sites_cache.get(key)
         if cached is not None:
             return cached
+        async with self._lock(key):
+            cached = self.sites_cache.get(key)
+            if cached is not None:
+                return cached
+            return await self._sites_uncached(bbox, key)
+
+    async def _sites_uncached(self, bbox, key) -> tuple[list[Site], dict[str, SiteMeta], list[SourceRef], list[str]]:
         warnings: list[str] = []
         refs: list[SourceRef] = []
         groups: list[list[Site]] = []
@@ -634,31 +663,9 @@ class DataService:
                 SourceRef(name="Sites de démonstration (fixtures)", url=None, fetched_at=iso(now_utc()), mode="mock")
             )
         merged = merge_sites(groups)
-        # altitudes manquantes / incohérentes (règle PGE d)
-        need = [s for s in merged if s.source != "fixture"]
-        dem_ok = True
-        if need:
-            try:
-                elevs, emode = await self.elevations([(s.lat, s.lon) for s in need])
-            except ProviderError as e:
-                # MNT indisponible en live (quota, réseau) : les sites restent servis avec l'altitude de leur
-                # source ; un site sans altitude est écarté (jamais d'altitude inventée) ; résultat en cache court.
-                dem_ok = False
-                unknown = {s.id for s in need if s.elevation_m <= 0}
-                merged = [s for s in merged if s.id not in unknown]
-                warnings.append(
-                    f"MNT indisponible ({e}) : altitudes des sites non vérifiées"
-                    + (f", {len(unknown)} site(s) sans altitude écarté(s)." if unknown else ".")
-                )
-            else:
-                for s, el in zip(need, elevs, strict=True):
-                    if s.elevation_m <= 0:
-                        s.elevation_m = round(el)
-                    elif emode == "live" and abs(s.elevation_m - el) > 150 and s.kind != "landing":
-                        warnings.append(
-                            f"Altitude de « {s.name} » corrigée par le MNT ({s.elevation_m:.0f} → {el:.0f} m)."
-                        )
-                        s.elevation_m = round(el)
+        dem_ok = await self._site_dem(merged, meta, warnings)
+        if not dem_ok:
+            merged = [s for s in merged if s.elevation_m > 0 or s.source == "fixture"]
         associate_landings(merged)
         result = (merged, meta, refs, warnings)
         # repli (échec live transitoire, MNT absent) : cache court, pour ne pas figer ce résultat pendant 24 h
@@ -666,10 +673,76 @@ class DataService:
         self.sites_cache.set(key, result, ttl_s=None if full else 600)
         return result
 
+    async def _site_dem(self, merged: list[Site], meta: dict[str, SiteMeta], warnings: list[str]) -> bool:
+        """MNT des sites hors fixtures (un appel groupé, cache 7 j) : altitude manquante ou incohérente (règle PGE d)
+        et exposition des décos ParaglidingEarth (4 points à ± 150 m, revue 7.3). Une altitude n'est JAMAIS prise sur
+        le MNT de démonstration hors DATA_MODE=mock (revue B5) : MNT réel indisponible → site sans altitude écarté,
+        avertissement, résultat gardé 10 min seulement. Renvoie False si le MNT réel a manqué."""
+        need = [s for s in merged if s.source != "fixture"]
+        if not need:
+            return True
+        demo_ok = self.s.data_mode == "mock"
+        decos = [s for s in need if s.kind in ("takeoff", "both") and s.source == "paraglidingearth"]
+        decos = decos[:MAX_ASPECT_SITES]
+        pts = [(s.lat, s.lon) for s in need] + [p for s in decos for p in cross_points(s.lat, s.lon)]
+        err: str | None = None
+        try:
+            vals: list[tuple[float, str]] = await self.elevations_detailed(pts)
+        except ProviderError as e:
+            vals, err = [], str(e)
+        real = [bool(vals) and (vals[i][1] == "live" or demo_ok) for i in range(len(pts))]
+        unknown: set[str] = set()
+        for i, s in enumerate(need):
+            if not real[i]:
+                if s.elevation_m <= 0:
+                    unknown.add(s.id)
+                continue
+            el = vals[i][0]
+            if s.elevation_m <= 0:
+                s.elevation_m = round(el)
+            elif vals[i][1] == "live" and abs(s.elevation_m - el) > 150 and s.kind != "landing":
+                warnings.append(f"Altitude de « {s.name} » corrigée par le MNT ({s.elevation_m:.0f} → {el:.0f} m).")
+                s.elevation_m = round(el)
+        for j, s in enumerate(decos):
+            k = len(need) + 4 * j
+            if not all(real[k : k + 4]):
+                continue
+            slope, aspect = aspect_from_cross([v for v, _ in vals[k : k + 4]])
+            if slope < rules.ORIENTATION_DEM_MIN_SLOPE_PCT:
+                continue
+            m = meta.setdefault(s.id, SiteMeta())
+            m.dem_aspect_deg = round(aspect) % 360
+            if m.orientation_uncertain:  # « tous secteurs » : orientation déduite du relief (le moteur le signale)
+                s.orientations = orientations_from_aspect(aspect)
+            elif s.orientations:
+                kept = filter_by_aspect(s.orientations, aspect)
+                if kept:
+                    s.orientations = kept
+                else:
+                    m.orientation_uncertain = True
+                    m.orientation_note = "ParaglidingEarth : secteurs notés incohérents avec le relief"
+                    s.orientations = orientations_from_aspect(aspect)
+        dem_ok = all(real)
+        if not dem_ok:
+            why = err or "MNT réel indisponible, repli"
+            warnings.append(
+                f"MNT indisponible ({why}) : altitudes et orientations des sites non vérifiées"
+                + (f", {len(unknown)} site(s) sans altitude écarté(s)." if unknown else ".")
+            )
+            for s in need:
+                if s.id in unknown:
+                    s.elevation_m = -1.0
+        return dem_ok
+
     # ------------------------------------------------------------------------------------------
     # Balises
     # ------------------------------------------------------------------------------------------
-    async def beacons(self, bbox, at: datetime | None = None) -> tuple[list[Beacon], dict[str, float], list[SourceRef]]:
+    async def beacons(
+        self, bbox, at: datetime | None = None, allow_demo: bool | None = None
+    ) -> tuple[list[Beacon], dict[str, float], list[SourceRef]]:
+        """Balises temps réel (si `at` est à moins d'1 h de maintenant), sinon balises de démonstration seulement si
+        `allow_demo` (défaut : hors DATA_MODE=live ; pour un plan : mode démo ou météo synthétique, revue — jamais de
+        mesures simulées pour corriger une prévision réelle)."""
         now = now_utc()
         at = at or now
         refs: list[SourceRef] = []
@@ -691,7 +764,9 @@ class DataService:
                     refs.append(SourceRef(name=name, url=url, fetched_at=iso(now), mode="live"))
         if live_any:
             return out, ages_from(out, now), refs
-        if self.s.data_mode == "live":
+        if allow_demo is None:
+            allow_demo = self.s.data_mode != "live"
+        if not allow_demo:
             return [], {}, refs
         fb, ages = self.fixture_beacons.fetch_sync(at)
         fb = filter_bbox(fb, bbox)
@@ -701,44 +776,80 @@ class DataService:
     # ------------------------------------------------------------------------------------------
     # Espaces aériens : OpenAIP > OpenAir > fixtures
     # ------------------------------------------------------------------------------------------
-    async def airspaces(self, bbox, terrain=None) -> tuple[list[Airspace], list[SourceRef]]:
-        key = ("asp", tuple(round(x, 2) for x in bbox))
-        cached = self.airspace_cache.get(key)
-        if cached is not None:
-            return cached
-        now = now_utc()
-        import time as _time
+    def _lock(self, key) -> asyncio.Lock:
+        return self._key_locks.setdefault(key, asyncio.Lock())
 
-        res = None
-        # OpenAIP : au plus un appel toutes les 5 min (limitation Cloudflare), pas de retry en boucle
-        if _time.monotonic() - self._openaip_last_call > 300 or self._openaip_last_call == 0.0:
-            if not self.states["openaip"].disabled_message and self.s.data_mode != "mock":
-                self._openaip_last_call = _time.monotonic()
-            res = await self._try_live("openaip", lambda: self.openaip.fetch(bbox, terrain))
-        if res is not None:
-            out = (res, [SourceRef(name="OpenAIP", url="https://www.openaip.net", fetched_at=iso(now), mode="live")])
-            self.airspace_cache.set(key, out)
-            return out
-        if self.s.data_mode != "mock":
-            try:
-                oa = self.openair.fetch(bbox, terrain)
-                out = (oa, [SourceRef(name="Fichiers OpenAir locaux", url=None, fetched_at=iso(now), mode="live")])
-                self.airspace_cache.set(key, out, ttl_s=600)
-                return out
-            except ProviderDisabled:
-                pass
-            except Exception as e:  # fichier mal formé
-                self.states["openair"].record_failure(str(e))
-        out = (
-            fixture_airspace_list(bbox),
-            [
-                SourceRef(
-                    name="Espaces aériens de démonstration (approximatifs)", url=None, fetched_at=iso(now), mode="mock"
-                )
-            ],
-        )
-        self.airspace_cache.set(key, out, ttl_s=600)
-        return out
+    async def airspaces(self, bbox, terrain=None) -> tuple[list[Airspace], list[SourceRef], str | None]:
+        """Espaces aériens de la bbox : (espaces, sources, avertissement si NON VÉRIFIÉS).
+
+        Revue B6 : OpenAIP est chargé par tuiles de 1° (cache 24 h), les tuiles manquantes d'une requête en UN appel
+        (bbox réunie), puis filtré localement : un pan de carte ou un autre clic de décollage libre retombe dans le
+        cache. Un appel OpenAIP au plus toutes les 5 min (Cloudflare), sérialisé (verrou). Les espaces de
+        démonstration ne sont JAMAIS servis hors DATA_MODE=mock : OpenAIP indisponible → fichiers OpenAir locaux s'il
+        y en a, sinon liste vide (ou partielle) avec l'avertissement « espaces aériens non vérifiés ». Les limites sol
+        (GND) restent des hauteurs : le moteur les convertit point par point (revue B7), le cache n'en dépend pas."""
+        now = now_utc()
+        if self.s.data_mode == "mock":
+            return (fixture_airspace_list(bbox),
+                    [SourceRef(name="Espaces aériens de démonstration (approximatifs)", url=None, fetched_at=iso(now),
+                               mode="mock")], None)  # fmt: skip
+        tiles = airspace_tiles(bbox)
+        async with self._openaip_lock:
+            missing = [t for t in tiles if self.airspace_cache.get(("asp-tile", t)) is None]
+            if missing and self._openaip_allowed():
+                self._openaip_last_call = time.monotonic()
+                union = tiles_bbox(missing)
+                try:
+                    res = await self._try_live("openaip", lambda: self.openaip.fetch(union))
+                except ProviderError as e:  # DATA_MODE=live : on dit que les espaces ne sont pas vérifiés
+                    log.info("OpenAIP indisponible (%s)", e)
+                    res = None
+                if res is not None:
+                    for t in missing:
+                        tb = box(*tiles_bbox([t]))
+                        self.airspace_cache.set(("asp-tile", t), [a for a in res if a.geometry.intersects(tb)])
+                    missing = []
+        b = box(*bbox)
+        cached = [self.airspace_cache.get(("asp-tile", t)) for t in tiles]
+        items = dedupe_airspaces([a for lst in cached if lst for a in lst if a.geometry.intersects(b)])
+        if not missing:
+            return items, [SourceRef(name="OpenAIP", url="https://www.openaip.net", fetched_at=iso(now),
+                                     mode="live")], None  # fmt: skip
+        try:
+            oa = self.openair.fetch(bbox)
+            return oa, [SourceRef(name="Fichiers OpenAir locaux", url=None, fetched_at=iso(now), mode="live")], None
+        except ProviderDisabled:
+            pass
+        except Exception as e:  # fichier mal formé
+            self.states["openair"].record_failure(str(e))
+        st = self.states["openaip"]
+        why = st.disabled_message or st.blocked_reason or st.last_error or "appel limité à un toutes les 5 min"
+        what = "liste partielle" if items else "aucune donnée"
+        warn = (f"Espaces aériens NON VÉRIFIÉS ({what} : OpenAIP indisponible, {why}) : vérifie la carte "
+                f"aéronautique (CTR, TMA, zones R) avant de voler.")  # fmt: skip
+        refs = [SourceRef(name="OpenAIP (partiel)", url="https://www.openaip.net", fetched_at=iso(now), mode="live")]
+        return items, (refs if items else []), warn
+
+    async def airspaces_display(self, items: list[Airspace]) -> list[Airspace]:
+        """Copies pour l'affichage (GET /api/airspaces) : limites sol converties en AMSL au centre de la zone avec le
+        MNT réel (un appel groupé, cache 7 j) ; sans MNT réel, la hauteur publiée reste (référence « GND »)."""
+        agl = [a for a in items if a.floor_agl or a.ceiling_agl]
+        if not agl:
+            return items
+        pts = [(a.geometry.representative_point().y, a.geometry.representative_point().x) for a in agl]
+        try:
+            vals = await self.elevations_detailed(pts)
+        except ProviderError:
+            return items
+        ok = {id(a): v for a, (v, m) in zip(agl, vals, strict=True) if m == "live" or self.s.data_mode == "mock"}
+        return [with_ground(a, ok.get(id(a))) if id(a) in ok else a for a in items]
+
+    def _openaip_allowed(self) -> bool:
+        st = self.states["openaip"]
+        if st.disabled_message or not self.s.openaip_api_key:
+            return st.disabled_message is None and bool(self.s.openaip_api_key)
+        last = self._openaip_last_call
+        return last == 0.0 or time.monotonic() - last >= OPENAIP_MIN_INTERVAL_S
 
     # ------------------------------------------------------------------------------------------
     # Zones sensibles
@@ -748,6 +859,13 @@ class DataService:
         cached = self.sensitive_cache.get(key)
         if cached is not None:
             return cached
+        async with self._lock(key):
+            cached = self.sensitive_cache.get(key)
+            if cached is not None:
+                return cached
+            return await self._sensitive_uncached(bbox, key)
+
+    async def _sensitive_uncached(self, bbox, key) -> tuple[list[SensitiveArea], list[SourceRef]]:
         now = now_utc()
         res = await self._try_live("biodivsports", lambda: self.biodiv.fetch(bbox))
         parks = fixture_areas(bbox, parks_only=True)
@@ -793,15 +911,28 @@ class DataService:
             if v is None:
                 missing_idx.append(i)
         if missing_idx:
-            miss = [points[i] for i in missing_idx]
-            res = await self._try_live("open-meteo", lambda: self.om.fetch(miss, start, end, with_levels))
-            if res is None:
-                res = self.synthetic.fetch_sync(miss, start, end, issued_at)
-            for i, pf in zip(missing_idx, res, strict=True):
-                la, lo, el = points[i]
-                k = ("fc", round(la, 3), round(lo, 3), None if el is None else round(el), *key_base)
-                self.forecast_cache.set(k, pf, ttl_s=None if pf.mode == "live" else 600)
-                out[i] = pf
+            # revue (m) : requêtes concurrentes identiques → un seul appel Open-Meteo (chaque point pèse lourd sur le
+            # quota) ; les suivantes attendent puis lisent le cache
+            async with self._lock(("fc", *key_base)):
+                still = []
+                for i in missing_idx:
+                    la, lo, el = points[i]
+                    v = self.forecast_cache.get(("fc", round(la, 3), round(lo, 3), None if el is None else round(el),
+                                                 *key_base))  # fmt: skip
+                    if v is not None:
+                        out[i] = v
+                    else:
+                        still.append(i)
+                if still:
+                    miss = [points[i] for i in still]
+                    res = await self._try_live("open-meteo", lambda: self.om.fetch(miss, start, end, with_levels))
+                    if res is None:
+                        res = self.synthetic.fetch_sync(miss, start, end, issued_at)
+                    for i, pf in zip(still, res, strict=True):
+                        la, lo, el = points[i]
+                        k = ("fc", round(la, 3), round(lo, 3), None if el is None else round(el), *key_base)
+                        self.forecast_cache.set(k, pf, ttl_s=None if pf.mode == "live" else 600)
+                        out[i] = pf
         fcs = [x for x in out if x is not None]
         modes = {pf.mode for pf in fcs}
         refs = []
@@ -850,6 +981,32 @@ def build_timeline(pf: PointForecast, wind_ground_m: float | None, t_from: datet
         ]
     label = "synthetic" if pf.mode == "mock" else "+".join(labels)
     return PointTimeline(pf.lat, pf.lon, pf.elevation_m, hours, spreads, model_winds, mode=pf.mode, model_label=label)
+
+
+def airspace_tiles(bbox) -> list[tuple[int, int]]:
+    """Tuiles de 1° (indices lon, lat) couvrant la bbox."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    step = AIRSPACE_TILE_DEG
+    xs = range(math.floor(min_lon / step), math.floor((max_lon - 1e-9) / step) + 1)
+    ys = range(math.floor(min_lat / step), math.floor((max_lat - 1e-9) / step) + 1)
+    return [(x, y) for x in xs for y in ys]
+
+
+def tiles_bbox(tiles: list[tuple[int, int]]) -> tuple[float, float, float, float]:
+    step = AIRSPACE_TILE_DEG
+    return (min(x for x, _ in tiles) * step, min(y for _, y in tiles) * step,
+            (max(x for x, _ in tiles) + 1) * step, (max(y for _, y in tiles) + 1) * step)  # fmt: skip
+
+
+def dedupe_airspaces(items: list[Airspace]) -> list[Airspace]:
+    seen: set[tuple] = set()
+    out: list[Airspace] = []
+    for a in items:
+        k = (a.name, a.type, a.floor_m, a.ceiling_m, round(a.geometry.area, 8))
+        if k not in seen:
+            seen.add(k)
+            out.append(a)
+    return out
 
 
 def smoothed_ground(terrain: Callable[[float, float], float], lat: float, lon: float, radius_km: float = 2.5) -> float:

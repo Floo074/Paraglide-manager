@@ -5,11 +5,15 @@ import { formatDuration, formatNumber } from "./format";
 /** Au-delà de cet âge, une mesure n'est plus utilisable pour décider (CDC §8 : `stale` > 30 min). */
 export const BEACON_MAX_AGE_MIN = 30;
 
-/** Seuils de tendance sur 1 h (CDC §12.2, `trend_1h`). */
+/**
+ * Seuils de tendance sur 1 h, IDENTIQUES au backend (CDC §12.2, `trend_1h`, `rules.TREND_1H`) :
+ * hausse > 5 km/h/h (prudence) et > 20 km/h/h (danger) ; rotation ≥ 60° si le vent fait au moins
+ * 8 km/h ; bascule ≥ 120° (danger) si le vent fait au moins 10 km/h.
+ */
 export const TREND_THRESHOLDS = {
-  windIncrease: { caution: 6, danger: 10 },
-  rotation: { caution: 45, danger: 90 },
-  minWindForDirection: 8,
+  windIncrease: { caution: 5, danger: 20 },
+  rotation: { caution: 60, minWind: 8 },
+  reversal: { deg: 120, minWind: 10 },
 } as const;
 
 /** Âge de la mesure en minutes (arrondi, jamais négatif). */
@@ -57,18 +61,19 @@ export function formatTrend(t: BeaconTrend): string {
 }
 
 /**
- * Niveau d'alerte de la tendance (CDC §12.2) : vent qui forcit de ≥ 6 km/h/h (prudence) ou
- * ≥ 10 km/h/h (danger) ; rotation ≥ 45° / 90° si le vent actuel est d'au moins 8 km/h.
- * Les valeurs sont ramenées à 1 h quand la fenêtre est différente.
+ * Niveau d'alerte de la tendance, aligné sur le backend (CDC §12.2) : vent qui forcit de plus de
+ * 5 km/h/h (prudence) ou de plus de 20 km/h/h (danger) ; rotation ≥ 60° (prudence) si le vent fait
+ * au moins 8 km/h ; bascule ≥ 120° (danger) si le vent fait au moins 10 km/h. Hausse ramenée à 1 h
+ * (r = speed_change × 60 / window) ; la rotation est celle de la fenêtre, comme côté serveur.
  */
 export function trendLevel(t: BeaconTrend, currentSpeedKmh: number | null): "danger" | "caution" | null {
   const perHour = t.window_min > 0 ? 60 / t.window_min : 1;
   const inc = t.speed_change_kmh * perHour;
-  const rot = Math.abs(t.direction_change_deg) * perHour;
+  const rot = Math.abs(t.direction_change_deg);
+  const v = currentSpeedKmh ?? 0;
   const T = TREND_THRESHOLDS;
-  const windy = (currentSpeedKmh ?? 0) >= T.minWindForDirection;
-  if (inc >= T.windIncrease.danger || (windy && rot >= T.rotation.danger)) return "danger";
-  if (inc >= T.windIncrease.caution || (windy && rot >= T.rotation.caution)) return "caution";
+  if (inc > T.windIncrease.danger || (v >= T.reversal.minWind && rot >= T.reversal.deg)) return "danger";
+  if (inc > T.windIncrease.caution || (v >= T.rotation.minWind && rot >= T.rotation.caution)) return "caution";
   return null;
 }
 

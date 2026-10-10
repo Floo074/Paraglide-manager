@@ -79,7 +79,9 @@ def parse_pioupiou(data, now: datetime) -> list[Beacon]:
                 wind_direction_deg=None if meas.get("wind_heading") is None else float(meas["wind_heading"]),
                 temperature_c=None,
                 source="pioupiou",
-                stale=(age_min > rules.BEACON_STALE_MIN) or not state_on or no_measure,
+                # revue 7.21 : `stale` = mesure ANCIENNE (ou balise éteinte) ; une mesure absente reste
+                # wind_speed_kmh = null (« mesure absente »), le moteur ne l'utilise pas
+                stale=(age_min > rules.BEACON_STALE_MIN) or not state_on,
             )
         )
     return out
@@ -110,15 +112,21 @@ def trend_from_samples(rows: list[tuple[datetime, float | None, float | None, fl
     window = (t1 - t0).total_seconds() / 60.0
     first = [r for r in pts if (r[0] - t0).total_seconds() / 60.0 <= TREND_EDGE_MIN] or pts[:1]
     last = [r for r in pts if (t1 - r[0]).total_seconds() / 60.0 <= TREND_EDGE_MIN] or pts[-1:]
-    v0 = sum(r[1] for r in first) / len(first)  # type: ignore[misc]
-    v1 = sum(r[1] for r in last) / len(last)  # type: ignore[misc]
+    # revue : pente par régression linéaire sur TOUS les échantillons (l'écart des moyennes des 10 premières et des
+    # 10 dernières minutes divisé par toute la fenêtre sous-estimait le taux d'environ 18 % sur 1 h) ; publiée comme
+    # speed_change_kmh = pente × fenêtre, pour garder le contrat (taux = speed_change × 60 / window_min)
+    xs = [(r[0] - t0).total_seconds() / 60.0 for r in pts]
+    ys = [float(r[1]) for r in pts]  # type: ignore[arg-type]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True)) / sxx if sxx > 0 else 0.0
     d0 = _circ_mean([(r[1], r[3]) for r in first if r[3] is not None])  # type: ignore[misc]
     d1 = _circ_mean([(r[1], r[3]) for r in last if r[3] is not None])  # type: ignore[misc]
     dchange = 0.0 if d0 is None or d1 is None else signed_angle_diff(d1, d0)
     gusts = [r[2] for r in pts if r[2] is not None]
     return BeaconTrend(
         window_min=round(window, 1),
-        speed_change_kmh=round(v1 - v0, 1),
+        speed_change_kmh=round(slope * window, 1),
         direction_change_deg=round(dchange, 1),
         gust_max_kmh=max(gusts) if gusts else None,
         samples=len(pts),

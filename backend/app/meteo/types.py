@@ -42,6 +42,7 @@ class HourData:
     freezing_level_height: float | None = None
     boundary_layer_height: float | None = None
     shortwave_radiation: float | None = None
+    pressure_msl: float | None = None  # pression réduite au niveau de la mer (hPa)
     levels: list[LevelData] = field(default_factory=list)
 
 

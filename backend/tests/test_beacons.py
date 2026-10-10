@@ -56,8 +56,8 @@ def test_archive_real_response_parsed_into_trend():
     assert t is not None
     assert t.samples == 12  # ~1 mesure / 5 min sur la dernière heure
     assert t.window_min == pytest.approx(55.2, abs=0.1)  # 04:46:54 → 05:42:08
-    # moyenne des 10 premières minutes (3,25 ; 3,5) vs 10 dernières (2,25 ; 2,0)
-    assert t.speed_change_kmh == pytest.approx(2.125 - 3.375, abs=0.06)
+    # régression linéaire sur les 12 mesures (revue) : baisse d'environ 1 km/h sur la fenêtre
+    assert t.speed_change_kmh == pytest.approx(-1.0, abs=0.06)
     assert t.gust_max_kmh == 10.0
     assert 0 < t.direction_change_deg < 20  # 270 → ~281 : rotation horaire faible
     assert usable_trend(_beacon("x", 45, 6).model_copy(update={"trend": t}))
@@ -102,7 +102,9 @@ def test_trend_from_samples_increase_and_rotation():
     rows = [(t0 + timedelta(minutes=5 * i), 5.0 + i, 9.0 + i, (0.0 + 9 * i) % 360) for i in range(13)]
     t = trend_from_samples(rows)
     assert t is not None and t.window_min == 60 and t.samples == 13
-    assert t.speed_change_kmh == pytest.approx(10.0)  # (15+16+17)/3 − (5+6+7)/3 : moyennes sur 10 min
+    # revue : pente par régression sur tous les échantillons (rampe de 1 km/h toutes les 5 min = 12 km/h/h) ;
+    # l'ancien écart des moyennes de bord (10) sous-estimait le taux
+    assert t.speed_change_kmh == pytest.approx(12.0)
     assert t.direction_change_deg > 60  # rotation horaire
     assert t.gust_max_kmh == 21.0
     b = _beacon("x", 45, 6).model_copy(update={"trend": t})
@@ -133,8 +135,9 @@ async def test_fetch_trend_calls_archive_endpoint_with_last_hour():
 # ---------------------------------------------------------------------------------------------
 def test_live_keeps_silent_beacons_as_stale_and_reads_altitude_in_name():
     bs = {b.id: b for b in parse_pioupiou(_load("pioupiou_live_all.json"), NOW)}
-    b1720 = bs["pioupiou:1720"]  # « Atterrissage de Doussard » : mesures null → muette, gardée pour la dire absente
-    assert b1720.name == "Atterrissage de Doussard" and b1720.wind_speed_kmh is None and b1720.stale
+    b1720 = bs["pioupiou:1720"]  # « Atterrissage de Doussard » : mesures null → gardée pour la dire absente
+    # revue 7.21 : `stale` = mesure ancienne ; ici la mesure date d'1 min mais la donnée de vent manque
+    assert b1720.name == "Atterrissage de Doussard" and b1720.wind_speed_kmh is None and not b1720.stale
     assert b1720.elevation_m is None  # Pioupiou ne fournit pas d'altitude
     assert bs["pioupiou:1708"].elevation_m == 1570  # « Déco Anglettaz 1570m »
     assert bs["pioupiou:1476"].elevation_m is None and bs["pioupiou:1476"].wind_speed_kmh == 14
@@ -263,3 +266,13 @@ def test_trend_model_roundtrip():
     t = BeaconTrend(window_min=60, speed_change_kmh=10, direction_change_deg=-30, gust_max_kmh=None, samples=12)
     b = _beacon("x", 45, 6).model_copy(update={"trend": t})
     assert Beacon.model_validate(b.model_dump()).trend == t
+
+
+def test_trend_rate_not_underestimated_on_a_real_ramp():
+    """Revue : rampe réelle de +6 km/h/h (une mesure toutes les 5 min sur 55 min) → taux ≥ 5,9 (> 5, caution du
+    §12.2) ; l'ancien calcul donnait 4,91 km/h/h et la caution WIND_INCREASING manquait."""
+    t0 = datetime(2026, 10, 9, 11, 0, tzinfo=UTC)
+    rows = [(t0 + timedelta(minutes=5 * i), 8.0 + 0.5 * i, None, 270.0) for i in range(12)]
+    t = trend_from_samples(rows)
+    assert t is not None and t.window_min == 55
+    assert t.speed_change_kmh * 60.0 / t.window_min == pytest.approx(6.0, abs=0.05)

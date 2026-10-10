@@ -79,9 +79,8 @@ def test_scenario(sc: dict, results: dict[str, PlanResponse | Exception]) -> Non
         assert c in codes, f"code {c} absent ({sorted(codes)})"
     for c in exp.get("risk_codes_forbidden", []):
         for p in plans:
-            assert not any(r.code == c and r.level in ("caution", "danger") for r in p.risks), (
-                f"{c} présent dans {p.title}"
-            )
+            # « ne doivent apparaître dans AUCUN plan » (YAML) : quel que soit le niveau, info compris (revue)
+            assert not any(r.code == c for r in p.risks), f"{c} présent dans {p.title}"
     if "rejected_reason_contains" in exp:
         txt = " ".join(r for rj in res.rejected for r in rj.reasons).lower()
         assert exp["rejected_reason_contains"].lower() in txt

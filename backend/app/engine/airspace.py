@@ -54,6 +54,64 @@ def _vertical_overlap(lo: float, hi: float, floor: float, ceiling: float) -> boo
     return lo < ceiling and hi > floor
 
 
+def _terrain_known(ctx: DataContext) -> bool:
+    """MNT utilisable pour convertir une limite sol : réel, ou celui de la démo / du scénario (données exactes)."""
+    return ctx.terrain is not None and (ctx.terrain_is_real or ctx.mock or ctx.exact_inputs)
+
+
+def limits_at(ctx: DataContext, a: Airspace, lat: float, lon: float) -> tuple[float, float]:
+    """(plancher, plafond) AMSL de l'espace au point (revue B7) : une limite sol vaut hauteur publiée + terrain au
+    point ; terrain inconnu → prudence : plancher au sol, plafond infini (chevauchement supposé)."""
+    ground = ctx.terrain_at(lat, lon) if _terrain_known(ctx) and (a.floor_agl or a.ceiling_agl) else None
+    floor, ceil = a.floor_m, a.ceiling_m
+    if a.floor_agl and a.floor_height_m is not None:
+        floor = a.floor_height_m + ground if ground is not None else 0.0
+    if a.ceiling_agl and a.ceiling_height_m is not None:
+        ceil = a.ceiling_height_m + ground if ground is not None else 1e9
+    return floor, ceil
+
+
+def _sample_route(proj: Projector, coords: list[tuple[float, float, float]], step_km: float = 0.25):
+    """Points de la route tous les `step_km` : (x, y, lat, lon, altitude interpolée)."""
+    for (lo1, la1, a1), (lo2, la2, a2) in pairwise(coords):
+        p1, p2 = proj.point(la1, lo1), proj.point(la2, lo2)
+        n = max(1, int(p1.distance(p2) / step_km))
+        for i in range(n + 1):
+            f = i / n
+            x, y = p1.x + f * (p2.x - p1.x), p1.y + f * (p2.y - p1.y)
+            lat, lon = proj.proj.to_latlon(x, y)
+            yield x, y, lat, lon, a1 + f * (a2 - a1)
+
+
+def agl_overlap(ctx: DataContext, proj: Projector, a: Airspace, coords: list[tuple[float, float, float]]) -> bool:
+    """Espace à limite sol : la route (altitudes interpolées entre ses points) passe-t-elle dans [plancher(p),
+    plafond(p)] en un point de la zone ? (recouvrement vertical calculé point par point, revue B7 / 7.16)"""
+    g = proj.geom(a.geometry)
+    for x, y, lat, lon, alt in _sample_route(proj, coords):
+        if not g.contains(Point(x, y)):
+            continue
+        floor, ceil = limits_at(ctx, a, lat, lon)
+        if floor <= alt < ceil:
+            return True
+    return False
+
+
+def vertical_overlap(
+    ctx: DataContext, proj: Projector, a: Airspace, coords: list[tuple[float, float, float]], lo: float, hi: float
+) -> bool:
+    if a.floor_agl or a.ceiling_agl:
+        return agl_overlap(ctx, proj, a, coords)
+    return _vertical_overlap(lo, hi, a.floor_m, a.ceiling_m)
+
+
+def limits_label(ctx: DataContext, a: Airspace) -> tuple[str, str]:
+    """Textes du plancher et du plafond (« 305 m/sol » pour une limite sol)."""
+    f = f"{a.floor_height_m:.0f} m/sol" if a.floor_agl and a.floor_height_m is not None else f"{a.floor_m:.0f} m"
+    agl_c = a.ceiling_agl and a.ceiling_height_m is not None
+    c = f"{a.ceiling_height_m:.0f} m/sol" if agl_c else f"{a.ceiling_m:.0f} m"
+    return f, c
+
+
 def is_forbidden(a: Airspace) -> bool:
     cls = a.airspace_class.upper()
     typ = a.type.upper()
@@ -64,6 +122,38 @@ def is_forbidden(a: Airspace) -> bool:
 
 def is_activable(a: Airspace) -> bool:
     return a.type.upper() in rules.AIRSPACE_ACTIVATION_TYPES or a.airspace_class.upper() in ("R", "Q", "D_ZONE")
+
+
+def _cap_below(
+    ctx: DataContext, proj: Projector, a: Airspace, coords: list[tuple[float, float, float]]
+) -> float | None:
+    """Plafond possible sous un espace interdit traversé : plancher (au point le plus bas de la zone sur la route) −
+    100 m, s'il reste au-dessus du déco, de l'atterro et du relief de la route dans la zone (+ 100 m) ; None sinon
+    (la route est vraiment dans l'espace : rejet)."""
+    g = proj.geom(a.geometry)
+    margin = rules.CEILING_MARGIN_BELOW_AIRSPACE_M
+    floors: list[float] = []
+    ground_max = -1e9
+    known = _terrain_known(ctx)
+    for x, y, lat, lon, _ in _sample_route(proj, coords):
+        if not g.contains(Point(x, y)):
+            continue
+        floors.append(limits_at(ctx, a, lat, lon)[0])
+        if known:
+            t = ctx.terrain_at(lat, lon)
+            if t is not None:
+                ground_max = max(ground_max, t)
+    floor = min(floors) if floors else a.floor_m
+    cap = floor - margin
+    ends = max(coords[0][2], coords[-1][2]) if coords else 0.0
+    if floor <= 0 or cap < ends or cap < ground_max + margin:
+        return None
+    return cap
+
+
+def _rep_latlon(a: Airspace) -> tuple[float, float]:
+    rp = a.geometry.representative_point()
+    return rp.y, rp.x
 
 
 @dataclass(slots=True)
@@ -82,9 +172,9 @@ def route_conflicts(
     for a in ctx.airspaces:
         if not is_forbidden(a):
             continue
-        if not _vertical_overlap(min_alt, max_alt, a.floor_m, a.ceiling_m):
+        if not proj.geom(a.geometry).intersects(line):
             continue
-        if proj.geom(a.geometry).intersects(line):
+        if vertical_overlap(ctx, proj, a, coords, min_alt, max_alt):
             return True
     return False
 
@@ -108,24 +198,32 @@ def evaluate_airspaces(
         if dist > rules.AIRSPACE_REPORT_RADIUS_KM:
             continue
         intersects = g.intersects(line)
-        vert = _vertical_overlap(min_alt, max_alt, a.floor_m, a.ceiling_m)
-        floor_txt = f"{a.floor_m:.0f} m{' sol' if a.floor_agl else ''}"
+        vert = intersects and vertical_overlap(ctx, proj, a, coords, min_alt, max_alt)
+        if not intersects:
+            vert = _vertical_overlap(min_alt, max_alt, *limits_at(ctx, a, *_rep_latlon(a)))
+        floor_txt, ceil_txt = limits_label(ctx, a)
+        disp_floor, disp_ceil = limits_at(ctx, a, *_rep_latlon(a))
         warnings.append(
             AirspaceWarning(
                 name=a.name,
                 airspace_class=a.airspace_class,
                 type=a.type,
-                floor_m=round(a.floor_m),
-                ceiling_m=round(a.ceiling_m),
+                floor_m=round(disp_floor if disp_floor < 1e8 else a.floor_m),
+                ceiling_m=round(disp_ceil if disp_ceil < 1e8 else a.ceiling_m),
                 min_distance_km=round(dist, 2),
                 intersects_route=bool(intersects and vert),
             )
         )
-        if typ in rules.AIRSPACE_INFO_TYPES:
+        if typ in rules.AIRSPACE_INFO_TYPES or typ == "LOW_OVERFLIGHT":  # LOW_OVERFLIGHT : zone réglementée (7.4)
             continue
-        label = f"{a.name} (classe {a.airspace_class}, {floor_txt} → {a.ceiling_m:.0f} m)"
+        label = f"{a.name} (classe {a.airspace_class}, {floor_txt} → {ceil_txt})"
         if is_forbidden(a):
-            if intersects and vert:
+            c = _cap_below(ctx, proj, a, coords) if intersects and vert else None
+            if c is not None:
+                # revue (TMA) : espace interdit AU-DESSUS du déco, de l'atterro et du relief de la route → on plafonne
+                # l'altitude (plancher − 100 m, ALTITUDE_LIMIT non bloquant) au lieu de rejeter le vol
+                cap = c if cap is None else min(cap, c)
+            elif intersects and vert:
                 blocking = True
                 findings.append(
                     Finding(
@@ -140,6 +238,17 @@ def evaluate_airspaces(
                 # espace au-dessus de la route : plafonner l'altitude
                 c = a.floor_m - rules.CEILING_MARGIN_BELOW_AIRSPACE_M
                 cap = c if cap is None else min(cap, c)
+            elif intersects and 0.0 <= min_alt - disp_ceil < rules.AIRSPACE_CAUTION_VERTICAL_M:
+                # CDC §3 #12 (revue, m) : route au-dessus de l'espace avec moins de 100 m de marge verticale
+                findings.append(
+                    Finding(
+                        code="AIRSPACE",
+                        title="Espace aérien juste sous la route",
+                        detail=f"La route passe à {min_alt - disp_ceil:.0f} m au-dessus du plafond de {label} : marge "
+                        f"verticale < {rules.AIRSPACE_CAUTION_VERTICAL_M:.0f} m.",
+                        caution=True,
+                    )
+                )
             elif dist < rules.AIRSPACE_CAUTION_LATERAL_KM and vert:
                 findings.append(
                     Finding(
@@ -265,6 +374,18 @@ def evaluate_sensitive_sites(ctx: DataContext, proj: Projector, takeoff: Site, l
         for site, what in ((takeoff, "Décollage"), (landing, "Atterrissage")):
             if not site_in_area(proj, area, site):
                 continue
+            if area.flight_prohibited and area.kind != "national_park_core" and area.active_in_month(month):
+                authorized = _site_authorized(site)
+                out.append(
+                    Finding(
+                        code="SENSITIVE_AREA",
+                        title=f"{what} dans une zone où le vol libre est interdit",
+                        detail=f"{area.name} : {prohibited_text(area)} — {what.lower()} dans la zone interdit.",
+                        absolute_nogo=not authorized,
+                        caution=authorized,
+                    )
+                )
+                continue
             if area.kind == "national_park_core":
                 authorized = _site_authorized(site)
                 out.append(
@@ -315,6 +436,9 @@ def route_sensitive_conflict(
             continue
         if not proj.geom(area.geometry).intersects(line):
             continue
+        if area.flight_prohibited:  # interdit à toute hauteur (revue 7.4)
+            out.append((area, float("inf")))
+            continue
         h = area.min_height_agl_m or (
             rules.PARK_MIN_HEIGHT_AGL_M
             if area.kind == "national_park_core"
@@ -322,6 +446,34 @@ def route_sensitive_conflict(
         )
         if route_height_violation(ctx, proj, area, coords, h):
             out.append((area, h))
+    return out
+
+
+def prohibited_text(area: SensitiveArea) -> str:
+    return "parapente et autres sports aériens interdits dans la zone, à toute hauteur"
+
+
+def prohibited_areas(ctx: DataContext) -> list[SensitiveArea]:
+    """Zones où le vol libre est interdit à toute hauteur, actives au mois de l'heure cible (revue 7.4)."""
+    month = ctx.target_time.month
+    return [a for a in ctx.sensitive_areas if a.flight_prohibited and a.active_in_month(month)]
+
+
+def low_overflight_areas(airspaces: list[Airspace]) -> list[SensitiveArea]:
+    """Revue 7.4 / 7.16 : zones OpenAIP « survol basse altitude restreint » (LOW_OVERFLIGHT : parcs, réserves, ZSM)
+    traitées comme une zone réglementée Biodiv'Sports ; leur plafond est lu comme une hauteur sol."""
+    out: list[SensitiveArea] = []
+    for i, a in enumerate(airspaces):
+        if a.type.upper() != "LOW_OVERFLIGHT":
+            continue
+        h = a.ceiling_height_m if a.ceiling_height_m is not None else a.ceiling_m
+        out.append(
+            SensitiveArea(
+                id=f"openaip:low-overflight:{i}", name=a.name, kind="regulatory", species=None, period_months=[],
+                recommendation=f"Survol à moins de {h:.0f} m/sol restreint (espace aérien {a.name}).",
+                min_height_agl_m=float(h), geometry=a.geometry, source="openaip",
+            )
+        )  # fmt: skip
     return out
 
 
@@ -336,6 +488,16 @@ def evaluate_sensitive_route(
             continue
         if site_in_area(proj, area, takeoff) or site_in_area(proj, area, landing):
             continue  # déjà traité par evaluate_sensitive_sites
+        if area.flight_prohibited and area.kind != "national_park_core" and area.active_in_month(month):
+            out.append(
+                Finding(
+                    code="SENSITIVE_AREA",
+                    title="Route dans une zone où le vol libre est interdit",
+                    detail=f"La route traverse {area.name} : {prohibited_text(area)}. Contourne la zone.",
+                    absolute_nogo=True,
+                )
+            )
+            continue
         if area.kind == "national_park_core":
             h = area.min_height_agl_m or rules.PARK_MIN_HEIGHT_AGL_M
             below = route_height_violation(ctx, proj, area, coords, h)
@@ -353,14 +515,14 @@ def evaluate_sensitive_route(
             h = area.min_height_agl_m or rules.SENSITIVE_AREA_DEFAULT_HEIGHT_AGL_M
             if area.kind == "regulatory":
                 below = route_height_violation(ctx, proj, area, coords, h)
-                if below:
+                if below:  # revue 7.4 : survol d'une zone réglementée sous sa hauteur = no-go (CDC §3 #12)
                     out.append(
                         Finding(
                             code="SENSITIVE_AREA",
                             title="Survol bas d'une zone réglementée",
-                            detail=f"{area.name} : survol à moins de {h:.0f} m/sol à proscrire. "
-                            f"{area.recommendation}".strip(),
-                            caution=True,
+                            detail=f"{area.name} : la route passe à moins de {h:.0f} m/sol, survol interdit sous cette "
+                            f"hauteur. {area.recommendation}".strip(),
+                            absolute_nogo=True,
                         )
                     )
             elif route_height_violation(ctx, proj, area, coords, h):

@@ -556,8 +556,8 @@ def evaluate_spot(
                                f"seuil de ton niveau ({rules.LANDING_WIND_MAX_KMH[level]} / "
                                f"{rules.LANDING_GUST_MAX_KMH[level]}).")  # fmt: skip
         else:
-            ev.failures.append(f"vent d'arrivée {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} (seuils "
-                               f"{rules.LANDING_WIND_MAX_KMH[level]} / {rules.LANDING_GUST_MAX_KMH[level]})")  # fmt: skip
+            lim = f"{rules.LANDING_WIND_MAX_KMH[level]} / {rules.LANDING_GUST_MAX_KMH[level]}"
+            ev.failures.append(f"vent d'arrivée {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} (seuils {lim})")
             ev.failure_codes.append("LANDING_WIND")
     hit = _sensitive_hit(ctx, site)
     if kind != "official":

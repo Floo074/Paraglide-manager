@@ -25,6 +25,7 @@ _SCALAR_FIELDS = (
     "freezing_level_height",
     "boundary_layer_height",
     "shortwave_radiation",
+    "pressure_msl",
 )
 
 

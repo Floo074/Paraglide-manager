@@ -52,6 +52,9 @@ GRID_ALTITUDES = (10, 1000, 1500, 2000, 2500, 3000, 4000)
 MAX_GET_BBOX_DEG = 5.0
 
 
+MAX_MAP_TRENDS = 8  # appels /v1/archive Pioupiou au plus par GET /api/beacons
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -127,14 +130,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/beacons")
     async def beacons(request: Request, bbox: str = Query(...)):
         b = bbox_param(bbox)
-        bs, _, _ = await data(request).beacons(b)
+        ds = data(request)
+        bs, _, _ = await ds.beacons(b)
+        # revue 7.21 : tendance des balises affichées (archive Pioupiou, au plus 8 appels, cache 2 min), les plus
+        # proches du centre de la carte d'abord
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        todo = sorted((x for x in bs if x.trend is None and not x.stale and x.wind_speed_kmh is not None),
+                      key=lambda x: (x.lon - cx) ** 2 + (x.lat - cy) ** 2)[:MAX_MAP_TRENDS]  # fmt: skip
+        trends = await ds.beacon_trends([x.id for x in todo]) if todo else {}
+        bs = [x.model_copy(update={"trend": trends[x.id]}) if x.id in trends else x for x in bs]
         return {"beacons": [x.model_dump() for x in bs]}
 
     @app.get("/api/airspaces")
     async def airspaces(request: Request, bbox: str = Query(...)):
         b = bbox_param(bbox)
-        items, _ = await data(request).airspaces(b)
-        return {"type": "FeatureCollection", "features": [airspace_feature(a) for a in items]}
+        ds = data(request)
+        items, _, warn = await ds.airspaces(b)
+        items = await ds.airspaces_display(items)
+        # revue B6 : jamais d'espaces de démonstration hors mock ; OpenAIP indisponible → drapeau + avertissement
+        return {"type": "FeatureCollection", "features": [airspace_feature(a) for a in items],
+                "unverified": warn is not None, "warning": warn}  # fmt: skip
 
     @app.get("/api/sensitive-areas")
     async def sensitive_areas(request: Request, bbox: str = Query(...), time: str | None = None):
@@ -152,7 +167,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         t = time_param(time)
         ds = data(request)
-        (elev,), _ = await ds.elevations([(lat, lon)])
+        # revue B5 : jamais d'altitude synthétique hors DATA_MODE=mock (sans MNT réel, Open-Meteo prend la sienne)
+        ((elev, emode),) = await ds.elevations_detailed([(lat, lon)])
+        if emode != "live" and ds.s.data_mode != "mock":
+            elev = None
         day = t.replace(hour=0, minute=0, second=0, microsecond=0)
         start, end = day, day + timedelta(hours=23)
         if t < start or t > end:
@@ -194,9 +212,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for j in range(ny)
             for i in range(nx)
         ]
-        elevs, _emode = (
-            await ds.elevations(pts) if ds.s.data_mode != "mock" else ([terrain_elevation(*p) for p in pts], "mock")
-        )
+        if ds.s.data_mode == "mock":
+            elevs: list[float | None] = [terrain_elevation(*p) for p in pts]
+        else:  # revue B5 : MNT réel ou rien (Open-Meteo prend alors son propre relief), jamais le MNT de démo
+            vals = await ds.elevations_detailed(pts)
+            elevs = [v if m == "live" else None for v, m in vals]
+            if any(e is None for e in elevs):
+                elevs = [None] * len(pts)
         fcs, _ = await ds.forecasts(
             [(la, lo, e) for (la, lo), e in zip(pts, elevs, strict=True)],
             t,

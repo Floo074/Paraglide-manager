@@ -493,8 +493,8 @@ async def test_plan_service_fetches_trends_for_retained_plans_and_reevaluates(mo
     ds = DataService(Settings(data_mode="mock", openaip_api_key=None))
     orig_beacons = ds.beacons
 
-    async def beacons_as_pioupiou(bbox, at=None):
-        bs, ages, refs = await orig_beacons(bbox, at=at)
+    async def beacons_as_pioupiou(bbox, at=None, allow_demo=None):
+        bs, ages, refs = await orig_beacons(bbox, at=at, allow_demo=allow_demo)
         conv = [b.model_copy(update={"id": b.id.replace("fixture:", "pioupiou:"), "source": "pioupiou", "trend": None})
                 for b in bs]  # fmt: skip
         return conv, {k.replace("fixture:", "pioupiou:"): v for k, v in ages.items()}, refs

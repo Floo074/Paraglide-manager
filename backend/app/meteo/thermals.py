@@ -79,6 +79,7 @@ class HourAnalysis:
     rh700_pct: float | None
     el_m: float | None
     models: list[str] = field(default_factory=list)
+    pressure_msl_hpa: float | None = None  # revue 7.17 : tendance de pression (CDC §3 #13)
 
 
 def trigger_excess_c(shortwave_w_m2: float) -> float:
@@ -291,6 +292,7 @@ def analyze_hour(
         rh700_pct=rh700,
         el_m=parcel.el_m,
         models=list(models or []),
+        pressure_msl_hpa=hour.pressure_msl,
     )
 
 

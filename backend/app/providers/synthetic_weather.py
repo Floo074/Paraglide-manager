@@ -342,6 +342,7 @@ class SyntheticWeather:
             freezing_level_height=round(freezing, 0) if freezing is not None else None,
             boundary_layer_height=round(blh, 0),
             shortwave_radiation=round(sw, 1),
+            pressure_msl=1016.0,  # démo : pression stable (pas de front simulé)
             levels=levels,
         )
 

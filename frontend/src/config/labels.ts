@@ -189,5 +189,6 @@ export const RISK_CODE_LABEL: Record<string, string> = {
   STALE_BEACONS: "Balises",
   LOW_CONFIDENCE: "Confiance faible",
   MOCK_DATA: "Démo",
+  UNCHECKED: "Non vérifié",
   ACCESS_TIME: "Accès",
 };

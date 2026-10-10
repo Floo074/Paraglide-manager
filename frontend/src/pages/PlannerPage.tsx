@@ -415,6 +415,15 @@ export function PlannerPage() {
                   </button>
                 </div>
               ) : null}
+              {overlays.airspaces && airspaces.data?.unverified ? (
+                <div className="map-alert" role="status">
+                  <AlertTriangle size={15} aria-hidden />
+                  <span>
+                    <strong>Espaces aériens non vérifiés</strong>
+                    <span className="map-alert__detail"> — {airspaces.data.warning ?? "OpenAIP indisponible : vérifie la carte aéronautique."}</span>
+                  </span>
+                </div>
+              ) : null}
               {layerErrors.length ? (
                 <div className="map-alert" role="status">
                   <AlertTriangle size={15} aria-hidden />

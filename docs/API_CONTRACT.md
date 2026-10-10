@@ -69,10 +69,13 @@ interface Beacon {                   // balise météo temps réel
   wind_direction_deg: number | null;
   temperature_c: number | null;
   source: BeaconSource;
-  stale: boolean;                    // mesure > 30 min
-  trend: {                           // tendance sur l'historique récent (null si indisponible)
+  stale: boolean;                    // mesure ANCIENNE (> 30 min) ou balise éteinte ; une mesure récente sans
+                                     // donnée de vent garde stale = false et wind_speed_kmh = null (« mesure absente »)
+  trend: {                           // tendance sur l'historique récent (null si indisponible ; GET /api/beacons la
+                                     // calcule pour au plus 8 balises Pioupiou affichées, cache 2 min)
     window_min: number;              // ex. 60
-    speed_change_kmh: number;        // vent moyen actuel − vent moyen au début de la fenêtre
+    speed_change_kmh: number;        // pente de la régression linéaire sur tous les échantillons × window_min :
+                                     // taux = speed_change_kmh × 60 / window_min (km/h/h)
     direction_change_deg: number;    // rotation signée (+ = horaire)
     gust_max_kmh: number | null;     // rafale max sur la fenêtre
     samples: number;
@@ -138,7 +141,12 @@ interface ThermalAnalysis {
 interface Risk { code: string; level: RiskLevel; title: string; detail: string }
 // codes : catalogue du cahier des charges ; §12 ajoute NO_LANDING_BEACON, WIND_SHIFT, FREE_TAKEOFF (décollage libre :
 // info / caution / danger selon le niveau), UNOFFICIAL_LANDING (atterro communautaire), DETECTED_FIELD (champ détecté).
-// Raisons de rejet préfixées « [CODE] ».
+// Revue finale (10/10/2026) : ROTOR (no-go, atterro sous le vent d'un relief, MNT réel), FRONT (aussi : pression en
+// baisse ≥ 3 hPa en 3 h, no-go), ALTITUDE_LIMIT (aussi : décollage au-dessus du FL115, caution BLOQUANTE, réservé
+// expert), AIRSPACE (aussi : « Espaces aériens non vérifiés », caution, quand OpenAIP manque en live),
+// SENSITIVE_AREA (zone où le vol libre est interdit, ou survol réglementé sous sa hauteur : no-go), UNCHECKED (info :
+// règles du CDC non vérifiées par l'outil, détail en texte).
+// Raisons de rejet préfixées « [CODE] », une seule par code (la plus grave).
 
 interface Waypoint {
   name: string; lat: number; lon: number; altitude_m: number;
@@ -181,7 +189,8 @@ interface LandingCandidate {
 interface ScoreItem { criterion: string; score: number; weight: number; comment: string } // score 0..100
 
 interface FlightPlan {
-  id: string;
+  id: string;                        // dépend de TOUTE la requête (zone, horizon, référence, mode, filtres) : un id ne
+                                     // désigne jamais deux contenus différents (GET /api/plans/{id}, GPX, .xctsk)
   rank: number;
   score: number;                     // 0..100
   flyability: Flyability;
@@ -193,11 +202,17 @@ interface FlightPlan {
   target_time: string;
   window: { start: string; end: string; latest_landing?: string };   // créneau de décollage recommandé ;
                                      // latest_landing (optionnel) = min(window.end + est_duration_min, plafond horaire
-                                     // du verdict : fin des thermiques / surdév − 1 h…, coucher du soleil)
+                                     // du verdict : fin des thermiques / surdév − 1 h…, coucher du soleil) ; garanti :
+                                     // window.end + est_duration_min ≤ latest_landing, jamais au-dessus du plafond
+                                     // horaire ; au quart d'heure dès 12 h d'horizon. window.end peut valoir
+                                     // window.start (« décoller à hh:mm, pas plus tard »)
   sun?: { sunrise: string | null; sunset: string | null };          // (optionnel) lever/coucher au déco, ISO UTC
   takeoff: Site;
   landing: Site;
-  alternate_landings: Site[];
+  alternate_landings: Site[];        // secours ATTEIGNABLES avec la marge (r ≤ 1, relief dégagé) depuis le déco
+                                     // (plouf, soaring) ou un point de la route à son altitude de sécurité (local,
+                                     // cross), vent d'arrivée dans les seuils du niveau ; jamais un terrain hors de
+                                     // portée (absent aussi des waypoints, du briefing et de landing_analysis)
   landing_analysis: LandingCandidate[]; // atterros évalués (≤ 8), le 1er = landing, puis secours et autres candidats
                                      // utilisables par score ; mode classique : officiels seulement
   waypoints: Waypoint[];
@@ -247,15 +262,26 @@ défaut ; une source suspendue après un HTTP 429 le dit dans `message`.)
 `{ "beacons": Beacon[] }`
 
 ### `GET /api/airspaces?bbox=min_lon,min_lat,max_lon,max_lat`
-GeoJSON `FeatureCollection` ; `properties`: `{ name, airspace_class, type, floor_m, ceiling_m, floor_reference }`.
-`floor_m` / `ceiling_m` toujours en m AMSL (FL convertis en atmosphère standard ×30,48 m) ; `floor_reference` :
-`"AMSL"` ou `"GND"` (plancher publié par rapport au sol, converti en AMSL avec l'altitude du terrain au centre de la
-zone quand elle est connue). `airspace_class` : A…G, `R`, `Q` (dangereuse), `P`, `SIV`, `UNCLASSIFIED`.
+GeoJSON `FeatureCollection` ; `properties`: `{ name, airspace_class, type, floor_m, ceiling_m, floor_reference,
+ceiling_reference, floor_height_m, ceiling_height_m }`.
+`floor_m` / `ceiling_m` en m AMSL (FL convertis en atmosphère standard ×30,48 m) ; `floor_reference` /
+`ceiling_reference` : `"AMSL"` ou `"GND"` (limite publiée par rapport au sol, ex. « 1000 ft ASFC », R30C, parcs
+`LOW_OVERFLIGHT`) ; pour une limite `"GND"`, `floor_height_m` / `ceiling_height_m` donnent la HAUTEUR publiée et
+`floor_m` / `ceiling_m` une valeur AMSL indicative (terrain réel au centre de la zone ; sans MNT réel, la hauteur
+seule). Le moteur convertit les limites sol point par point le long de la route (MNT ; inconnu = chevauchement
+supposé). `airspace_class` : A…G, `R`, `Q` (dangereuse), `P`, `SIV`, `UNCLASSIFIED`.
+La collection porte aussi `unverified: boolean` et `warning: string | null` : hors `DATA_MODE=mock`, JAMAIS d'espaces
+de démonstration ; OpenAIP indisponible (et pas de fichier OpenAir) → liste vide ou partielle, `unverified = true`, et
+les plans portent un `Risk` AIRSPACE caution « Espaces aériens non vérifiés » + un avertissement. OpenAIP est chargé
+par tuiles de 1° (cache 24 h), un appel au plus toutes les 5 min.
 
 ### `GET /api/sensitive-areas?bbox=min_lon,min_lat,max_lon,max_lat&time=ISO` (`time` optionnel, défaut maintenant : sert à `active_now`)
 Zones sensibles pour la faune (Biodiv'Sports, pratique « aérien / vol libre ») + cœurs de parcs nationaux.
 GeoJSON `FeatureCollection` ; `properties` :
-`{ id, name, species: string | null, kind: "species" | "regulatory" | "national_park_core", period_months: number[] /* 1..12, mois de sensibilité */, active_now: boolean, recommendation: string /* consigne en français */, min_height_agl_m: number | null /* hauteur de survol recommandée */, source: "biodivsports" | "fixture", url: string | null }`.
+`{ id, name, species: string | null, kind: "species" | "regulatory" | "national_park_core", period_months: number[] /* 1..12, mois de sensibilité */, active_now: boolean, recommendation: string /* consigne en français */, min_height_agl_m: number | null /* hauteur de survol recommandée */, source: "biodivsports" | "fixture", url: string | null, flight_prohibited: boolean /* parapente / sports aériens interdits dans la zone, à toute hauteur */ }`.
+Une zone `flight_prohibited` traversée (à toute hauteur), ou une zone réglementée survolée sous sa hauteur, est un
+no-go (`SENSITIVE_AREA` danger) ; le routeur contourne les zones interdites et le briefing Atterrissage le dit
+(« PTU et approche hors de la zone … »).
 Les zones actives au temps cible et touchées par la route produisent un `Risk` (code `SENSITIVE_AREA`) dans le plan de vol.
 
 ### `GET /api/forecast/point?lat=..&lon=..&time=ISO`
@@ -313,7 +339,9 @@ Réponse :
 interface PlanResponse {
   request_id: string;
   generated_at: string;
-  target_time: string;               // reference_time + horizon, arrondi au pas de prévision
+  target_time: string;               // reference_time + horizon, arrondi au pas de prévision : 15 min pour 15m, 30m
+                                     // et 1h, l'heure au-delà (demie vers le haut) ; c'est AUSSI l'heure évaluée par le
+                                     // moteur et FlightPlan.target_time ; le front arrondit de la même façon
   horizon: Horizon;
   zone: Zone;
   data_mode: DataMode;

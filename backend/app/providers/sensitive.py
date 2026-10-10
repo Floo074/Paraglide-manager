@@ -83,11 +83,30 @@ def _float(x) -> float | None:
         return None
 
 
+_AERIAL = re.compile(r"parapente|vol libre|sports? a[ée]riens?|deltaplane|survol", re.IGNORECASE)
+_FORBID = re.compile(r"interdi(?:t|ts|te|tes|ction)\b", re.IGNORECASE)
+_HEIGHT_RULE = re.compile(r"(?:à|a)\s+moins\s+de\s+(\d{2,4})\s*m", re.IGNORECASE)
+
+
+def text_prohibits_flight(text: str | None) -> bool:
+    """Revue 7.4 : une phrase qui interdit le parapente / le vol libre / les sports aériens / le survol dans la zone
+    (« Parapente et autres sports aériens interdits dans la zone », « survol interdit », « vol libre interdit »). Une
+    interdiction limitée en hauteur (« survol interdit à moins de 300 m ») n'est PAS une interdiction totale."""
+    if not text:
+        return False
+    for sentence in re.split(r"[.;\n]|<br\s*/?>", _strip_html(text, 100_000) if "<" in text else text):
+        if _FORBID.search(sentence) and _AERIAL.search(sentence) and not _HEIGHT_RULE.search(sentence):
+            return True
+    return False
+
+
 def _forbids_paragliding(props: dict) -> bool:
     for r in props.get("rules") or []:
         if isinstance(r, dict) and str(r.get("code") or "").upper() in PARAGLIDING_FORBIDDEN_CODES:
             return True
-    return False
+        if isinstance(r, dict) and text_prohibits_flight(f"{r.get('name') or ''}. {r.get('description') or ''}"):
+            return True
+    return text_prohibits_flight(props.get("description"))
 
 
 def parse_biodivsports(
@@ -126,7 +145,8 @@ def parse_biodivsports(
             rec = "Zone de quiétude de la faune : éviter le survol bas et les approches des falaises."
         elif not rec:
             rec = "Zone réglementée : se référer à l'arrêté de protection."
-        if _forbids_paragliding(props):
+        prohibited = _forbids_paragliding(props)
+        if prohibited and "interdit" not in rec[:120].lower():
             rec = "Parapente et autres sports aériens interdits dans la zone. " + rec
         out.append(
             SensitiveArea(
@@ -140,6 +160,7 @@ def parse_biodivsports(
                 geometry=g,
                 source="biodivsports",
                 url=props.get("info_url") or props.get("url"),
+                flight_prohibited=prohibited,
             )
         )
     nxt = data.get("next")
@@ -221,6 +242,7 @@ def fixture_areas(bbox, parks_only: bool) -> list[SensitiveArea]:
                 geometry=g,
                 source="fixture",
                 url=p.get("url"),
+                flight_prohibited=bool(p.get("flight_prohibited")) or text_prohibits_flight(p.get("recommendation")),
             )
         )
     return out
@@ -262,5 +284,6 @@ def area_feature(a: SensitiveArea, at: datetime) -> dict:
             "min_height_agl_m": a.min_height_agl_m,
             "source": a.source if a.source in ("biodivsports", "fixture") else "fixture",
             "url": a.url,
+            "flight_prohibited": a.flight_prohibited,
         },
     }

@@ -30,11 +30,20 @@ def is_free_takeoff(site: Site) -> bool:
     return site.source == "user"
 
 
+def pct_txt(x: float, threshold: float | None = None) -> str:
+    """Pente lisible : une décimale près d'un seuil (« 24,6 % » et non « 25 % (minimum 25 %) », revue 7.18)."""
+    if threshold is not None and abs(x - threshold) < 1.0:
+        return f"{x:.1f}".replace(".", ",")
+    return f"{x:.0f}"
+
+
 def site_findings(site: Site, terrain: TakeoffTerrain | None) -> list[Finding]:
     out: list[Finding] = [
         Finding("FREE_TAKEOFF", "Décollage libre (hors site officiel)", FT["warning"],
                 level_risk=dict(rules.RISK_LEVELS["FREE_TAKEOFF"]))
     ]  # fmt: skip
+    if terrain is not None and terrain.elevation_note:
+        out.append(Finding("FREE_TAKEOFF", "Altitude saisie différente du MNT", terrain.elevation_note, caution=True))
     if terrain is None or terrain.slope_pct is None:
         out.append(Finding(
             "FREE_TAKEOFF", "Pente non mesurée",
@@ -47,8 +56,8 @@ def site_findings(site: Site, terrain: TakeoffTerrain | None) -> list[Finding]:
     note = LEVEL_LIMIT_NOTE.format(i=mx["intermediate"], a=mx["advanced"], e=mx["expert"])
     out.append(Finding(
         "FREE_TAKEOFF", "Pente trop raide",
-        f"Pente MNT de {terrain.slope_pct:.0f} % sur les 150 m sous le point : pente trop raide pour gonfler et courir "
-        f"en sécurité ({note}).",
+        f"Pente MNT de {pct_txt(terrain.slope_pct)} % sur les 150 m sous le point : pente trop raide pour gonfler et "
+        f"courir en sécurité ({note}).",
         value=terrain.slope_pct, limits=_per_level(mx), band=False,
     ))  # fmt: skip
     if terrain.profile_ok is False:
@@ -109,7 +118,7 @@ def wind_findings(tw: TakeoffWind, terrain: TakeoffTerrain | None, site: Site) -
                        f"de face ; vent de face prévu : {max(0.0, head):.0f} km/h")  # fmt: skip
             out.append(Finding(
                 "FREE_TAKEOFF", "Pente trop faible pour décoller",
-                f"Pente MNT de {terrain.slope_pct:.0f} % : pente trop faible pour décoller ({why}).",
+                f"Pente MNT de {pct_txt(terrain.slope_pct, need)} % : pente trop faible pour décoller ({why}).",
                 absolute_nogo=True,
             ))  # fmt: skip
     return out

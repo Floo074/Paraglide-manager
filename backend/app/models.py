@@ -114,6 +114,8 @@ class Site(_Model):
     source: SiteSource
     url: str | None = None
     associated_landing_ids: list[str] = Field(default_factory=list)
+    # associations déduites par proximité (règle PGE c), interne : pas de k « paire associée » (7.13)
+    deduced_landing_ids: list[str] = Field(default_factory=list, exclude=True)
     official: bool = True  # site officiel / référencé (FFVL, PGE validé, fixture)
     landing_kind: LandingKind | None = None  # pour un atterrissage
 

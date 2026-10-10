@@ -69,6 +69,37 @@ def limit_to_m(value: float, unit: int, datum: int) -> tuple[float, bool]:
     return meters, datum == OPENAIP_DATUM_GND
 
 
+def build_airspace(
+    name: str, cls: str, typ: str, floor: float, floor_agl: bool, ceil: float, ceil_agl: bool, geom: BaseGeometry,
+    activity_known: bool, terrain=None,
+) -> Airspace:
+    """Espace aérien avec ses limites publiées. Une limite référencée au sol (GND / ASFC) garde sa HAUTEUR
+    (`floor_height_m` / `ceiling_height_m`) : le moteur la convertit point par point avec le MNT (revue B7) ;
+    `floor_m` / `ceiling_m` sont une valeur AMSL indicative (terrain au centre de la zone si `terrain` est fourni,
+    sinon la hauteur seule). Un plancher « 0 GND » est le sol (pas une hauteur)."""
+    f_agl = floor_agl and floor > 0
+    a = Airspace(
+        name=name, airspace_class=cls, type=typ, floor_m=round(floor), ceiling_m=round(min(ceil, 99999)),
+        geometry=geom, floor_agl=f_agl, activity_known=activity_known, active=False, ceiling_agl=ceil_agl,
+        floor_height_m=float(floor) if f_agl else None, ceiling_height_m=float(ceil) if ceil_agl else None,
+    )  # fmt: skip
+    if terrain is not None and (f_agl or ceil_agl):
+        rp = geom.representative_point()
+        a = with_ground(a, terrain(rp.y, rp.x))
+    return a
+
+
+def with_ground(a: Airspace, ground: float | None) -> Airspace:
+    """Copie de l'espace dont les limites sol sont converties en AMSL avec `ground` (affichage) ; inchangé si None."""
+    from dataclasses import replace
+
+    if ground is None or not (a.floor_agl or a.ceiling_agl):
+        return a
+    floor = a.floor_height_m + ground if a.floor_agl and a.floor_height_m is not None else a.floor_m
+    ceil = a.ceiling_height_m + ground if a.ceiling_agl and a.ceiling_height_m is not None else a.ceiling_m
+    return replace(a, floor_m=round(floor), ceiling_m=round(min(ceil, 99999)))
+
+
 def _airspace_class(icao: int, typ: str) -> str:
     cls = ICAO_CLASS.get(icao, "UNCLASSIFIED")
     if cls == "UNCLASSIFIED":
@@ -110,28 +141,13 @@ def parse_openaip(data, terrain=None) -> tuple[list[Airspace], int | None]:
         ceil_raw = float(hi.get("value") or 0)
         ceil, ceil_agl = limit_to_m(ceil_raw, _int(hi.get("unit"), 1), _int(hi.get("referenceDatum"), 1))
         floor_agl = floor_agl and floor_raw > 0  # « SFC / 0 ft GND » = sol, pas une hauteur à convertir
-        if terrain is not None and (floor_agl or ceil_agl):
-            c = geom.representative_point()
-            ground = terrain(c.y, c.x) or 0.0
-            if floor_agl:
-                floor += ground
-            if ceil_agl:
-                ceil += ground
+        if typ == "LOW_OVERFLIGHT" and _int(hi.get("unit"), 1) != OPENAIP_UNIT_FL:
+            ceil_agl = True  # revue 7.16 : survol basse altitude restreint = hauteur sol (« 300 m »)
         cls = _airspace_class(_int(it.get("icaoClass"), 8), typ)
         by_notam = bool(it.get("byNotam") or it.get("onRequest") or it.get("onDemand"))
-        out.append(
-            Airspace(
-                name=str(it.get("name") or "Espace aérien").strip(),
-                airspace_class=cls,
-                type=typ,
-                floor_m=round(floor),
-                ceiling_m=round(ceil),
-                geometry=geom,
-                floor_agl=floor_agl,
-                activity_known=not (typ in ACTIVATION_TYPES or by_notam),
-                active=False,
-            )
-        )
+        name = str(it.get("name") or "Espace aérien").strip()
+        known = not (typ in ACTIVATION_TYPES or by_notam)
+        out.append(build_airspace(name, cls, typ, floor, floor_agl, ceil, ceil_agl, geom, known, terrain))
     nxt = data.get("nextPage")
     page = _int(data.get("page"), 0)
     nxt_i = _int(nxt, 0) if nxt not in (None, "", False) else 0
@@ -295,27 +311,10 @@ def parse_openair(text: str, terrain=None) -> list[Airspace]:
         if geom is not None and geom.is_valid and not geom.is_empty:
             floor, f_agl = blk.floor
             ceil, c_agl = blk.ceiling
-            if terrain is not None and (f_agl or c_agl):
-                rp = geom.representative_point()
-                ground = terrain(rp.y, rp.x) or 0.0
-                if f_agl and floor > 0:
-                    floor += ground
-                if c_agl:
-                    ceil += ground
             cls, typ = _openair_class_type(blk)
-            out.append(
-                Airspace(
-                    name=blk.name or "Espace aérien",
-                    airspace_class=cls,
-                    type=typ,
-                    floor_m=round(floor),
-                    ceiling_m=round(min(ceil, 99999)),
-                    geometry=geom,
-                    floor_agl=f_agl and floor > 0,
-                    activity_known=cls not in ("R", "Q") and typ not in ("R", "Q", "ZRT", "TRA", "TSA"),
-                    active=False,
-                )
-            )
+            known = cls not in ("R", "Q") and typ not in ("R", "Q", "ZRT", "TRA", "TSA")
+            out.append(build_airspace(blk.name or "Espace aérien", cls, typ, floor, f_agl, ceil, c_agl and ceil < 99999,
+                                      geom, known, terrain))  # fmt: skip
         blk, pts, circle = None, [], None
 
     for raw in text.splitlines():
@@ -445,6 +444,9 @@ def airspace_feature(a: Airspace) -> dict:
             "floor_m": round(a.floor_m),
             "ceiling_m": round(a.ceiling_m),
             "floor_reference": "GND" if a.floor_agl else "AMSL",
+            "ceiling_reference": "GND" if a.ceiling_agl else "AMSL",
+            "floor_height_m": None if a.floor_height_m is None else round(a.floor_height_m),
+            "ceiling_height_m": None if a.ceiling_height_m is None else round(a.ceiling_height_m),
         },
     }
 

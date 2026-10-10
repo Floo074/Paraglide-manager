@@ -60,11 +60,14 @@ describe("tendance des balises", () => {
     expect(formatTrend(trend(-4, 5))).toBe(`↘ ${MINUS}4${NBSP}km/h en 1 h`);
   });
   it("niveau d'alerte (CDC §12.2 : +6 / +10 km/h/h, rotation 45° / 90° si vent ≥ 8 km/h)", () => {
+    // seuils du backend (CDC §12.2) : hausse > 5 / > 20 km/h/h, rotation 60°, bascule 120°
     expect(trendLevel(trend(5), 12)).toBeNull();
-    expect(trendLevel(trend(6), 12)).toBe("caution");
-    expect(trendLevel(trend(10), 12)).toBe("danger");
-    expect(trendLevel(trend(4, 50), 12)).toBe("caution");
-    expect(trendLevel(trend(4, 95), 12)).toBe("danger");
+    expect(trendLevel(trend(5.5), 12)).toBe("caution");
+    expect(trendLevel(trend(12), 12)).toBe("caution"); // caution côté serveur (et non danger)
+    expect(trendLevel(trend(21), 12)).toBe("danger");
+    expect(trendLevel(trend(4, 50), 12)).toBeNull();
+    expect(trendLevel(trend(4, 65), 12)).toBe("caution");
+    expect(trendLevel(trend(4, 125), 12)).toBe("danger");
     expect(trendLevel(trend(4, 95), 5)).toBeNull(); // vent faible : la direction ne compte pas
     expect(trendLevel(trend(4, 0, 30), 12)).toBe("caution"); // +4 en 30 min = +8 km/h/h
   });

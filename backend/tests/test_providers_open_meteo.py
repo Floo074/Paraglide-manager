@@ -196,7 +196,7 @@ def test_build_params():
     assert p["elevation"] == "1245" and p["latitude"] == "45.8100" and p["longitude"] == "6.2500"
     hv = p["hourly"].split(",")
     assert "geopotential_height_500hPa" in hv and "wind_gusts_10m" in hv
-    assert len(hv) == len(hourly_variables(True)) == 16 + 5 * 9
+    assert len(hv) == len(hourly_variables(True)) == 17 + 5 * 9 and "pressure_msl" in hv
     # une altitude inconnue → pas de paramètre elevation (sinon les listes seraient de tailles différentes)
     p2 = build_params([FORCLAZ, (45.0, 6.0, None)], MODELS, start, start, with_levels=False)
     assert "elevation" not in p2 and "temperature_850hPa" not in p2["hourly"]

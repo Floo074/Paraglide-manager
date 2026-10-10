@@ -36,7 +36,8 @@ from app.providers.base import ProviderDisabled, ProviderError, get_json
 from app.providers.fixture_data import fixture_sites_raw
 
 PGE_SECTORS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-CLOSED_WORDS = ("fermé", "ferme ", "closed", "interdit", "ancien", "forbidden")
+# revue (m) : mots entiers seulement (« La Ferme de Chosal », « Ancienne carrière » ne sont pas des sites fermés)
+CLOSED_RE = re.compile(r"\b(?:fermée?s?|site fermé|closed|interdite?s?|forbidden)\b", re.IGNORECASE)
 UNOFFICIAL_WORDS = ("sauvage", "non officiel", "non-officiel", "unofficial", "wild", "interdit", "forbidden")
 PGE_BASE_URL = "https://www.paraglidingearth.com"
 
@@ -79,9 +80,35 @@ def _text(x) -> str | None:
     return t or None
 
 
-def pge_orientations(props: dict) -> list[str]:
-    """Secteurs PGE (8, notés 0/1/2) → rose 16 points ; secteur intermédiaire si ses deux voisins sont notés."""
+def pge_rated(props: dict) -> tuple[set[str], set[str]]:
+    """(secteurs PGE notés ≥ 1, secteurs notés 2 = « bon »)."""
     rated = {s for s in PGE_SECTORS if (_num(props.get(s)) or 0) >= 1}
+    good = {s for s in PGE_SECTORS if (_num(props.get(s)) or 0) >= 2}
+    return rated, good
+
+
+def _pge_sectors(props: dict) -> tuple[set[str], bool]:
+    """(secteurs retenus, orientation incertaine). Revue 7.3 : (a) dès 6 secteurs notés sur 8, la notation PGE n'est
+    pas une orientation ; (b) on préfère alors les secteurs notés 2 (« bon ») s'ils sont moins de 6 ; sinon
+    l'orientation est incertaine (le moteur la déduit de l'exposition MNT ou écarte le site). Moins de 6 secteurs
+    notés : tous sont gardés (Forclaz : N et NW notés 2, W noté 1 = axe principal du déco)."""
+    rated, good = pge_rated(props)
+    n = rules.ORIENTATION_UNCERTAIN_MIN_SECTORS
+    if len(rated) < n:
+        return rated, False
+    if 0 < len(good) < n:
+        return good, False
+    return rated, True
+
+
+def pge_orientation_uncertain(props: dict) -> bool:
+    return _pge_sectors(props)[1]
+
+
+def pge_orientations(props: dict) -> list[str]:
+    """Secteurs PGE (8, notés 0/1/2) → rose 16 points ; secteur intermédiaire si ses deux voisins sont notés (voir
+    `_pge_sectors` pour le choix des secteurs)."""
+    rated, _ = _pge_sectors(props)
     if len(rated) == 8:
         return list(COMPASS_16)
     out = []
@@ -105,8 +132,7 @@ def https_link(url: str | None) -> str | None:
 
 
 def _is_closed(name: str) -> bool:
-    n = name.lower()
-    return any(w in n for w in CLOSED_WORDS)
+    return CLOSED_RE.search(name) is not None
 
 
 def _flag(props: dict, key: str) -> bool:
@@ -166,7 +192,10 @@ def parse_pge(data) -> tuple[list[Site], dict[str, SiteMeta]]:
         if kind == "takeoff" and llat is not None and llon is not None and (llat, llon) != (0.0, 0.0):
             lalt = _num(ldg.get("landing_altitude"))
             lid = f"pge:{pid}:landing"
-            lname = _text(ldg.get("landing_name")) or f"Atterro de {name}"
+            lname = _text(ldg.get("landing_name"))
+            if lname and lname.lower() in ("null", "none", "-"):  # revue 7.21 : atterro PGE nommé « null »
+                lname = f"Atterrissage PGE n° {pid}"
+            lname = lname or f"Atterro de {name}"
             sites.append(
                 Site(
                     id=lid,
@@ -214,7 +243,13 @@ def parse_pge(data) -> tuple[list[Site], dict[str, SiteMeta]]:
                 ),
             )
         )
-        meta[f"pge:{pid}"] = SiteMeta()
+        m = SiteMeta()
+        if kind == "takeoff" and pge_orientation_uncertain(props):
+            m.orientation_uncertain = True
+            m.orientation_note = f"ParaglidingEarth : {len(pge_rated(props)[0])} secteurs notés sur 8"
+        elif kind == "takeoff" and len(pge_rated(props)[0]) >= rules.ORIENTATION_UNCERTAIN_MIN_SECTORS:
+            m.orientation_note = "ParaglidingEarth : secteurs notés « bon » retenus"
+        meta[f"pge:{pid}"] = m
     return sites, meta
 
 
@@ -436,3 +471,4 @@ def associate_landings(sites: list[Site], max_glide: float = 6.0) -> None:
                 if req <= max_glide:
                     cands.append((req, ldg.id))
         s.associated_landing_ids = [lid for _, lid in sorted(cands)[:3]]
+        s.deduced_landing_ids = list(s.associated_landing_ids)

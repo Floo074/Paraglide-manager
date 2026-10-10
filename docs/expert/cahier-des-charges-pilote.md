@@ -6,6 +6,7 @@
 > Tous les seuils ci-dessous sont des **valeurs par défaut réglables** : ils doivent vivre dans `rules.py`, nulle part ailleurs.
 > **Révision 2 (phase 2)** : finesse de calcul et marges recalibrées, facteur de rafale non bloquant, rotation mesurée au-dessus de la brise de pente, fenêtres orage, coucher, confiance relative à l'horizon. Validé par les scénarios chiffrés de `scenarios-validation.md`.
 > **Révision 3** : §12 — horizon 15 min, balises d'atterro et tendance sur 1 h, absence de balise d'atterro, décollage libre, atterros non officiels (`community` / `field`). Scénarios S28-S32.
+> **Révision 4** (revue finale 7.13) : contrôle du §2.3 corrigé (Forclaz → Doussard = 4,1 km, pas 3,4 km) et k « paire associée » = 0,80 pour le plané direct déco → atterro officiel associé par la source.
 
 ---
 
@@ -130,7 +131,8 @@ required_ratio = distance_horizontale_m / hauteur_dispo
 margin_ok = required_ratio ≤ finesse_calcul_sol  ET  le profil de terrain ne coupe pas la ligne de plané (dégagement ≥ 50 m)
 ```
 - Exemple : polaire 8,5, intermediate → 6,0 ; vent de face 15 km/h → 6,0 × 22/37 = **3,6**. C'est réaliste : face à une brise de 15 km/h, on « ne va nulle part ».
-- Contrôle : Forclaz → Doussard (3,4 km, 800 m de dénivelé, marge 100 m) demande 4,9 → passe à tous les niveaux par vent calme, ce qui est conforme à la réalité (plouf d'école).
+- **Paire associée (révision 4)** : pour le plané direct déco → atterro officiel **associé par la source** (FFVL, PGE, fixture ; jamais une association déduite par proximité), relief vérifié sur MNT réel, `k = 0,80` à tous les niveaux (`GLIDE_K_ASSOCIATED_PAIR`). Tous les autres planés (secours, points de la route, décollage libre) gardent le `k` du niveau.
+- Contrôle (révision 4) : Forclaz → Doussard (**4,1 km**, 800 m de dénivelé, marge 100 m) demande 5,9 ; avec la paire associée, 8,5 × 0,80 = **6,8** disponibles par vent calme → r = 0,87, GO pour un élève (plouf d'école) ; avec 10 km/h de face, 6,8 × 27/37 ≈ 5,0 → no-go. *(La révision 2 donnait 3,4 km et 4,9 : distance fausse, corrigée sur PGE pge:3046 et la balise Pioupiou 1720.)*
 - Sous-score finesse sur `r = required / available` : r ≤ 0,75 → 100 ; 0,90 → 60 ; 0,95 → 40 ; 1,0 → 0. `GLIDE_MARGIN` caution si r > 0,90, danger si r > 1.
 - **Soaring avec top landing** (alt. atterro ≥ alt. déco − 50 m) : pas de contrôle de finesse (`required_ratio = 0`, `margin_ok = true`) ; briefing : « en cas de baisse du vent, posez-vous en bas de la pente côté au vent ».
 - Ajouter **−10 %** sur la finesse de calcul si la ligne de plané passe sous le vent d'un relief ou dans une vallée en brise descendante.

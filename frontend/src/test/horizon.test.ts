@@ -21,15 +21,21 @@ describe("horizon", () => {
     expect(isHorizon("2h")).toBe(true);
     expect(isHorizon("3h")).toBe(false);
   });
-  it("heure cible arrondie à l'heure la plus proche", () => {
+  it("heure cible arrondie comme le backend (quart d'heure jusqu'à 1 h, heure au-delà)", () => {
     const ref = new Date("2026-10-08T12:10:00Z");
-    expect(targetTimeFromHorizon(ref, "30m").toISOString()).toBe("2026-10-08T13:00:00.000Z"); // 12:40 → 13:00
+    expect(targetTimeFromHorizon(ref, "30m").toISOString()).toBe("2026-10-08T12:45:00.000Z"); // 12:40 → 12:45
     expect(targetTimeFromHorizon(ref, "2h").toISOString()).toBe("2026-10-08T14:00:00.000Z"); // 14:10 → 14:00
+    // revue : ref 10:07Z, 30m → 10:30Z (et non 11:00Z) ; ref 10:20Z, 1h → 11:15Z ; demie vers le haut
+    expect(targetTimeFromHorizon(new Date("2026-10-09T10:07:00Z"), "30m").toISOString()).toBe("2026-10-09T10:30:00.000Z");
+    expect(targetTimeFromHorizon(new Date("2026-10-09T10:20:00Z"), "1h").toISOString()).toBe("2026-10-09T11:15:00.000Z");
+    expect(targetTimeFromHorizon(new Date("2026-10-09T10:30:00Z"), "2h").toISOString()).toBe("2026-10-09T13:00:00.000Z");
     expect(targetTimeFromHorizon(ref, "24h").toISOString()).toBe("2026-10-09T12:00:00.000Z");
   });
   it("« 15 min » : arrondi au quart d'heure, jamais avant l'heure de référence", () => {
     expect(forecastStepMinutes("15m")).toBe(15);
-    expect(forecastStepMinutes("1h")).toBe(60);
+    expect(forecastStepMinutes("1h")).toBe(15);
+    expect(forecastStepMinutes("30m")).toBe(15);
+    expect(forecastStepMinutes("2h")).toBe(60);
     expect(targetTimeFromHorizon(new Date("2026-10-08T12:10:00Z"), "15m").toISOString()).toBe("2026-10-08T12:30:00.000Z"); // 12:25 → 12:30
     expect(targetTimeFromHorizon(new Date("2026-10-08T12:01:00Z"), "15m").toISOString()).toBe("2026-10-08T12:15:00.000Z"); // 12:16 → 12:15
     for (let m = 0; m < 60; m++) {

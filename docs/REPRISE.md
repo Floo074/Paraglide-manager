@@ -3,16 +3,22 @@
 Tout est sur la branche `claude/paraglide-flight-planner`. La clé OpenAIP est dans `backend/.env`
 (non versionné) : à recréer si la session est neuve (`OPENAIP_API_KEY=...`).
 
-## État (09/10/2026)
+## État (10/10/2026)
 
-- **Backend** : 217 tests passent (`uv run pytest -q`), `uv run ruff check .` vert. Moteur d'évaluation,
+- **Revue finale de l'expert (lot 7, `docs/expert/revue-backend.md`)** : tous les bloquants et majeurs traités, mineurs
+  simples aussi ; tableau « Réponse du backend » dans la revue ; 53 tests de non-régression
+  (`backend/tests/test_review_fixes.py`). CDC révision 4 (§2.3 : Forclaz → Doussard 4,1 km, k « paire associée » 0,80).
+- **Backend** : 271 tests passent (`uv run pytest -q`), `uv run ruff check .` vert. Moteur d'évaluation,
   seuils (`app/engine/rules.py`, blocs YAML §11 et §12.9 recopiés), calculs aérologiques, providers
   (Open-Meteo + 15 min, ParaglidingEarth, Pioupiou + archive, OpenAIP, OpenAir, Biodiv'Sports,
   Overpass désactivé par défaut), balises au déco et à l'atterro, horizon 15 min, décollage libre et
   analyse des atterrissages (`POST /api/landings/analyze`), exports GPX / XCTrack, Dockerfile, README.
   Les 37 scénarios du moniteur (`scenarios` + `scenarios_phase2`, S28-S32 compris) passent, sans xfail.
 - **Frontend** : pages Planification, Détail du plan, Sources, À propos ; balises en direct, bascule
-  « Classique / Décollage libre », cône de finesse, fiches des atterros candidats. 80 tests Vitest.
+  « Classique / Décollage libre », cône de finesse, fiches des atterros candidats. 80 tests Vitest ; `tsc` et build
+  verts ; contrat revérifié contre le backend mock le 10/10 (`scripts/check-contract.mjs`, 26 réponses, 0 écart).
+  Revue : heure cible arrondie comme le backend (15 min jusqu'à 1 h), seuils de tendance des balises alignés sur le
+  CDC, espaces aériens « non vérifiés » signalés sur la carte, plafonds « m/sol », zones où le vol libre est interdit.
 - **Intégration (09/10/2026)** : contrat validé sur les vraies réponses du backend (`frontend/scripts/check-contract.mjs` :
   26 réponses typées contre `src/api/types.ts`, 0 écart en mock) ; parcours Playwright complet
   (`frontend/e2e/parcours.mjs`, 39 vérifications, 1440 px et 375 px, 0 erreur console) contre le backend en mock.
@@ -80,3 +86,17 @@ Tout est sur la branche `claude/paraglide-flight-planner`. La clé OpenAIP est d
    - Piste « communauté » non disponible en API ouverte : points d'atterrissage tirés des traces
      XContest (pas d'API publique) ; à étudier plus tard.
 9. [ ] Commit final propre, puis proposition de PR.
+10. **Revue finale (lot 7) — reste à faire** :
+   - [ ] Expert : confirmer l'interprétation de 7.3 (b) (secteurs notés 2 préférés seulement quand ≥ 6 secteurs sont
+     notés : sinon Forclaz perdait son W) ; juger Forclaz → Doussard en LIVE (contournement de la réserve du Bout du
+     Lac, plané allongé d'environ 150 m : r ≈ 0,91, MARGINAL élève) ; valider le rotor à l'atterro (5 / 10 × la
+     hauteur du relief, no-go, MNT réel seulement) et la règle « high » plus stricte (posé 1 h avant le surdév).
+   - [ ] Fixture Plaine-Joux : déco de démo à 3,2 km de Chedde (PGE : 2,6 km) ; coordonnées du déco pge:3021 à relever
+     (PGE injoignable le 10/10, « connection reset »).
+   - [ ] Règles encore non vérifiées (Risk info `UNCHECKED`, README) : venturi aux cols, Δp du foehn entre versants,
+     hauteur d'arrivée sur la face suivante d'un cross (§5.4), −10 % de finesse sous le vent, décalage du rayonnement
+     pour W*.
+   - [ ] **Plans live de 30m et 24h à juger sur Annecy et Chamonix**, comparés à la prévision brute de
+     `/api/forecast/point` (quota Open-Meteo) ; vérifier en live l'exposition MNT des décos PGE « tous secteurs »
+     (Plaine Joux, Dômes de Miage, Le Méruz, Marlens), la tuile OpenAIP et les limites sol (R30C, parcs).
+   - [ ] Parcours Playwright (`frontend/e2e/parcours.mjs`) à rejouer : textes du briefing et des risques modifiés.

@@ -3,14 +3,19 @@ collecte des données, moteur, cache des plans."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.cache import TTLCache
 from app.engine import rules
+from app.engine.airspace import low_overflight_areas
 from app.engine.conditions import dir_label
 from app.engine.context import DataContext, PointTimeline, ReliefPoint, SiteMeta
+from app.engine.free_takeoff import pct_txt
 from app.engine.landings import LandingSpot, analyze_free_takeoff
 from app.engine.planner import evaluate_sites
 from app.engine.routing import landing_kind_of
@@ -51,24 +56,30 @@ def parse_reference(s: str | None) -> datetime:
 
 def round_hour(t: datetime) -> datetime:
     base = t.replace(minute=0, second=0, microsecond=0)
-    return base + timedelta(hours=1) if t.minute >= 30 else base
+    return base + timedelta(hours=1) if (t.minute * 60 + t.second) >= 1800 else base
 
 
 def round_target(t: datetime, horizon: str) -> datetime:
     """Heure cible arrondie au pas de prévision : l'heure (modèles horaires), ou 15 min pour les horizons ≤ 1 h,
-    où le vent retenu vient surtout des balises (nowcasting, pas de 15 min, CDC §12.5)."""
+    où le vent retenu vient surtout des balises (nowcasting, pas de 15 min, CDC §12.5). La demie est arrondie vers le
+    haut (floor(x + 0,5)), comme `Math.round` côté front (frontend/src/utils/horizon.ts)."""
     if horizon in rules.NOWCAST_WINDOW_START_MIN:
-        q = round((t.minute * 60 + t.second) / 900.0)
+        q = math.floor((t.minute * 60 + t.second) / 900.0 + 0.5)
         return t.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=15 * q)
     return round_hour(t)
 
 
 def target_for(ref: datetime, horizon: str) -> datetime:
-    target = ref + timedelta(minutes=HORIZON_MINUTES[horizon])
-    if horizon in rules.NOWCAST_WINDOW_START_MIN:
-        # horizons ≤ 1 h : le moteur travaille sur la même cible que celle publiée (pas de 15 min, §12.5)
-        target = round_target(target, horizon)
-    return target
+    """Heure cible du moteur = heure cible publiée (PlanResponse.target_time, FlightPlan.target_time) : toujours
+    arrondie au pas de prévision (revue : le moteur évaluait 12:20 en annonçant 12:00)."""
+    return round_target(ref + timedelta(minutes=HORIZON_MINUTES[horizon]), horizon)
+
+
+def request_key(req) -> str:
+    """Empreinte de la requête normalisée (zone, horizon, référence, mode, décollage libre, tous les filtres) : entre
+    dans l'id des plans, pour qu'un id ne désigne jamais deux contenus différents (revue : collision d'ids)."""
+    raw = json.dumps(req.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode()).hexdigest()[:10]
 
 
 def in_zone(zone: BBoxZone | CircleZone, lat: float, lon: float) -> bool:
@@ -111,8 +122,21 @@ def terrain_text(t: TakeoffTerrain) -> str:
     src = "MNT de démonstration" if t.source == "demo" else "MNT Copernicus 90 m (Open-Meteo)"
     prof = {True: "profil de l'axe dégagé sur 300 m", False: f"profil de l'axe : {t.profile_detail}",
             None: "profil de l'axe non contrôlé"}[t.profile_ok]  # fmt: skip
-    return (f"Terrain au point ({src}) : pente {t.slope_pct:.0f} % sur 150 m, orientée {dir_label(t.aspect_deg)} ; "
-            f"{prof}.")  # fmt: skip
+    sp = rules.FREE_TAKEOFF["slope_pct"]
+    x = t.slope_pct
+    if x < sp["min"]:  # revue 7.21 : la lecture dit si la pente convient
+        verdict = f"trop faible pour décoller (minimum {sp['min']} % avec du vent de face)"
+    elif x < sp["min_without_headwind"]:
+        verdict = (f"insuffisante sans vent de face (minimum {sp['min_without_headwind']} %, ou {sp['min']} % avec au "
+                   f"moins {sp['headwind_for_gentle_kmh']} km/h de vent de face)")  # fmt: skip
+    elif x > max(sp["max"].values()):
+        verdict = f"trop raide (maximum {max(sp['max'].values())} %)"
+    elif x > min(sp["max"].values()):
+        verdict = "raide : réservée aux pilotes confirmés"
+    else:
+        verdict = "convenable"
+    return (f"Terrain au point ({src}) : pente {pct_txt(x, sp['min_without_headwind'])} % sur 150 m, "
+            f"{verdict}, orientée {dir_label(t.aspect_deg)} ; {prof}.")  # fmt: skip
 
 
 @dataclass
@@ -156,6 +180,7 @@ class PlanService:
         else:
             g = await self._gather_classic(req, ref, target)
         ctx, data_mode = await self._context(g, req.filters.duration_max_minutes)
+        ctx.request_key = request_key(req)
         plans, rejected, warns = await self._evaluate(ctx, req.filters, g)
         for p in plans:
             self.plans.set(p.id, p)
@@ -234,6 +259,19 @@ class PlanService:
         communautaires, champs selon landing_policy) dans la portée de plané, prévisions groupées."""
         terrain_info = await self.data.takeoff_terrain(ct.lat, ct.lon, ct.orientations)
         elev = ct.elevation_m if ct.elevation_m is not None else terrain_info.elevation_m
+        dem = terrain_info.elevation_m if terrain_info.source in ("dem", "demo", "scenario") else None
+        if ct.elevation_m is not None and dem is not None:
+            # revue : une faute de frappe (+1000 m) rendait « atteignables » des atterros hors de portée
+            diff = ct.elevation_m - dem
+            if abs(diff) > rules.CUSTOM_ELEVATION_MAX_DIFF_M:
+                elev = min(ct.elevation_m, dem + rules.CUSTOM_ELEVATION_CLIFF_M)
+                terrain_info.elevation_note = (
+                    f"Altitude saisie {ct.elevation_m:.0f} m très différente du MNT ({dem:.0f} m, écart {diff:+.0f} m) "
+                    f": altitude retenue pour les calculs de plané {elev:.0f} m. Vérifie le point ou l'altitude.")
+            elif abs(diff) > rules.CUSTOM_ELEVATION_WARN_DIFF_M:
+                terrain_info.elevation_note = (
+                    f"Altitude saisie {ct.elevation_m:.0f} m différente du MNT ({dem:.0f} m, écart {diff:+.0f} m) : "
+                    f"vérifie le point (bord de falaise ?) ou l'altitude.")
         if elev is None:
             raise ValueError("Altitude du point de décollage inconnue (MNT indisponible) : indique elevation_m.")
         orientations = list(ct.orientations or (orientations_from_aspect(terrain_info.aspect_deg)
@@ -248,13 +286,15 @@ class PlanService:
         point = (ct.lon, ct.lat, ct.lon, ct.lat)
         bbox = expand_bbox(point, rules.LANDING_SEARCH_RADIUS_KM)
         warnings: list[str] = [terrain_text(terrain_info)]
+        if terrain_info.elevation_note:
+            warnings.append(terrain_info.elevation_note)
         sites, meta, site_refs, site_warn = await self.data.sites(bbox)
         warnings += site_warn
         refs: list[SourceRef] = list(site_refs)
         demo = any(r.mode == "mock" for r in site_refs)
         cands: list[Site] = [s for s in sites if s.kind in ("landing", "both")]
         spots: dict[str, LandingSpot] = {}
-        if filters.landing_policy != "official_only":  # politique DEMANDÉE (l'élève reçoit le rejet expliqué)
+        if True:  # revue 7.18 : toujours chargés, pour NOMMER un terrain à portée exclu par la politique (§12.7)
             sp, sp_refs, sp_warn = await self.data.landing_spots(bbox, (ct.lat, ct.lon), demo)
             refs += sp_refs
             warnings += sp_warn
@@ -302,8 +342,14 @@ class PlanService:
         atterros : OpenAIP ménagé), zones sensibles, relief : contexte complet du moteur et data_mode."""
         refs = g.refs
         warnings = g.warnings
-        beacons, ages, brefs = await self.data.beacons(expand_bbox(g.bbox, 15), at=g.ref)
+        synthetic_weather = any(r.mode == "mock" and "synthétique" in r.name.lower() for r in refs)
+        demo_ok = self.data.s.data_mode == "mock" or synthetic_weather
+        beacons, ages, brefs = await self.data.beacons(expand_bbox(g.bbox, 15), at=g.ref, allow_demo=demo_ok)
         refs += brefs
+        if (not beacons and not demo_ok and g.horizon in rules.NOWCAST_HORIZONS
+                and abs((g.ref - datetime.now(UTC)).total_seconds()) >= 3600):  # fmt: skip
+            warnings.append("Balises temps réel non applicables à cette heure de référence (à plus d'1 h de "
+                            "maintenant) : prévision non corrigée par les balises.")  # fmt: skip
         # altitude MNT des balises sans altitude (Pioupiou) proches des sites : un appel groupé, cache 7 j
         beacon_dem = await self.data.beacon_dem(beacons, [*g.takeoffs, *g.landing_points])
         if g.horizon in rules.NOWCAST_HORIZONS and g.landing_points:
@@ -316,12 +362,16 @@ class PlanService:
                 if ser and site.id in g.timelines:
                     g.timelines[site.id].minutely = ser
         airspaces = []
+        asp_warning: str | None = None
         if with_airspaces:
-            terrain_ok = g.terrain if g.terrain_real else None
-            airspaces, arefs = await self.data.airspaces(expand_bbox(g.bbox, 20), terrain_ok)
+            airspaces, arefs, asp_warning = await self.data.airspaces(expand_bbox(g.bbox, 20))
             refs += arefs
+            if asp_warning:
+                warnings.append(asp_warning)
         areas, srefs = await self.data.sensitive_areas(expand_bbox(g.bbox, 10))
         refs += srefs
+        # revue 7.4 / 7.16 : zones OpenAIP « survol basse altitude restreint » = zones réglementées (hauteur sol)
+        areas = [*areas, *low_overflight_areas(airspaces)]
         relief = [
             ReliefPoint(
                 p["name"], p["lat"], p["lon"], float(p["elevation_m"]), list(p.get("faces", [])), bool(p.get("valley"))
@@ -362,6 +412,7 @@ class PlanService:
             beacon_dem_m=beacon_dem,
             free_terrain=g.free_terrain,
             landing_spots=g.spots,
+            airspace_unverified=asp_warning,
         )
         return ctx, data_mode
 

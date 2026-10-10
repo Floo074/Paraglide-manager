@@ -338,7 +338,8 @@ def test_build_spots_clearances_and_approach():
     assert pre.clearances["road"] == pytest.approx(10, abs=2)  # chemin le long du pré
     assert any(o.label == "forêt" and o.height_m == 20 for o in pre.approach)
     assert spots["osm:way/4"].kind == "community"
-    assert "power_line" not in spots["osm:way/2"].clearances or spots["osm:way/2"].clearances["power_line"] is not None
+    # revue : valeur attendue (l'ancienne assertion était toujours vraie) — ligne électrique à 200 m de way/2
+    assert spots["osm:way/2"].clearances["power_line"] == pytest.approx(200, abs=2)
     assert spots["osm:node/10"].kind == "community" and spots["osm:node/10"].size is None
 
 
@@ -564,7 +565,7 @@ def test_api_source_down_in_live_is_503_json(monkeypatch):
     async def down(self, points):
         raise ProviderError("Open-Meteo Elevation indisponible : ConnectTimeout")
 
-    monkeypatch.setattr(DataService, "elevations", down)
+    monkeypatch.setattr(DataService, "elevations_detailed", down)
     with TestClient(create_app(Settings(_env_file=None, data_mode="live", openaip_api_key=None))) as c:
         r = c.get("/api/forecast/point", params={"lat": 45.83, "lon": 6.22, "time": "2026-10-10T08:00:00Z"})
         g = c.get("/api/forecast/grid", params={"bbox": "6.1,45.7,6.3,45.9", "layer": "wind"})

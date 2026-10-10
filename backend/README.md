@@ -212,3 +212,11 @@ puis copier la réponse utile dans `tests/fixtures/` (jamais de clé dans une fi
   (forêt 20 m, ligne 15 m, bâtiment 8 m) faute de donnée ; ligne électrique absente d'OSM = « non cartographiée ».
 - MNT Copernicus 90 m : la pente d'un décollage libre et d'un champ est une estimation (lissage du MNT) ;
   sans MNT réel (quota), pente et exposition sont « non mesurées » (jamais le MNT de démo pour un vol réel).
+- **Règles du cahier des charges non vérifiées par l'outil** (Risk `UNCHECKED`, niveau info, sur chaque plan) :
+  venturi aux cols et brèches (§4.5), écart de pression entre versants du foehn (§3 #4, Turin − Genève), hauteur
+  d'arrivée sur la face suivante d'un cross (§5.4), finesse −10 % sous le vent (§2.3), décalage d'une demi-heure du
+  rayonnement pour W* ; sans MNT réel, le rotor sous le vent (§4.5) et le relief maximal de la route d'un cross
+  (§2.1) ne sont pas vérifiés non plus. Vérifiés depuis la revue finale : tendance de pression (§3 #13, `pressure_msl`
+  Open-Meteo), rotor à l'atterro (MNT réel), plafond d'un cross ≥ relief de la route + 500 / 400 / 300 m (MNT réel).
+- Espaces aériens : OpenAIP par tuiles de 1° (cache 24 h, un appel au plus toutes les 5 min) ; s'il manque en live,
+  pas d'espaces de démonstration : liste vide ou partielle signalée « non vérifiée » (carte et plans).

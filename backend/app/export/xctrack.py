@@ -45,14 +45,15 @@ def plan_to_xctsk(plan: FlightPlan) -> dict:
     )
     inner = [w for w in plan.waypoints if w.type in ("turnpoint", "thermal_trigger")]
     landing = next((w for w in plan.waypoints if w.type == "landing"), None)
-    for i, w in enumerate(inner):
-        tp = {
+    if inner:
+        # revue 7.21 : départ (SSS) en sortie d'un cylindre autour du déco, pas sur le 1er point tournant
+        sss = _wp(takeoff.name + " SSS", takeoff.lat, takeoff.lon, takeoff.altitude_m, "Départ")
+        tps.append({"type": "SSS", "radius": int(rules.TAKEOFF_RADIUS_M) * 2, "waypoint": sss})
+    for w in inner:
+        tps.append({
             "radius": int(w.radius_m or rules.TURNPOINT_RADIUS_M),
             "waypoint": _wp(w.name, w.lat, w.lon, w.altitude_m, w.note or w.type),
-        }
-        if i == 0:
-            tp["type"] = "SSS"
-        tps.append(tp)
+        })  # fmt: skip
     if landing is not None:
         tps.append(
             {

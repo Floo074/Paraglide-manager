@@ -82,6 +82,12 @@ class Airspace:
     floor_agl: bool = False
     activity_known: bool = False  # R/ZRT : activité connue (sinon « à vérifier »)
     active: bool = False
+    # limites publiées par rapport au sol (GND / ASFC, revue B7) : hauteur publiée, convertie point par point avec le
+    # MNT par le moteur ; floor_m / ceiling_m gardent une valeur AMSL indicative (terrain au centre de la zone, ou la
+    # hauteur seule quand le terrain est inconnu)
+    ceiling_agl: bool = False
+    floor_height_m: float | None = None
+    ceiling_height_m: float | None = None
 
 
 @dataclass(slots=True)
@@ -96,6 +102,9 @@ class SensitiveArea:
     geometry: BaseGeometry
     source: str = "fixture"
     url: str | None = None
+    # revue 7.4 : parapente / sports aériens interdits dans la zone (Biodiv'Sports « PARAGLIDING-FORBIDDEN », texte
+    # « interdits dans la zone ») : traverser la zone, à toute hauteur, est un no-go ; le routeur la contourne
+    flight_prohibited: bool = False
 
     def active_in_month(self, month: int) -> bool:
         return not self.period_months or month in self.period_months
@@ -107,6 +116,11 @@ class SiteMeta:
 
     big_valley: bool | None = None
     top_landing: bool = False
+    # orientation du déco (revue 7.3) : « incertaine » quand la source note presque tous les secteurs ; exposition
+    # MNT au point (direction vers laquelle la pente fait face) quand elle a pu être mesurée sur le MNT réel
+    orientation_uncertain: bool = False
+    orientation_note: str | None = None
+    dem_aspect_deg: float | None = None
 
 
 @dataclass(slots=True)
@@ -149,6 +163,9 @@ class DataContext:
     # atterros candidats (CDC §12.7) : données du terrain (app.engine.landings.LandingSpot) par id de site ; un
     # atterro sans entrée est un site ordinaire (catégorie déduite de `official` / `landing_kind`)
     landing_spots: dict[str, Any] = field(default_factory=dict)
+    # revue B6 : espaces aériens NON VÉRIFIÉS (OpenAIP indisponible, pas de fichier OpenAir) : texte de l'avertissement
+    airspace_unverified: str | None = None
+    request_key: str = ""  # empreinte de la requête (id des plans)
 
     def terrain_at(self, lat: float, lon: float) -> float | None:
         if self.terrain is None:
