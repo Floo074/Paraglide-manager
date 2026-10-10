@@ -64,11 +64,12 @@ export const SCENARIOS: Scenario[] = [
   {
     label: "Flux de nord modéré (bise faible), brise de lac de N l'après-midi",
     levels: [
-      { alt: 0, speed: 15, dir: 355 },
-      { alt: 1500, speed: 19, dir: 350 },
-      { alt: 2500, speed: 25, dir: 345 },
-      { alt: 3000, speed: 30, dir: 340 },
-      { alt: 4000, speed: 38, dir: 330 },
+      // directions au-delà de 360° : interpolation sans passer par le S (normalisées ensuite)
+      { alt: 0, speed: 16, dir: 365 },
+      { alt: 1500, speed: 19, dir: 360 },
+      { alt: 2500, speed: 25, dir: 352 },
+      { alt: 3000, speed: 30, dir: 345 },
+      { alt: 4000, speed: 38, dir: 335 },
     ],
     tMin: 6,
     tMax: 15,

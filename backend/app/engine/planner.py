@@ -31,10 +31,19 @@ from app.engine.conditions import (
     solar_hour,
     sun_times,
     takeoff_wind,
-    vector_mean,
 )
 from app.engine.context import DataContext, PointTimeline
 from app.engine.findings import Finding, max_level, smallest_passing_level
+from app.engine.glidewind import (
+    GlideField,
+    au,
+    glide_comment,
+    high_arrival_detail,
+    high_arrival_levels,
+    plouf_minutes,
+    quarter,
+    wind_phrase,
+)
 from app.engine.landings import (
     LandingEval,
     LandingSelection,
@@ -54,9 +63,11 @@ from app.engine.routing import (
     build_local_thermal,
     build_plouf,
     build_ridge,
+    calm_glide,
     glide_to,
     is_source_pair,
     landing_kind_of,
+    path_for,
 )
 from app.engine.scoring import (
     CRITERION_LABEL_FR,
@@ -115,7 +126,9 @@ VARIANT_TYPE = {
 }
 # ALTITUDE_LIMIT n'est plus non bloquant par code (revue 7.15) : le plafond abaissé par un espace aérien ou le FL115
 # reste non bloquant (blocks_go=False), le décollage au-dessus du FL115 est une caution bloquante
-NON_BLOCKING_CAUTIONS = {"MOCK_DATA", "ACCESS_TIME", *rules.NON_BLOCKING_CAUTIONS_ADD}
+NON_BLOCKING_CAUTIONS = {
+    "MOCK_DATA", "ACCESS_TIME", *rules.NON_BLOCKING_CAUTIONS_ADD, *rules.NON_BLOCKING_CAUTIONS_ADD_REV5,
+}  # fmt: skip
 ALL_CODES_ORDER = ["danger", "caution", "info"]
 
 
@@ -157,8 +170,10 @@ class Candidate:
     window_start: datetime | None = None
     window_end: datetime | None = None
     airspaces: list[AirspaceWarning] = field(default_factory=list)
-    glide_wind: tuple[float, float] = (0.0, 0.0)
+    glide_wind: object = (0.0, 0.0)  # vent sur les planés (§14) : GlideField du vol
     wing: float = 8.5
+    ref_glide: GlideCheck | None = None  # plané direct déco → atterro principal au niveau du pilote (§14.4, 7.13)
+    high_arrival_m: float | None = None  # hauteur d'arrivée attendue si HIGH_ARRIVAL (§14.4)
     free_terrain: TakeoffTerrain | None = None  # décollage libre (§12.6)
     landing_sel: LandingSelection | None = None  # candidats évalués (décollage libre)
     policy: str = "official_only"
@@ -841,9 +856,10 @@ def evaluate_variant(
     avail_min = (cap - start).total_seconds() / 60.0
     drop = alt - landing.elevation_m
     plouf_min = max(0.0, drop) / (rules.SINK_RATE_MS["calm"] * 60.0) + rules.PLOUF_EXTRA_MIN
-    glide_wind = vector_mean(
-        [(tw.speed_kmh, tw.direction_deg), (td.ltl.at(start).wind_speed_kmh, td.ltl.at(start).wind_direction_deg)]
-    )
+    # §14 : vent RENCONTRÉ sur chaque plané (vent retenu au déco à l'heure de départ, vent retenu à l'atterro à l'heure
+    # d'arrivée, profil du déco au-dessus de son altitude), crédit du vent arrière selon la fiabilité
+    field = GlideField(ctx, site, td.tl, start, tw=tw, main_landing=landing, main_ltl=td.ltl,
+                       main_big_valley=td.big_valley)  # fmt: skip
     duration_note: str | None = None
     feas: list[Finding] = []
     max_alt = alt
@@ -874,9 +890,9 @@ def evaluate_variant(
                                                             rules.THERMAL_USABLE_MIN_MS else "")  # fmt: skip
             duration_note = (f"Seul un plouf d'environ {dur:.0f} min est possible ({why}) : plus court que les "
                              f"{filters.duration_min_minutes:.0f} min demandées.")  # fmt: skip
-        lw_hour = td.ltl.at(start + timedelta(minutes=dur))
-        route = build_plouf(ctx, site, landing, td.alternates, level, wing, glide_wind,
-                            (lw_hour.wind_speed_kmh, lw_hour.wind_direction_deg), dur, proj=proj)  # fmt: skip
+        lw_arr = field.landing_wind(landing, start + timedelta(minutes=dur))  # ZPA au vent de l'atterro (§14.4)
+        route = build_plouf(ctx, site, landing, td.alternates, level, wing, field,
+                            (lw_arr.speed_kmh, lw_arr.direction_deg), dur, proj=proj, t_start=start)  # fmt: skip
         if variant == "restitution":
             route.kind = "plouf"
     elif variant == "ridge":
@@ -906,7 +922,7 @@ def evaluate_variant(
         if dur < filters.duration_min_minutes:
             duration_note = f"Le vent de soaring ne tient que ~{dur:.0f} min : plus court que demandé."
         route = build_ridge(
-            ctx, site, landing, td.alternates, level, wing, glide_wind, tw.direction_deg, dur, td.top_landing
+            ctx, site, landing, td.alternates, level, wing, field, tw.direction_deg, dur, td.top_landing
         )
         max_alt = route.max_altitude_m
     elif variant == "local_thermal":
@@ -962,7 +978,7 @@ def evaluate_variant(
         thermal_usage = "essential" if dur > plouf_min * 1.5 else "optional"
         layer = a.profile.mean_wind(alt, max(alt + 200, usable))
         route = build_local_thermal(
-            ctx, proj, site, landing, td.alternates, level, wing, glide_wind, layer, start, dur, usable, max_alt,
+            ctx, proj, site, landing, td.alternates, level, wing, field, layer, start, dur, usable, max_alt,
             vario=vario,
         )
     elif variant == "xc":
@@ -1005,7 +1021,8 @@ def evaluate_variant(
                                                   f"{cap_reason}).")
         layer = a.profile.mean_wind(alt, usable)
         xc, why = build_cross(
-            ctx, proj, site, landing, td.landings_pool, level, wing, layer, start, budget, usable, usable, vario
+            ctx, proj, site, landing, td.landings_pool, level, wing, layer, start, budget, usable, usable, vario,
+            glide_wind=field,
         )
         if xc is None:
             return why or "Cross impossible"
@@ -1031,7 +1048,7 @@ def evaluate_variant(
     # revue 7.4 : la route contourne les zones où le vol libre est interdit (plané allongé d'autant)
     route = apply_detours(ctx, proj, route, site, landing)
     end = start + timedelta(minutes=dur)
-    lw = landing_wind(td.ltl, end, td.big_valley, ctx, landing)
+    lw = field.landing_wind(landing, end)  # = landing_wind(td.ltl, end, td.big_valley, ctx, landing), mis en cache
     findings: list[Finding] = list(td.site_findings) + feas
     ridge = variant == "ridge"
     findings += takeoff_wind_findings(tw, site, ridge, sh)
@@ -1096,21 +1113,33 @@ def evaluate_variant(
         rot = rotor_finding(ctx, landing, "Atterro", (tw.crest_speed_kmh, tw.crest_direction_deg))
         if rot is not None:
             findings.append(rot)
-    # finesse (par niveau)
+    # finesse (par niveau) : vent rencontré, crédit et accélérateur du niveau (§14)
     glide_ratios: dict[str, float] = {}
     glide_by_level: dict[str, GlideCheck] = {}
+    ref_by_level: dict[str, GlideCheck] = {}
     for lv in LEVELS:
-        g = _route_glide(ctx, td, route, lv, wing, glide_wind)
+        g, ref = _route_glide(ctx, td, route, lv, wing, field, start, dur, variant)
         glide_by_level[lv] = g
+        ref_by_level[lv] = ref
         glide_ratios[lv] = g.ratio if not (top_ldg or (variant == "plouf" and td.top_landing)) else 0.0
+    high_m: float | None = None
     if not top_ldg:
         g = glide_by_level[level]
-        txt = (f"Finesse requise {g.required_ratio:.1f} vers {g.landing_name or landing.name} pour "
-               f"{g.available_ratio:.1f} disponible "
-               f"(finesse de calcul sol, vent compris)") + ("" if g.terrain_ok else " ; le relief coupe la ligne de "
-                                                                                    "plané")
-        findings.append(Finding("GLIDE_MARGIN", "Marge de finesse", txt + ".", criterion="landing", ratios=glide_ratios,
-                                band_start=rules.GLIDE_CAUTION_RATIO, curve=glide_subscore))  # fmt: skip
+        findings.append(Finding("GLIDE_MARGIN", "Marge de finesse", glide_margin_text(g, landing.name, level),
+                                criterion="landing", ratios=glide_ratios, band_start=rules.GLIDE_CAUTION_RATIO,
+                                curve=glide_subscore, level_titles={"danger": "Hors de portée"}))  # fmt: skip
+        # §14.4 : arrivée haute avec du vent arrière, sur le plané direct déco → atterro principal (jamais bloquant)
+        ref = ref_by_level[level]
+        h = rules.HIGH_ARRIVAL
+        if (ref.wind is not None and ref.expected_arrival_m is not None and ref.wind.along_kmh >= h["min_tail_kmh"]
+                and ref.expected_arrival_m >= h["info_m"]):  # fmt: skip
+            high_m = ref.expected_arrival_m
+            side = dir_label(route.zpa_bearing) if route.zpa_bearing is not None else None
+            zones = [z[0] for z in _landing_zones(ctx, proj, landing, route)]
+            findings.append(Finding("HIGH_ARRIVAL", "Arrivée haute",
+                                    high_arrival_detail(landing.name, high_m, ref, level, lw.direction_deg,
+                                                        lw.speed_kmh, side, zones),
+                                    level_risk=high_arrival_levels(high_m), blocks_go=False))  # fmt: skip
     # coucher du soleil
     if td.sunset:
         if end > td.sunset:
@@ -1187,7 +1216,9 @@ def evaluate_variant(
         airspace=asp,
     )
     cand.airspaces = asp.warnings
-    cand.glide_wind = glide_wind
+    cand.glide_wind = field
+    cand.ref_glide = ref_by_level[level] if not top_ldg else None
+    cand.high_arrival_m = high_m
     cand.wing = wing
     cand.free_terrain = td.free
     cand.landing_sel = td.sel
@@ -1202,45 +1233,92 @@ def evaluate_variant(
 LANDING_ZONE_NOTE_KM = 1.5
 
 
-def _landing_zone_notes(ctx: DataContext, proj: Projector, landing: Site, route: Route) -> list[str]:
-    """Revue 7.4 : zone où le vol libre est interdit près de l'atterro ou contournée par la route → consigne du
-    briefing (« PTU hors de la Réserve naturelle du Bout du Lac »)."""
+def _landing_zones(ctx: DataContext, proj: Projector, landing: Site, route: Route) -> list[tuple[str, float, bool]]:
+    """Zones où le vol libre est interdit près de l'atterro (≤ 1,5 km) ou contournées par la route :
+    (nom, distance à l'atterro en km, contournée)."""
     from app.engine.airspace import prohibited_areas
 
-    out: list[str] = []
+    out: list[tuple[str, float, bool]] = []
     p = proj.point(landing.lat, landing.lon)
     for a in prohibited_areas(ctx):
         d = proj.geom(a.geometry).distance(p)
         if d <= LANDING_ZONE_NOTE_KM or a.name in route.avoided_zones:
-            tail = " : la route la contourne" if a.name in route.avoided_zones else ""
-            out.append(f"PTU et approche hors de la zone « {a.name} » (vol libre interdit, à {d * 1000:.0f} m de "
-                       f"l'atterro){tail}")  # fmt: skip
+            out.append((a.name, d, a.name in route.avoided_zones))
     return out
 
 
-def _route_glide(
-    ctx: DataContext, td: TakeoffData, route: Route, level: str, wing: float, wind: tuple[float, float]
+def _landing_zone_notes(ctx: DataContext, proj: Projector, landing: Site, route: Route) -> list[str]:
+    """Revue 7.4 : zone où le vol libre est interdit près de l'atterro ou contournée par la route → consigne du
+    briefing (« PTU et approche hors de la zone « Réserve naturelle du Bout du Lac » »)."""
+    return [f"PTU et approche hors de la zone « {name} » (vol libre interdit, à {d * 1000:.0f} m de l'atterro)"
+            + (" : la route la contourne" if avoided else "")
+            for name, d, avoided in _landing_zones(ctx, proj, landing, route)]  # fmt: skip
+
+
+def glide_margin_text(g: GlideCheck, landing_name: str, level: str) -> str:
+    """Détail du constat GLIDE_MARGIN (§14.7) : finesses requise / disponible, vent rencontré sur le plané (dans le dos,
+    de face, de travers ; accélérateur), pénétration insuffisante, relief."""
+    req, avail = f"{g.required_ratio:.1f}".replace(".", ","), f"{g.available_ratio:.1f}".replace(".", ",")
+    txt = f"Finesse requise {req} vers {g.landing_name or landing_name} pour {avail} disponible"
+    w = g.wind
+    if w is not None:
+        txt += f" ({f'{g.calm_ratio:.1f}'.replace('.', ',')} sans vent) : {wind_phrase(g, level)}"
+        if not w.penetration_ok:
+            txt += (f" ; pénétration insuffisante (vitesse sol {max(0.0, w.min_ground_kmh):.0f} km/h, minimum "
+                    f"{w.penetration_min_kmh:.0f} à ton niveau)")  # fmt: skip
+    if not g.terrain_ok:
+        txt += " ; le relief coupe la ligne de plané"
+    return txt + "."
+
+
+def _direct_glide(
+    ctx: DataContext, td: TakeoffData, route: Route, level: str, wing: float, field: GlideField, t0: datetime,
+    ta: datetime,
 ) -> GlideCheck:
-    """Pire cas (lot 6.11) : (a) déco → atterro principal à l'altitude du déco ; (b) chaque point de route à
-    son altitude de point bas → meilleur atterro identifié."""
-    g = glide_to(ctx, td.site.lat, td.site.lon, td.site.elevation_m, td.landing, level, wing, wind,
-                 pair=is_source_pair(td.site, td.landing), dist_km=route.glide_dist_km)
+    """Plané direct déco → atterro principal (§14.1) : branches réelles (contournement des zones interdites), vent
+    rencontré à l'heure de départ t0 / d'arrivée ta."""
+    return glide_to(ctx, td.site.lat, td.site.lon, td.site.elevation_m, td.landing, level, wing, field,
+                    pair=is_source_pair(td.site, td.landing), path=route.glide_path, t=t0, t_arrival=ta,
+                    detour_zones=route.glide_zones or None)  # fmt: skip
+
+
+def _route_glide(
+    ctx: DataContext, td: TakeoffData, route: Route, level: str, wing: float, field: GlideField, start: datetime,
+    dur: float, variant: str,
+) -> tuple[GlideCheck, GlideCheck]:
+    """(pire cas publié, plané direct de référence). Pire cas (lot 6.11) : (a) déco → atterro principal à l'altitude
+    du déco (au départ ; pour un vol qui dure, aussi en fin de vol avec la brise de l'heure d'arrivée) ; (b) chaque
+    point de route à son altitude de point bas → meilleur atterro identifié, à son heure de passage (§14.1)."""
+    if td.landing.id == td.site.id:
+        g = calm_glide(wing, level, td.landing.name)
+        return g, g
+    plouf = plouf_minutes(td.site.elevation_m - td.landing.elevation_m)
+    end = start + timedelta(minutes=dur)
+    single = variant == "plouf"
+    g = _direct_glide(ctx, td, route, level, wing, field, start, end if single else start + timedelta(minutes=plouf))
+    if not single and dur > plouf + 1.0:
+        g_end = _direct_glide(ctx, td, route, level, wing, field, quarter(end - timedelta(minutes=plouf)), end)
+        if g_end.ratio > g.ratio:
+            g = g_end
+    ref = g
     if route.kind == "xc":
         if route.glide.ratio > g.ratio:
             g = route.glide
-        return g
+        return g, ref
     if route.kind == "local_thermal":
         for w in route.waypoints:
             if w.type != "thermal_trigger":
                 continue
+            t = quarter(start + timedelta(minutes=w.eta_min or 0.0))
             best = None
             for ldg in [td.landing, *td.alternates]:
-                gg = glide_to(ctx, w.lat, w.lon, max(td.site.elevation_m, w.altitude_m - 150.0), ldg, level, wing, wind)
+                gg = glide_to(ctx, w.lat, w.lon, max(td.site.elevation_m, w.altitude_m - 150.0), ldg, level, wing,
+                              field, t=t)  # fmt: skip
                 if best is None or gg.ratio < best.ratio:
                     best = gg
             if best is not None and best.ratio > g.ratio:
                 g = best
-    return g
+    return g, ref
 
 
 def _inversion(a: HourAnalysis, alt: float) -> float | None:
