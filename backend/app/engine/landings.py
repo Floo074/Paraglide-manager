@@ -28,7 +28,7 @@ from app.engine.routing import (
 )
 from app.engine.scoring import glide_subscore, linear
 from app.engine.stations import site_attachments
-from app.geo import angle_diff, bearing_deg, destination, haversine_km
+from app.geo import angle_diff, bearing_deg, haversine_km
 from app.models import ArrivalWind, LandingCandidate, Site, SizeM
 
 LEVELS = rules.LEVELS
@@ -471,6 +471,7 @@ def evaluate_spot(
     pair: bool = False,
     t_origin: datetime | None = None,
     path: list[tuple[float, float]] | None = None,
+    glide: GlideCheck | None = None,
 ) -> LandingEval:
     """Évalue un atterro candidat depuis le déco (ou depuis `origin` = (lat, lon, altitude, nom) : point de la route
     d'où un secours est rejoint). `glide_wind` : champ de vent du vol (`GlideField`, vent rencontré §14) ou (vitesse,
@@ -478,7 +479,8 @@ def evaluate_spot(
     `main_classic` : atterro principal d'un plan classique — un vent d'arrivée au-dessus du seuil du niveau n'y est
     qu'un avertissement (le plan le juge, LANDING_WIND) ; partout ailleurs (secours, analyse d'un décollage libre)
     l'atterro est écarté (décision expert, REPRISE §8). `pair` : plané direct déco → atterro officiel associé par la
-    source, relief vérifié (k = GLIDE_K_ASSOCIATED_PAIR)."""
+    source, relief vérifié (k = GLIDE_K_ASSOCIATED_PAIR). `glide` : plané déjà calculé par le plan (règles du kind,
+    même origine, même heure, même chemin) — repris tel quel, pour que `landing_analysis` publie le même calcul."""
     site = spot.site
     kind = spot.kind
     top = site.id == takeoff.id
@@ -492,10 +494,14 @@ def evaluate_spot(
         std = glide = calm_glide(wing, level, site.name)
         arrival_h = 0.0
     else:
-        std = glide_to(ctx, src.lat, src.lon, alt, site, level, wing, glide_wind, kind="official",
-                       pair=pair and kind == "official", path=path, t=t_origin)  # fmt: skip
-        glide = std if kind == "official" else glide_to(ctx, src.lat, src.lon, alt, site, level, wing,
-                                                         glide_wind, kind=kind, path=path, t=t_origin)  # fmt: skip
+        if glide is not None and kind == "official":
+            std = glide
+        else:
+            std = glide_to(ctx, src.lat, src.lon, alt, site, level, wing, glide_wind, kind="official",
+                           pair=pair and kind == "official", path=path, t=t_origin)  # fmt: skip
+        if glide is None:
+            glide = std if kind == "official" else glide_to(ctx, src.lat, src.lon, alt, site, level, wing,
+                                                             glide_wind, kind=kind, path=path, t=t_origin)  # fmt: skip
         path_km = glide.dist_km or dist
         arrival_h = (alt - site.elevation_m) - (path_km * 1000.0 / glide.available_ratio if glide.available_ratio > 0
                                                 else 1e9)  # fmt: skip
@@ -760,6 +766,7 @@ def candidates_for_plan(
     pair: bool = False,
     t_origin: datetime | None = None,
     main_path: list[tuple[float, float]] | None = None,
+    main_glide: GlideCheck | None = None,
 ) -> list[LandingCandidate]:
     """FlightPlan.landing_analysis : l'atterro du plan en premier (vent d'arrivée du plan, même plané que le plan :
     même heure de départ, même contournement), puis les secours retenus (évalués depuis le point de la route d'où ils
@@ -767,7 +774,7 @@ def candidates_for_plan(
     portée, vent d'arrivée) n'est jamais publié comme secours."""
     main_ev = evaluate_spot(ctx, takeoff, spot_for(ctx, landing), level, wing, glide_wind, arrival, policy,
                             lw=lw_main if landing.id != takeoff.id else None, main_classic=main_classic,
-                            pair=pair, t_origin=t_origin, path=main_path)  # fmt: skip
+                            pair=pair, t_origin=t_origin, path=main_path, glide=main_glide)  # fmt: skip
     others: list[LandingEval] = []
     seen = {landing.id}
     if alt_evals is not None:

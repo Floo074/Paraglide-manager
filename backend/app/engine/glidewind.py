@@ -412,8 +412,12 @@ def compute_glide(
     total = sum(d for d, _ in legs)
     zero_reason = credit.zero_reasons[0] if credit.zero_reasons else None
     if total <= 1e-6:
-        return GlideWind(calm, calm, wing * eff, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, vt, vt, vt, vt, pen_min, g, c,
-                         bar_ok, [], zero_reason)  # fmt: skip
+        return GlideWind(
+            available=calm, calm=calm, expected=wing * eff, expected_loss_m=0.0, along_kmh=0.0, cross_kmh=0.0,
+            credit_kmh=0.0, mean_speed_kmh=0.0, mean_dir_deg=0.0, air_speed_kmh=vt, trim_kmh=vt, ground_speed_kmh=vt,
+            min_ground_kmh=vt, penetration_min_kmh=pen_min, gust_factor=g, credit_fraction=c, bar_allowed=bar_ok,
+            leg_ratios=[], zero_reason=zero_reason,
+        )  # fmt: skip
     dz = z0 - za
     cum = 0.0
     inv = exp_loss = 0.0

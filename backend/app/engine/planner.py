@@ -36,7 +36,6 @@ from app.engine.context import DataContext, PointTimeline
 from app.engine.findings import Finding, max_level, smallest_passing_level
 from app.engine.glidewind import (
     GlideField,
-    au,
     glide_comment,
     high_arrival_detail,
     high_arrival_levels,
@@ -56,7 +55,6 @@ from app.engine.landings import (
 )
 from app.engine.routing import (
     GlideCheck,
-    projector_for,
     Route,
     alternates_waypoints,
     apply_detours,
@@ -69,6 +67,7 @@ from app.engine.routing import (
     is_source_pair,
     landing_kind_of,
     path_for,
+    projector_for,
 )
 from app.engine.scoring import (
     CRITERION_LABEL_FR,
@@ -1931,8 +1930,9 @@ Origin = tuple[float, float, float, str] | None
 
 def _alternate_origins(td: TakeoffData, cand: Candidate) -> list[tuple[Origin, datetime]]:
     """Points d'où un secours peut être rejoint (7.1), avec l'heure de passage (vent rencontré, §14.1) : le déco
-    (None) pour un plouf ou du soaring ; en local, chaque déclencheur à son altitude de point bas (déclencheur − 150 m) ;
-    en cross, la route tous les 2 km à l'altitude de sécurité (plafond utile − 300 m, comme le contrôle du cône)."""
+    (None) pour un plouf ou du soaring ; en local, chaque déclencheur à son altitude de point bas (déclencheur
+    − 150 m) ; en cross, la route tous les 2 km à l'altitude de sécurité (plafond utile − 300 m, comme le contrôle du
+    cône)."""
     out: list[tuple[Origin, datetime]] = [(None, cand.start)]
     route = cand.route
     if cand.variant == "local_thermal":
@@ -2364,8 +2364,9 @@ def plan_glide(cand: Candidate) -> Glide:
         wind_along_track_kmh=0.0 if w is None else round(w.along_kmh, 1),
         wind_credit_kmh=0.0 if w is None else round(w.credit_kmh, 1),
         expected_arrival_height_m=None if w is None or g.expected_arrival_m is None else round(g.expected_arrival_m),
-        comment=glide_comment(g, g.landing_name or cand.landing.name, cand.level, cand.wing, g.detour_zones,
-                              cand.high_arrival_m),  # fmt: skip
+        comment=glide_comment(
+            g, g.landing_name or cand.landing.name, cand.level, cand.wing, g.detour_zones, cand.high_arrival_m
+        ),
     )
 
 
