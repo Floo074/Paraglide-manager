@@ -5,14 +5,17 @@ Tout est sur la branche `claude/paraglide-flight-planner`. La clé OpenAIP est d
 
 ## État (09/10/2026)
 
-- **Backend** : 215 tests passent (`uv run pytest -q`), `uv run ruff check .` vert. Moteur d'évaluation,
+- **Backend** : 217 tests passent (`uv run pytest -q`), `uv run ruff check .` vert. Moteur d'évaluation,
   seuils (`app/engine/rules.py`, blocs YAML §11 et §12.9 recopiés), calculs aérologiques, providers
   (Open-Meteo + 15 min, ParaglidingEarth, Pioupiou + archive, OpenAIP, OpenAir, Biodiv'Sports,
   Overpass désactivé par défaut), balises au déco et à l'atterro, horizon 15 min, décollage libre et
   analyse des atterrissages (`POST /api/landings/analyze`), exports GPX / XCTrack, Dockerfile, README.
   Les 37 scénarios du moniteur (`scenarios` + `scenarios_phase2`, S28-S32 compris) passent, sans xfail.
-- **Frontend** : pages Planification, Détail du plan, Sources, À propos (voir l'agent frontend pour
-  l'état de la bascule « Classique / Décollage libre » et du cône de finesse).
+- **Frontend** : pages Planification, Détail du plan, Sources, À propos ; balises en direct, bascule
+  « Classique / Décollage libre », cône de finesse, fiches des atterros candidats. 80 tests Vitest.
+- **Intégration (09/10/2026)** : contrat validé sur les vraies réponses du backend (`frontend/scripts/check-contract.mjs` :
+  26 réponses typées contre `src/api/types.ts`, 0 écart en mock) ; parcours Playwright complet
+  (`frontend/e2e/parcours.mjs`, 39 vérifications, 1440 px et 375 px, 0 erreur console) contre le backend en mock.
 - **Expert** : cahier des charges (rév. 2, §12 compris), 37 scénarios (`docs/expert/scenarios-validation.*`),
   journal `docs/expert/revue-backend.md`.
 
@@ -27,8 +30,21 @@ Tout est sur la branche `claude/paraglide-flight-planner`. La clé OpenAIP est d
    Open-Meteo ensemble, 1 h au plus, `QUOTA_BLOCK_MAX_S` ; OpenAIP : 5 min au moins) ; repli
    (échec transitoire) des sites et des zones sensibles gardé 10 min seulement au lieu de 24 h.
 5. [x] Backend : export GPX / XCTrack, Dockerfile, README (image Docker non construite : pas de démon ici).
-6. [ ] Frontend : types et UI « Balises en direct », chip 15 min, couche zones sensibles, tests contre
-   le vrai backend, captures `docs/screenshots/`.
+6. [x] Frontend : types et UI « Balises en direct », chip 15 min, couche zones sensibles, tests contre
+   le vrai backend (`npm run check:contract`, `npm run e2e`), captures `docs/screenshots/` (8 fichiers, 3 Mo).
+   Corrigé à l'intégration : un 503 JSON du backend (source indisponible en live) n'est plus pris pour une panne
+   du backend (avant : bascule silencieuse sur des plans SYNTHÉTIQUES) ; 503 au lieu de 500 sur toutes les routes
+   quand une source manque ; `/api/sites` servi en live même sans MNT ; couches en échec signalées sur la carte ;
+   message « relief indisponible » compréhensible en décollage libre ; anciennes routes classiques masquées en
+   mode libre ; atterros candidats au-dessus des balises ; clic de pose du déco non intercepté par un marqueur ;
+   bandeau « Touche la carte… » et puces d'horizon non tronqués à 375 px.
+   - [ ] **Parcours live complet à refaire quand le quota Open-Meteo est revenu** (09/10/2026 : 429 « Daily API
+     request limit exceeded » sur l'adresse de sortie → recherche, prévisions et analyse des atterrissages en 503,
+     message affiché ; ParaglidingEarth par intermittence en « connection reset » / ConnectTimeout). En live ont
+     fonctionné : balises Pioupiou réelles (altitude MNT absente faute de quota), 28 espaces aériens OpenAIP,
+     24 zones Biodiv'Sports, 13 sites PGE sur Annecy (2 sans altitude écartés faute de MNT). Commande :
+     `node scripts/check-contract.mjs http://localhost:8014 --live --ref <demain 08:30Z>` puis
+     `LABEL=live REF=<demain 10:30> node e2e/parcours.mjs` (et `VIEW=mobile`).
 7. [ ] Expert : valeurs pour les balises atterro / tendance / 15 min, puis revue des plans réels sur
    Annecy, Chamonix, Saint-Hilaire, Saint-André (mock et live).
 8. **Décollage libre et atterros non officiels** (contrat : `PlanRequest.mode`, `custom_takeoff`,
@@ -50,8 +66,9 @@ Tout est sur la branche `claude/paraglide-flight-planner`. La clé OpenAIP est d
      autorisé) et enregistrer une fixture ; vérifier les hauteurs d'obstacles typiques.
    - [ ] Backend : vérification live complète (MNT réel au point, prévision réelle) : impossible le
      09/10/2026 (quota Open-Meteo épuisé sur les adresses de sortie, 429 « Daily API request limit »).
-   - [ ] Frontend : bascule « Classique / Décollage libre », clic sur la carte pour poser le déco, cône de
-     finesse, atterros colorés par type, fiche de chaque candidat (obstacles, pente, taille, vent, `use`).
+   - [x] Frontend : bascule « Classique / Décollage libre », clic sur la carte pour poser le déco, cône de
+     finesse, atterros colorés par type, fiche de chaque candidat (obstacles, pente, taille, vent, `use`) —
+     vérifié de bout en bout contre le backend (mock) par `frontend/e2e/parcours.mjs`.
    - [ ] Expert : valider les choix backend suivants (à reporter dans `docs/expert/revue-backend.md`) :
      données inconnues (taille, pente, obstacle) = pas d'exclusion mais sous-score réduit + note ;
      approche : obstacle > 10 m à < 150 m dans l'axe = exclusion, longueur utile = L − (5 h − distance) ;

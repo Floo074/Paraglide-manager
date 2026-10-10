@@ -24,9 +24,11 @@ npm run dev:mock          # http://localhost:5173
 npm run dev
 ```
 
-Si le backend ne répond pas, le site **bascule automatiquement en données de démonstration** et
-affiche un bandeau rouge « Données de démonstration » ; il retente la connexion toutes les 60 s
-(bouton « Réessayer »).
+Si le backend ne répond pas (réseau, 502/504, réponse non JSON), le site **bascule automatiquement en
+données de démonstration** et affiche un bandeau rouge « Données de démonstration » ; il retente la
+connexion toutes les 60 s (bouton « Réessayer »). Un **503 JSON** vient du backend lui-même (source
+indispensable indisponible en live, ex. quota Open-Meteo) : le message est affiché tel quel, sans bascule
+en démonstration ; une couche de carte en échec (sites, balises…) est signalée par un bandeau sur la carte.
 
 ### Autres commandes
 
@@ -36,7 +38,9 @@ affiche un bandeau rouge « Données de démonstration » ; il retente la connex
 | `npm run preview` | sert `dist/` sur http://localhost:4173 (avec le même proxy `/api`) |
 | `npm run typecheck` | `tsc --noEmit` seul |
 | `npm run lint` | ESLint (TypeScript, règles des hooks React) |
-| `npm test` | tests unitaires Vitest (conversions, formats, heure cible, zones, exports, moteur de démo) |
+| `npm test` | tests unitaires Vitest (conversions, formats, heure cible, zones, exports, moteur de démo, erreurs d'API) |
+| `npm run check:contract -- http://localhost:8014` | valide les vraies réponses du backend contre `src/api/types.ts` (voir « Intégration ») |
+| `npm run e2e` | parcours Playwright contre le vrai backend (voir « Intégration ») |
 
 ## Variables d'environnement (lues au build, préfixe `VITE_`)
 
@@ -121,7 +125,32 @@ Image en deux étapes : build Vite (Node 22) puis nginx qui sert `dist/` (routes
 et relaie `/api/` vers le service `backend:8000`. La résolution DNS se fait à la volée : le conteneur
 démarre même si le backend est absent (le site passe alors en démonstration).
 
+## Intégration avec le vrai backend
+
+```bash
+# backend (port libre au choix) puis front en dev, proxy /api pointé dessus
+cd backend  && DATA_MODE=mock uv run uvicorn app.main:app --port 8014
+cd frontend && VITE_API_PROXY_TARGET=http://localhost:8014 npx vite --port 5180 --strictPort
+
+# 1) contrat : chaque endpoint appelé pour de vrai, réponses typées contre src/api/types.ts (tsc)
+node scripts/check-contract.mjs http://localhost:8014 [--live] [--ref 2026-10-11T08:30:00Z]
+
+# 2) parcours navigateur (Chromium préinstallé, playwright-core local ou global de npm)
+BASE=http://localhost:5180 REF=2026-10-11T10:30 node e2e/parcours.mjs          # bureau 1440 px
+BASE=http://localhost:5180 REF=2026-10-11T10:30 VIEW=mobile node e2e/parcours.mjs
+```
+
+Le parcours : zone Annecy → horizon 30 min → recherche → fiche plan (bloc « Balises en direct »,
+carte et couches, fond satellite, GPX / XCTrack téléchargés et vérifiés, « Actualiser les balises »,
+rechargement de l'URL) → décollage libre (clic sur la carte, analyse des atterrissages, cône, recherche
+depuis le point) → page Sources. Il échoue sur toute erreur JavaScript en console. `REF` = heure de
+référence locale (en journée : la nuit, aucun plan et seuls les sites écartés s'affichent) ;
+`SHOTS=dossier` garde des captures de contrôle ; `FINAL=dossier` produit les captures ci-dessous.
+En `live`, préférer `--live` pour le contrôle du contrat (moins d'appels Open-Meteo).
+
 ## Captures d'écran
 
-Générées en mode démo avec Playwright (375 px et 1440 px, clair et sombre) dans
-[`../docs/screenshots/`](../docs/screenshots/).
+[`../docs/screenshots/`](../docs/screenshots/) : planification et fiche plan (375 px et 1440 px), fiche
+complète, décollage libre (cône et atterros candidats), page Sources. Produites par `e2e/parcours.mjs`
+(`FINAL=…`) contre le vrai backend en `DATA_MODE=mock` (données synthétiques, vrais fonds de carte
+OpenTopoMap), puis réduites à 256 couleurs.

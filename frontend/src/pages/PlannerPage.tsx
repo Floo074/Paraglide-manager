@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import type L from "leaflet";
 import { analyzeLandings, createPlans, getAirspaces, getBeacons, getSensitiveAreas, getSites, isDemoMode } from "../api/client";
-import { ApiError } from "../api/errors";
+import { ApiError, layerErrorText, pilotErrorMessage } from "../api/errors";
 import { lastResults, rememberResults } from "../api/planCache";
 import type { ForecastGridResponse, GridLayer, Horizon, LandingAnalyzeRequest, LandingAnalyzeResponse, PlanRequest, PlanResponse, Zone } from "../api/types";
 import { AirspacesLayer, SensitiveAreasLayer } from "../components/map/AreaLayers";
@@ -154,14 +154,16 @@ export function PlannerPage() {
   const analysisStale = analysis !== null && JSON.stringify(analysis.request) !== JSON.stringify(analysisRequestNow);
   const stale = results !== null && JSON.stringify({ ...results.request, reference_time: undefined }) !== JSON.stringify({ ...requestNow, reference_time: undefined });
 
+  // résultats d'un autre mode (classique ↔ décollage libre) : gardés dans l'onglet, pas tracés sur la carte
+  const resultsShown = results !== null && (results.request.mode ?? "classic") === criteria.mode ? results : null;
   const highlightIds = useMemo(() => {
     const s = new Set<string>();
-    results?.response.plans.forEach((p) => {
+    resultsShown?.response.plans.forEach((p) => {
       s.add(p.takeoff.id);
       s.add(p.landing.id);
     });
     return s;
-  }, [results]);
+  }, [resultsShown]);
 
   const search = useCallback(async () => {
     const blocking = criteria.mode === "custom_takeoff" ? planRequestError(criteria, freeTakeoff) : zoneError;
@@ -184,7 +186,7 @@ export function PlannerPage() {
       requestAnimationFrame(() => resultsRef.current?.scrollTo({ top: 0 }));
     } catch (e) {
       if (ctrl.signal.aborted) return;
-      setSearchError(e instanceof ApiError || e instanceof Error ? e.message : "Erreur inconnue");
+      setSearchError(pilotErrorMessage(e));
     } finally {
       if (!ctrl.signal.aborted) setSearching(false);
     }
@@ -226,9 +228,7 @@ export function PlannerPage() {
       setAnalysisError(
         e instanceof ApiError && e.status === 404
           ? "Ce serveur ne propose pas encore l'analyse des atterrissages (POST /api/landings/analyze)."
-          : e instanceof Error
-            ? e.message
-            : "Erreur inconnue",
+          : pilotErrorMessage(e),
       );
     } finally {
       if (!ctrl.signal.aborted) setAnalyzing(false);
@@ -278,7 +278,7 @@ export function PlannerPage() {
     [zb.min_lat, zb.min_lon],
     [zb.max_lat, zb.max_lon],
   ];
-  const plans = results?.response.plans ?? [];
+  const plans = resultsShown?.response.plans ?? [];
   // décollage libre : recadrage sur le cône de finesse à chaque nouvelle analyse (jamais en posant le point)
   const coneFit = useMemo(() => {
     if (!analysis) return null;
@@ -307,6 +307,15 @@ export function PlannerPage() {
     [free],
   );
   const showPioupiou = overlays.beacons && !!beacons.data && hasPioupiou(beacons.data.beacons);
+  // couches en échec (source indisponible en live) : signalées sur la carte plutôt que silencieusement absentes
+  const layerErrors = (
+    [
+      ["Sites", overlays.sites, sites],
+      ["Balises", overlays.beacons, beacons],
+      ["Zones sensibles", overlays.sensitive, sensitive],
+      ["Espaces aériens", overlays.airspaces, airspaces],
+    ] as const
+  ).filter(([, on, st]) => on && st.error && !st.loading);
   const sheetClass = isDesktop ? "" : ` planner--sheet-${sheet}`;
   // hauteur masquée par le panneau mobile (pour cadrer la zone dans la partie visible)
   const mapHeight = map?.getContainer().clientHeight ?? window.innerHeight - 90;
@@ -403,6 +412,18 @@ export function PlannerPage() {
                   {drawMode === "rect" ? "Touche deux coins opposés du rectangle" : "Touche le centre de la zone"}
                   <button type="button" className="icon-btn icon-btn--sm" onClick={() => setDrawMode("none")} aria-label="Annuler le dessin">
                     <X size={16} />
+                  </button>
+                </div>
+              ) : null}
+              {layerErrors.length ? (
+                <div className="map-alert" role="status">
+                  <AlertTriangle size={15} aria-hidden />
+                  <span>
+                    <strong>{layerErrors.map(([label]) => label).join(", ")} indisponible{layerErrors.length > 1 ? "s" : ""}</strong>
+                    <span className="map-alert__detail"> — {layerErrorText(layerErrors[0]![2].error!)}</span>
+                  </span>
+                  <button type="button" className="btn btn--sm" onClick={() => layerErrors.forEach(([, , st]) => st.reload())}>
+                    Réessayer
                   </button>
                 </div>
               ) : null}

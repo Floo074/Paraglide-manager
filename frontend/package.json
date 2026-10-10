@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:contract": "node scripts/check-contract.mjs",
+    "e2e": "node e2e/parcours.mjs"
   },
   "dependencies": {
     "leaflet": "1.9.4",

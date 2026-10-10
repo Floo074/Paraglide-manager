@@ -252,6 +252,8 @@ class LandingEval:
     takeoff: Site | None = None
     wing: float = 8.5
     glide_wind: tuple[float, float] = (0.0, 0.0)
+    origin_name: str | None = None  # point de la route d'où le terrain est évalué (secours d'un local / cross)
+    origin_alt_m: float = 0.0
 
     @property
     def kind(self) -> str:
@@ -378,6 +380,13 @@ def weighted_score(subscores: dict[str, float], kind: str) -> float:
     return round(min(100.0, total + rules.LANDING_CATEGORY_BONUS[kind]), 1)
 
 
+def capped_score(subscores: dict[str, float], kind: str) -> float:
+    """Score pondéré plafonné à 40 + min(sous-scores finesse, vent d'arrivée) (non compensatoire, CDC §9.1) : un
+    atterro hors de portée ou balayé par le vent ne peut pas être bien classé grâce à sa taille ou à son accès."""
+    safety = min(subscores.get("glide_margin", 0.0), subscores.get("wind_at_arrival", 0.0))
+    return round(min(weighted_score(subscores, kind), rules.SAFETY_CAP_OFFSET + safety), 1)
+
+
 def _size_text(spot: LandingSpot) -> str:
     noun = spot.surface or ("terrain" if spot.kind != "field" else "champ")
     return f"{noun} de {spot.size[0]:.0f} × {spot.size[1]:.0f} m" if spot.size else f"{noun}, taille inconnue"
@@ -388,8 +397,16 @@ def _phrase(key: str, ev: LandingEval) -> str:
     if key == "glide_margin":
         if ev.top_landing:
             return "posé au décollage"
+        g = ev.glide
+        if not g.terrain_ok:
+            return "le relief coupe la ligne de plané"
+        if g.ratio > 1.0:
+            return f"hors de portée (finesse requise {fr_num(g.required_ratio)} pour {fr_num(g.available_ratio)})"
         q = "confortable" if s >= 100 else ("correcte" if s >= 60 else "juste")
-        return f"marge de finesse {q} ({fr_num(ev.glide.ratio, 2)})"
+        txt = f"marge de finesse {q} ({fr_num(g.ratio, 2)})"
+        if ev.origin_name:
+            txt += f", depuis {ev.origin_name} à {ev.origin_alt_m:.0f} m"
+        return txt
     if key == "obstacles":
         near = [o for o in ev.obstacles if "non cartographi" not in o]
         if s >= 100:
@@ -476,20 +493,32 @@ def evaluate_spot(
     arrival: datetime,
     policy: str,
     lw: LandingWind | None = None,
+    main_classic: bool = False,
+    origin: tuple[float, float, float, str] | None = None,
+    pair: bool = False,
 ) -> LandingEval:
+    """Évalue un atterro candidat depuis le déco (ou depuis `origin` = (lat, lon, altitude, nom) : point de la route
+    d'où un secours est rejoint). `main_classic` : atterro principal d'un plan classique — un vent d'arrivée au-dessus
+    du seuil du niveau n'y est qu'un avertissement (le plan le juge, LANDING_WIND) ; partout ailleurs (secours, analyse
+    d'un décollage libre) l'atterro est écarté (décision expert, REPRISE §8). `pair` : plané direct déco → atterro
+    officiel associé par la source, relief vérifié (k = GLIDE_K_ASSOCIATED_PAIR)."""
     site = spot.site
     kind = spot.kind
     top = site.id == takeoff.id
-    dist = haversine_km(takeoff.lat, takeoff.lon, site.lat, site.lon)
-    brg = bearing_deg(takeoff.lat, takeoff.lon, site.lat, site.lon)
-    alt = takeoff.elevation_m
+    src = takeoff
+    if origin is not None and not top:
+        src = takeoff.model_copy(update={"lat": origin[0], "lon": origin[1], "elevation_m": float(origin[2])})
+    dist = haversine_km(src.lat, src.lon, site.lat, site.lon)
+    brg = bearing_deg(src.lat, src.lon, site.lat, site.lon)
+    alt = src.elevation_m
     if top:
         fs = finesse_sol(wing, level, glide_wind[0], glide_wind[1], 0.0)
         std = glide = GlideCheck(0.0, fs, True, True, site.name)
         arrival_h = 0.0
     else:
-        std = glide_to(ctx, takeoff.lat, takeoff.lon, alt, site, level, wing, glide_wind, kind="official")
-        glide = std if kind == "official" else glide_to(ctx, takeoff.lat, takeoff.lon, alt, site, level, wing,
+        std = glide_to(ctx, src.lat, src.lon, alt, site, level, wing, glide_wind, kind="official",
+                       pair=pair and kind == "official")  # fmt: skip
+        glide = std if kind == "official" else glide_to(ctx, src.lat, src.lon, alt, site, level, wing,
                                                          glide_wind, kind=kind)  # fmt: skip
         arrival_h = (alt - site.elevation_m) - (dist * 1000.0 / glide.available_ratio if glide.available_ratio > 0
                                                 else 1e9)  # fmt: skip
@@ -502,23 +531,33 @@ def evaluate_spot(
         spot=spot, distance_km=dist, bearing_deg=brg, reachable=bool(std.margin_ok) or top, std_glide=std,
         glide=glide, arrival_height_m=arrival_h, wind=lw,
         use=kind_use(kind, level, spot.community_usage) if kind != "official" else "main",
-        policy_ok=kind in rules.LANDING_POLICY_KINDS[eff_policy], top_landing=top, takeoff=takeoff, wing=wing,
+        policy_ok=kind in rules.LANDING_POLICY_KINDS[eff_policy], top_landing=top, takeoff=src, wing=wing,
         glide_wind=glide_wind,
     )  # fmt: skip
+    if origin is not None and not top and src is not takeoff:
+        ev.origin_name = origin[3]
+        ev.origin_alt_m = float(origin[2])
     lv = _lvl(level)
-    # exclusions et critères (§12.7)
+    # exclusions et critères (§12.7) ; hors de portée = écarté, quel que soit le kind (CDC §10 #7)
     if not top and not std.terrain_ok:
         ev.failures.append("le relief coupe la ligne de plané")
+        ev.failure_codes.append("GLIDE_MARGIN")
+    elif not top and not std.margin_ok:
+        ev.failures.append(f"hors de portée (finesse requise {fr_num(std.required_ratio)} pour "
+                           f"{fr_num(std.available_ratio)} disponible)")  # fmt: skip
         ev.failure_codes.append("GLIDE_MARGIN")
     if lw is not None and (
         lw.speed_kmh > rules.LANDING_WIND_MAX_KMH[level] or lw.gust_kmh > rules.LANDING_GUST_MAX_KMH[level]
     ):
         ev.wind_exceeded = True
-        txt = f"vent à l'arrivée {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} : au-dessus du seuil de ton niveau"
-        if kind == "official":  # atterro officiel : jugé par le plan (LANDING_WIND, niveau requis), pas exclu ici
-            ev.warnings.append(txt[0].upper() + txt[1:] + ".")
+        if kind == "official" and main_classic:
+            # atterro principal d'un plan classique : jugé par le plan (LANDING_WIND, niveau requis), pas exclu ici
+            ev.warnings.append(f"Vent à l'arrivée {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} : au-dessus du "
+                               f"seuil de ton niveau ({rules.LANDING_WIND_MAX_KMH[level]} / "
+                               f"{rules.LANDING_GUST_MAX_KMH[level]}).")  # fmt: skip
         else:
-            ev.failures.append(txt)
+            ev.failures.append(f"vent d'arrivée {lw.speed_kmh:.0f} km/h, rafales {lw.gust_kmh:.0f} (seuils "
+                               f"{rules.LANDING_WIND_MAX_KMH[level]} / {rules.LANDING_GUST_MAX_KMH[level]})")  # fmt: skip
             ev.failure_codes.append("LANDING_WIND")
     hit = _sensitive_hit(ctx, site)
     if kind != "official":
@@ -554,7 +593,7 @@ def evaluate_spot(
             ev.warnings.append(rules.UNOFFICIAL_WARNINGS["unknown_clearance"])
         ev.warnings += near_warn + ev.notes
     ev.subscores = compute_subscores(ev, level)
-    ev.score = weighted_score(ev.subscores, kind)
+    ev.score = capped_score(ev.subscores, kind)
     ev.reasons = reasons_for(ev)
     return ev
 
@@ -736,18 +775,32 @@ def candidates_for_plan(
     policy: str,
     lw_main: LandingWind | None,
     extra: list[LandingEval] | None = None,
+    alt_evals: list[LandingEval] | None = None,
+    main_classic: bool = True,
+    pair: bool = False,
 ) -> list[LandingCandidate]:
-    """FlightPlan.landing_analysis : l'atterro du plan en premier (vent d'arrivée du plan), puis les secours et les
-    autres candidats utilisables, par score décroissant."""
+    """FlightPlan.landing_analysis : l'atterro du plan en premier (vent d'arrivée du plan), puis les secours retenus
+    (évalués depuis le point de la route d'où ils sont rejoints, `alt_evals`) et les autres candidats utilisables, par
+    score décroissant. Un terrain écarté (hors de portée, vent d'arrivée) n'est jamais publié comme secours."""
     main_ev = evaluate_spot(ctx, takeoff, spot_for(ctx, landing), level, wing, glide_wind, arrival, policy,
-                            lw=lw_main if landing.id != takeoff.id else None)  # fmt: skip
+                            lw=lw_main if landing.id != takeoff.id else None, main_classic=main_classic,
+                            pair=pair)  # fmt: skip
     others: list[LandingEval] = []
     seen = {landing.id}
-    for s in alternates:
-        if s.id in seen:
-            continue
-        seen.add(s.id)
-        others.append(evaluate_spot(ctx, takeoff, spot_for(ctx, s), level, wing, glide_wind, arrival, policy))
+    if alt_evals is not None:
+        for e in alt_evals:
+            if e.spot.site.id in seen:
+                continue
+            seen.add(e.spot.site.id)
+            others.append(e)
+    else:
+        for s in alternates:
+            if s.id in seen:
+                continue
+            seen.add(s.id)
+            ev = evaluate_spot(ctx, takeoff, spot_for(ctx, s), level, wing, glide_wind, arrival, policy)
+            if ev.usable:
+                others.append(ev)
     for e in extra or []:
         if e.spot.site.id in seen or not e.usable:
             continue

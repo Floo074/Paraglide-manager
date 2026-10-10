@@ -33,6 +33,26 @@ export function describeErrorDetail(detail: unknown): string | null {
   return null;
 }
 
+/**
+ * Message affiché au pilote pour une erreur d'API : traduit les messages techniques connus
+ * (422 « indique elevation_m » quand le relief au point n'est pas disponible).
+ */
+export function pilotErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 422 && /elevation_m/.test(e.message)) {
+      return "Relief indisponible pour le moment à cet endroit : indique l'altitude du décollage (champ « Altitude (m) ») puis relance.";
+    }
+    return e.message;
+  }
+  return e instanceof Error ? e.message : "Erreur inconnue";
+}
+
+/** Texte court d'une erreur de couche (détail du backend si disponible). */
+export function layerErrorText(e: Error): string {
+  const raw = e instanceof ApiError && typeof e.detail === "string" ? e.detail : e.message;
+  return raw.replace(/[\s:]+$/, "");
+}
+
 /** Les raisons de rejet du backend commencent par un code : "[LEE_SIDE] Dévent : …". */
 export function splitReasonCode(reason: string): { code: string | null; text: string } {
   const m = /^\[([A-Z0-9_]+)\]\s*(.*)$/s.exec(reason.trim());

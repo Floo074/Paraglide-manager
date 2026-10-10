@@ -19,6 +19,11 @@
 .map--drawing .leaflet-interactive {
   cursor: crosshair !important;
 }
+/* pose du déco / dessin de zone : un clic sur un marqueur (balise, site) doit atteindre la carte */
+.map--drawing .leaflet-marker-icon,
+.map--drawing .leaflet-marker-shadow {
+  pointer-events: none;
+}
 
 /* contrôles superposés */
 .map-overlay {
@@ -123,8 +128,54 @@
   font-size: 0.86rem;
   font-weight: 600;
   box-shadow: var(--shadow-lg);
-  white-space: nowrap;
   max-width: calc(100% - 140px);
+  width: max-content;
+  line-height: 1.25;
+  text-align: center;
+}
+/* couche en échec (source indisponible) : bandeau en bas de la carte */
+.map-alert {
+  position: absolute;
+  z-index: 655;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 6px 6px 6px 12px;
+  border-radius: 12px;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--marginal) 45%, transparent);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+.map-alert > svg {
+  flex: 0 0 auto;
+  color: var(--marginal);
+}
+.map-alert .btn {
+  flex: 0 0 auto;
+}
+.map-alert__detail {
+  color: var(--text-muted);
+}
+.planner .map-alert {
+  bottom: calc(var(--sheet-h) + 30px);
+}
+@media (min-width: 960px) {
+  .planner .map-alert {
+    bottom: 30px;
+  }
+}
+@media (max-width: 600px) {
+  .map-alert__detail {
+    display: none;
+  }
 }
 .map-hint .icon-btn {
   color: var(--bg);

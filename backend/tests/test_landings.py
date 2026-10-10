@@ -34,7 +34,7 @@ from app.engine.scenario import build_context, run_scenario
 from app.engine.terrain import TakeoffTerrain
 from app.main import create_app
 from app.models import PlanRequest, Site
-from app.providers.base import ProviderDisabled
+from app.providers.base import ProviderDisabled, ProviderError
 from app.providers.landing_spots import (
     OverpassLandings,
     build_spots,
@@ -556,3 +556,18 @@ def test_plan_request_validation():
     assert r.custom_takeoff.orientations == ["SW", "W"]
     with pytest.raises(ValueError):
         PlanRequest(**base, mode="custom_takeoff", custom_takeoff={"lat": 45.8, "lon": 6.2, "orientations": ["XX"]})
+
+
+def test_api_source_down_in_live_is_503_json(monkeypatch):
+    """Source indispensable indisponible en live (ConnectTimeout, quota) : 503 JSON, jamais une 500 (contrat)."""
+
+    async def down(self, points):
+        raise ProviderError("Open-Meteo Elevation indisponible : ConnectTimeout")
+
+    monkeypatch.setattr(DataService, "elevations", down)
+    with TestClient(create_app(Settings(_env_file=None, data_mode="live", openaip_api_key=None))) as c:
+        r = c.get("/api/forecast/point", params={"lat": 45.83, "lon": 6.22, "time": "2026-10-10T08:00:00Z"})
+        g = c.get("/api/forecast/grid", params={"bbox": "6.1,45.7,6.3,45.9", "layer": "wind"})
+    for res in (r, g):
+        assert res.status_code == 503, res.text
+        assert res.headers["content-type"].startswith("application/json") and "indisponible" in res.json()["detail"]

@@ -636,18 +636,34 @@ class DataService:
         merged = merge_sites(groups)
         # altitudes manquantes / incohérentes (règle PGE d)
         need = [s for s in merged if s.source != "fixture"]
+        dem_ok = True
         if need:
-            elevs, emode = await self.elevations([(s.lat, s.lon) for s in need])
-            for s, e in zip(need, elevs, strict=True):
-                if s.elevation_m <= 0:
-                    s.elevation_m = round(e)
-                elif emode == "live" and abs(s.elevation_m - e) > 150 and s.kind != "landing":
-                    warnings.append(f"Altitude de « {s.name} » corrigée par le MNT ({s.elevation_m:.0f} → {e:.0f} m).")
-                    s.elevation_m = round(e)
+            try:
+                elevs, emode = await self.elevations([(s.lat, s.lon) for s in need])
+            except ProviderError as e:
+                # MNT indisponible en live (quota, réseau) : les sites restent servis avec l'altitude de leur
+                # source ; un site sans altitude est écarté (jamais d'altitude inventée) ; résultat en cache court.
+                dem_ok = False
+                unknown = {s.id for s in need if s.elevation_m <= 0}
+                merged = [s for s in merged if s.id not in unknown]
+                warnings.append(
+                    f"MNT indisponible ({e}) : altitudes des sites non vérifiées"
+                    + (f", {len(unknown)} site(s) sans altitude écarté(s)." if unknown else ".")
+                )
+            else:
+                for s, el in zip(need, elevs, strict=True):
+                    if s.elevation_m <= 0:
+                        s.elevation_m = round(el)
+                    elif emode == "live" and abs(s.elevation_m - el) > 150 and s.kind != "landing":
+                        warnings.append(
+                            f"Altitude de « {s.name} » corrigée par le MNT ({s.elevation_m:.0f} → {el:.0f} m)."
+                        )
+                        s.elevation_m = round(el)
         associate_landings(merged)
         result = (merged, meta, refs, warnings)
-        # repli (échec live transitoire) : cache court, pour ne pas figer les sites de démo pendant 24 h
-        self.sites_cache.set(key, result, ttl_s=None if live_any or self.s.data_mode == "mock" else 600)
+        # repli (échec live transitoire, MNT absent) : cache court, pour ne pas figer ce résultat pendant 24 h
+        full = (live_any and dem_ok) or self.s.data_mode == "mock"
+        self.sites_cache.set(key, result, ttl_s=None if full else 600)
         return result
 
     # ------------------------------------------------------------------------------------------

@@ -41,12 +41,13 @@ export function LandingCandidateMarkers({
         if (skipIds?.has(c.site.id)) return null;
         const sel = selectedId === c.site.id;
         const k = LANDING_KIND[c.kind];
+        // au-dessus des balises (800), sous le déco libre (1200) et les points du plan (900+)
         return (
           <Marker
             key={c.site.id}
             position={[c.site.lat, c.site.lon]}
             icon={landingCandidateIcon(c.kind, i + 1, sel)}
-            zIndexOffset={sel ? 1000 : 600 - i}
+            zIndexOffset={sel ? 1100 : 860 - i}
             title={`${i + 1}. ${c.site.name}`}
             alt={`Atterrissage candidat ${i + 1} : ${c.site.name} (${k.label})`}
             eventHandlers={onSelect ? { click: () => onSelect(c.site.id) } : undefined}

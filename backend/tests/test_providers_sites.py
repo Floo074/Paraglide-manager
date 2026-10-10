@@ -238,3 +238,31 @@ async def test_fetch_http_error_is_provider_error():
         with pytest.raises(ProviderError) as ei:
             await ParaglidingEarthSites(c, "https://www.paraglidingearth.com/api/geojson").fetch((6, 45, 7, 46))
     assert ei.value.http_status == 503
+
+
+async def test_live_sites_served_when_dem_quota_exhausted(raw):
+    """Quota Open-Meteo épuisé (MNT indisponible) en live : les sites PGE restent servis avec leur altitude,
+    les sites sans altitude sont écartés (jamais d'altitude inventée) et le résultat n'est gardé que 10 min."""
+    import time
+
+    from app.config import Settings
+    from app.services import DataService
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "paraglidingearth" in request.url.host:
+            return httpx.Response(200, json=copy.deepcopy(raw))
+        if "open-meteo" in request.url.host:
+            return httpx.Response(429, text=(FIX / "open_meteo_429.json").read_text(encoding="utf-8"))
+        return httpx.Response(404)
+
+    settings = Settings(_env_file=None, data_mode="live", openaip_api_key=None, ffvl_api_key=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        ds = DataService(settings, client=c)
+        bbox = (6.05, 45.75, 6.35, 45.95)
+        sites, _, refs, warnings = await ds.sites(bbox)
+    names = {s.name for s in sites}
+    assert "Montmin (Col de la Forclaz)" in names and "Lancrenaz" not in names and "Col du Varo" not in names
+    assert all(s.elevation_m > 0 for s in sites) and refs[0].mode == "live"
+    assert any(w.startswith("MNT indisponible") and "2 site(s) sans altitude" in w for w in warnings)
+    expires, _ = ds.sites_cache._data[("sites", "live", tuple(round(x, 2) for x in bbox))]
+    assert expires - time.monotonic() <= 600 + 1

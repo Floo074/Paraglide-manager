@@ -32,6 +32,7 @@ from app.models import (
 )
 from app.plan_service import PlanService
 from app.providers.airspaces import airspace_feature
+from app.providers.base import ProviderError
 from app.providers.sensitive import area_feature
 from app.providers.synthetic_terrain import terrain_elevation
 from app.services import DataService, build_timeline
@@ -79,6 +80,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(ValueError)
     async def value_error_handler(_: Request, exc: ValueError):
         return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(ProviderError)
+    async def provider_error_handler(_: Request, exc: ProviderError):
+        # source indispensable indisponible en live (réseau, quota…) : 503 JSON, jamais une 500
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     def data(request: Request) -> DataService:
         return request.app.state.data

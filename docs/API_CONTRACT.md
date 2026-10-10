@@ -225,6 +225,12 @@ interface FlightPlan {
 
 ## Endpoints
 
+Erreurs communes à toutes les routes : `422` requête invalide ; `503` JSON `{ "detail": string }` quand une source
+indispensable est indisponible en `live` (réseau, quota HTTP 429 : le message dit quand la source sera réessayée).
+Le front affiche ce `detail` au pilote et ne bascule PAS en démonstration sur un 503 JSON (seulement si le backend est
+injoignable : réseau, 502/504, réponse non JSON). En `live`, `GET /api/sites` reste servi si seul le MNT manque
+(altitudes de la source gardées, sites sans altitude écartés).
+
 ### `GET /api/health`
 `{ "status": "ok", "data_mode": DataMode, "version": string }`
 

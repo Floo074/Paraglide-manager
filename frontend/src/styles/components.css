@@ -403,17 +403,23 @@
 }
 .chips--horizon {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .chips--horizon .chip {
   padding: 4px 4px;
+  min-width: 0;
+}
+/* heure cible longue (« dim. 11 oct. 10:45 ») : retour à la ligne plutôt que débordement */
+.chips--horizon .chip__sub {
+  white-space: normal;
+  text-align: center;
 }
 @media (min-width: 420px) {
   .chips--horizon {
-    grid-template-columns: repeat(8, 1fr);
+    grid-template-columns: repeat(8, minmax(0, 1fr));
   }
   .planner__panel .chips--horizon {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

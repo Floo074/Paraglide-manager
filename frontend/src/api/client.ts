@@ -2,9 +2,12 @@
  * Client de l'API Paraglide Manager (docs/API_CONTRACT.md).
  *
  * - `VITE_USE_MOCKS=true` → toutes les requêtes sont servies par le moteur de démonstration.
- * - Sinon, appels réels sur `/api` ; si le backend ne répond pas (réseau, timeout, 502/503/504,
- *   réponse non JSON), bascule automatique en démonstration avec un bandeau, et nouvelles
+ * - Sinon, appels réels sur `/api` ; si le backend ne répond pas (réseau, timeout, 502/504,
+ *   5xx non JSON), bascule automatique en démonstration avec un bandeau, et nouvelles
  *   tentatives périodiques.
+ * - Un 503 JSON vient du backend lui-même : une source indispensable (Open-Meteo…) est
+ *   indisponible en live (contrat). L'erreur est affichée telle quelle, sans bascule en
+ *   démonstration (des plans synthétiques à la place d'une vraie prévision seraient trompeurs).
  */
 import { ApiError, describeErrorDetail } from "./errors";
 import type {
@@ -110,12 +113,14 @@ async function liveRequest<T>(method: string, path: string, qs: URLSearchParams,
   }
   const type = res.headers.get("content-type") ?? "";
   const isJson = type.includes("json");
-  if ([502, 503, 504].includes(res.status) || (res.status >= 500 && !isJson)) throw new BackendUnavailable(`HTTP ${res.status}`);
+  if ([502, 504].includes(res.status) || (res.status >= 500 && !isJson)) throw new BackendUnavailable(`HTTP ${res.status}`);
   if (!res.ok) {
     let detail: unknown = null;
     if (isJson) detail = (await res.json().catch(() => null))?.detail ?? null;
     else if (res.status === 404 && type.includes("html")) throw new BackendUnavailable("pas d'API derrière /api");
-    throw new ApiError(res.status, describeErrorDetail(detail) ?? `Erreur ${res.status}`, detail);
+    const text = describeErrorDetail(detail);
+    if (res.status === 503) throw new ApiError(503, text ? `Source de données indisponible : ${text.replace(/[\s:]+$/, "")}` : "Source de données indisponible : réessaie plus tard.", detail);
+    throw new ApiError(res.status, text ?? `Erreur ${res.status}`, detail);
   }
   if ((opts.as ?? "json") === "text") return (await res.text()) as T;
   // un hébergement statique sans proxy renvoie index.html (200, text/html) pour /api/…
@@ -166,15 +171,23 @@ export async function checkBackend(timeoutMs = 3000): Promise<boolean> {
 
 export const getHealth = () => request<HealthResponse>("GET", "/health");
 export const getSources = (signal?: AbortSignal) => request<SourcesResponse>("GET", "/sources", { signal });
+/**
+ * Couches cartographiques : en live, le premier appel d'une zone enchaîne les sources externes
+ * (ParaglidingEarth puis MNT pour les sites, ~5 s chacune au pire) ; un délai trop court ferait
+ * basculer toute l'application en démonstration pour une simple lenteur.
+ */
+const LAYER_TIMEOUT_MS = 25_000;
 export const getSites = (bbox: BBoxZone, signal?: AbortSignal) =>
-  request<SitesResponse>("GET", "/sites", { query: { bbox: bboxParam(bbox) }, signal }).then((r) => ({ sites: r.sites.map(normalizeSite) }));
+  request<SitesResponse>("GET", "/sites", { query: { bbox: bboxParam(bbox) }, signal, timeoutMs: LAYER_TIMEOUT_MS }).then((r) => ({ sites: r.sites.map(normalizeSite) }));
 export const getBeacons = (bbox: BBoxZone, signal?: AbortSignal) =>
-  request<BeaconsResponse>("GET", "/beacons", { query: { bbox: bboxParam(bbox) }, signal }).then((r) => ({ beacons: r.beacons.map(normalizeBeacon) }));
+  request<BeaconsResponse>("GET", "/beacons", { query: { bbox: bboxParam(bbox) }, signal, timeoutMs: LAYER_TIMEOUT_MS }).then((r) => ({
+    beacons: r.beacons.map(normalizeBeacon),
+  }));
 export const getAirspaces = (bbox: BBoxZone, signal?: AbortSignal) =>
-  request<AirspaceFeatureCollection>("GET", "/airspaces", { query: { bbox: bboxParam(bbox) }, signal });
+  request<AirspaceFeatureCollection>("GET", "/airspaces", { query: { bbox: bboxParam(bbox) }, signal, timeoutMs: LAYER_TIMEOUT_MS });
 /** `time` : paramètre optionnel accepté par le backend pour évaluer `active_now` (défaut : maintenant). */
 export const getSensitiveAreas = (bbox: BBoxZone, time?: string, signal?: AbortSignal) =>
-  request<SensitiveAreaFeatureCollection>("GET", "/sensitive-areas", { query: { bbox: bboxParam(bbox), time }, signal });
+  request<SensitiveAreaFeatureCollection>("GET", "/sensitive-areas", { query: { bbox: bboxParam(bbox), time }, signal, timeoutMs: LAYER_TIMEOUT_MS });
 export const getForecastPoint = (lat: number, lon: number, time: string, signal?: AbortSignal) =>
   request<ForecastPointResponse>("GET", "/forecast/point", { query: { lat, lon, time }, signal, timeoutMs: 20_000 });
 export const getForecastGrid = (
