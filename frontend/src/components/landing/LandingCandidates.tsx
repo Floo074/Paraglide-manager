@@ -5,7 +5,7 @@ import { COMMUNITY_USAGE_LABEL, LANDING_KIND } from "../../config/labels";
 import { landingLimits } from "../../config/thresholds";
 import { formatAltitude, formatNumber } from "../../utils/format";
 import { haversineKm, type Pt } from "../../utils/geo";
-import { formatCandidateWind, known } from "../../utils/glide";
+import { alongWindKind, formatCandidateWind, known } from "../../utils/glide";
 import { glideVerdict } from "../../utils/landings";
 import { GlideWindArrow } from "../common/GlideWindArrow";
 import { WindText } from "../common/WindText";
@@ -116,7 +116,7 @@ export function LandingCandidateCard({
         </span>
         {dist !== null ? <span className="num">{formatNumber(dist, 1)} km</span> : null}
         {known(c.wind_along_track_kmh) ? (
-          <span className="lc-glide-wind" title="Vent sur le plané vers ce terrain, le long de la route (+ = dans le dos, − = de face)">
+          <span className={`lc-glide-wind lc-glide-wind--${alongWindKind(c.wind_along_track_kmh)}`} title="Vent sur le plané vers ce terrain, le long de la route (+ = dans le dos, − = de face)">
             <GlideWindArrow kmh={c.wind_along_track_kmh} size={18} />
             <span className="muted">Plané</span> <span className="num">{formatCandidateWind(c.wind_along_track_kmh)}</span>
           </span>

@@ -5,7 +5,7 @@ import { altitudeColor } from "../../utils/colors";
 import { waypointTypeLabel } from "../../utils/exports";
 import { formatAltitude, formatNumber, formatTime } from "../../utils/format";
 import { bearingDeg } from "../../utils/geo";
-import { alongWindKind, formatAlongWind, formatSignedKmh, formatWindCredit, glideMapSummary, known, showCalmRatio } from "../../utils/glide";
+import { alongWindKind, formatAlongWind, formatWindCredit, glideMapSummary, known, showCalmRatio } from "../../utils/glide";
 import { glideWindIcon, waypointIcon } from "./icons";
 
 /** Route 3D colorée par altitude (segments), avec liseré pour la lisibilité sur le relief. */
@@ -160,7 +160,7 @@ export function GlideWindMarker({ plan }: { plan: FlightPlan }) {
   const kind = alongWindKind(g.wind_along_track_kmh);
   const cap = bearingDeg(plan.takeoff, plan.landing);
   const sub = showCalmRatio(g) ? `finesse ${formatNumber(g.calm_available_ratio, 1)} → ${formatNumber(g.available_ratio, 1)}` : null;
-  const icon = glideWindIcon(kind, kind === "head" ? cap + 180 : cap, formatSignedKmh(g.wind_along_track_kmh), sub);
+  const icon = glideWindIcon(kind, kind === "head" ? cap + 180 : cap, formatAlongWind(g.wind_along_track_kmh), sub);
   const credit = formatWindCredit(g.wind_along_track_kmh, g.wind_credit_kmh);
   return (
     <Marker

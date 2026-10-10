@@ -113,7 +113,7 @@ export function PlanMap({ plan, level, now }: { plan: FlightPlan; level: Difficu
                 baseLayer={baseLayer}
                 onBaseLayer={setBaseLayer}
                 overlays={[
-                  { id: "glide", label: "Rayons de plané vers les atterros", checked: ov.glide, onChange: (v) => setOv({ ...ov, glide: v }) },
+                  { id: "glide", label: "Rayons de plané et vent sur le plané", checked: ov.glide, onChange: (v) => setOv({ ...ov, glide: v }) },
                   { id: "airspaces", label: "Espaces aériens", checked: ov.airspaces, onChange: (v) => setOv({ ...ov, airspaces: v }) },
                   { id: "sensitive", label: "Zones sensibles (faune, parcs)", checked: ov.sensitive, onChange: (v) => setOv({ ...ov, sensitive: v }) },
                   { id: "beacons", label: "Balises (celles du plan entourées)", checked: ov.beacons, onChange: (v) => setOv({ ...ov, beacons: v }) },

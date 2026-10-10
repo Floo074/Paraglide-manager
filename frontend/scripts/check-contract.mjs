@@ -87,6 +87,12 @@ function checkPlan(where, p) {
   const la = p.landing_analysis ?? [];
   check(la.length <= 8, `${where}: landing_analysis > 8 (${la.length})`);
   if (la.length) check(la[0].site.id === p.landing.id, `${where}: landing_analysis[0] (${la[0].site.id}) ≠ atterro du plan (${p.landing.id})`);
+  // §14 (CDC rév. 5) : part retenue ≤ composante brute (arrière : crédit partiel ; face : majorée par les rafales)
+  const g = p.glide;
+  check(g.calm_available_ratio > 0, `${where}: glide.calm_available_ratio ${g.calm_available_ratio}`);
+  check(g.wind_credit_kmh <= g.wind_along_track_kmh + 0.11, `${where}: glide.wind_credit_kmh ${g.wind_credit_kmh} > wind_along_track_kmh ${g.wind_along_track_kmh}`);
+  check(typeof g.comment === "string" && g.comment.length > 0, `${where}: glide.comment vide`);
+  if (g.required_ratio > 0) check(g.expected_arrival_height_m !== null, `${where}: glide.expected_arrival_height_m null hors top landing`);
   for (const c of la) {
     checkSite(`${where}.landing_analysis`, c.site);
     check(c.kind === c.site.landing_kind, `${where}: candidat ${c.site.id} kind ${c.kind} ≠ site.landing_kind ${c.site.landing_kind}`);

@@ -11,7 +11,7 @@ import {
   formatArrivalHeight,
   formatGlideMarginPct,
   formatWindCredit,
-  formatWindGain,
+  formatWindEffect,
   glideMarginLevel,
   glideTone,
   known,
@@ -66,18 +66,22 @@ export function GlideBlock({ plan, level }: { plan: FlightPlan; level: Difficult
           <div className="facts-grid glide-facts">
             <div className="fact">
               <span className="fact__k">Finesse requise / disponible</span>
-              <span className={`fact__v num ${MARGIN_TEXT[margin]}`}>
-                {formatNumber(g.required_ratio, 1)} <span className="faint">/</span> {formatNumber(g.available_ratio, 1)}
-              </span>
-              <span className="fact__s">
+              <span className="fact__v num">
+                <span className={MARGIN_TEXT[margin]}>
+                  {formatNumber(g.required_ratio, 1)} <span className="faint">/</span> {formatNumber(g.available_ratio, 1)}
+                </span>
                 {calm ? (
                   <>
+                    {" "}
                     <s className="glide-calm" title="Finesse de calcul sans vent (même aile, même niveau)">
                       {formatNumber(g.calm_available_ratio, 1)}
-                    </s>{" "}
-                    sans vent ({formatWindGain(g.calm_available_ratio, g.available_ratio)}) ·{" "}
+                    </s>
+                    <span className="sr-only"> sans vent</span>
                   </>
                 ) : null}
+              </span>
+              <span className="fact__s">
+                {calm ? `${formatWindEffect(g.calm_available_ratio, g.available_ratio)} (barré : sans vent) · ` : ""}
                 {formatGlideMarginPct(g.required_ratio, g.available_ratio)}
               </span>
             </div>

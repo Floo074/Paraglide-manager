@@ -56,6 +56,7 @@ from app.engine.landings import (
 )
 from app.engine.routing import (
     GlideCheck,
+    projector_for,
     Route,
     alternates_waypoints,
     apply_detours,
@@ -1925,18 +1926,23 @@ MAX_ALTERNATES_XC = 5
 XC_ALTERNATE_SAMPLE_KM = 2.0
 
 
-def _alternate_origins(td: TakeoffData, cand: Candidate) -> list[tuple[float, float, float, str] | None]:
-    """Points d'où un secours peut être rejoint (7.1) : le déco (None) pour un plouf ou du soaring ; en local, chaque
-    déclencheur à son altitude de point bas (déclencheur − 150 m) ; en cross, la route tous les 2 km à l'altitude de
-    sécurité (plafond utile − 300 m, comme le contrôle du cône)."""
-    out: list[tuple[float, float, float, str] | None] = [None]
+Origin = tuple[float, float, float, str] | None
+
+
+def _alternate_origins(td: TakeoffData, cand: Candidate) -> list[tuple[Origin, datetime]]:
+    """Points d'où un secours peut être rejoint (7.1), avec l'heure de passage (vent rencontré, §14.1) : le déco
+    (None) pour un plouf ou du soaring ; en local, chaque déclencheur à son altitude de point bas (déclencheur − 150 m) ;
+    en cross, la route tous les 2 km à l'altitude de sécurité (plafond utile − 300 m, comme le contrôle du cône)."""
+    out: list[tuple[Origin, datetime]] = [(None, cand.start)]
     route = cand.route
     if cand.variant == "local_thermal":
         for w in route.waypoints:
             if w.type == "thermal_trigger":
-                out.append((w.lat, w.lon, max(td.site.elevation_m, w.altitude_m - 150.0), w.name))
+                out.append(((w.lat, w.lon, max(td.site.elevation_m, w.altitude_m - 150.0), w.name),
+                            quarter(cand.start + timedelta(minutes=w.eta_min or 0.0))))  # fmt: skip
     elif cand.variant == "xc":
         low = cand.usable - rules.SAFETY_ALT_BELOW_CEILING_M
+        total = max(route.distance_km, 0.1)
         cum = 0.0
         for a, b in pairwise(route.coords[:-1]):
             seg = haversine_km(a[1], a[0], b[1], b[0])
@@ -1944,7 +1950,8 @@ def _alternate_origins(td: TakeoffData, cand: Candidate) -> list[tuple[float, fl
             for i in range(1, n + 1):
                 f = i / n
                 km = cum + f * seg
-                out.append((a[1] + f * (b[1] - a[1]), a[0] + f * (b[0] - a[0]), low, f"la route (km {km:.0f})"))
+                t = quarter(cand.start + timedelta(minutes=cand.duration_min * km / total))
+                out.append(((a[1] + f * (b[1] - a[1]), a[0] + f * (b[0] - a[0]), low, f"la route (km {km:.0f})"), t))
             cum += seg
     return out
 
@@ -1953,29 +1960,32 @@ def _apply_alternates(ctx: DataContext, td: TakeoffData, cand: Candidate) -> Non
     """Secours publiés (revue 7.1, 7.12) : seulement les atterros atteignables avec la marge (r ≤ 1, relief dégagé)
     depuis le déco (plouf, soaring) ou depuis au moins un point de la route à son altitude de sécurité (local, cross),
     et dont le vent d'arrivée reste dans les seuils du niveau. Les autres sortent des `alternate_landings`, des
-    waypoints, du briefing et de `landing_analysis`."""
+    waypoints, du briefing et de `landing_analysis`. Le plané retenu (vent rencontré, §14) est celui que publie
+    `landing_analysis` : même calcul partout."""
     level = cand.level
     takeoff, landing = cand.takeoff, cand.landing
     pool = cand.route.used_landings if cand.variant == "xc" else cand.alternates
     if cand.variant == "xc":
         pool = [*pool, *[x for x in cand.alternates if x.id not in {p.id for p in pool}]]
     origins = _alternate_origins(td, cand)
+    proj = projector_for(ctx, takeoff)
     evals: list[tuple[float, LandingEval]] = []
     seen: set[str] = set()
     for s in pool:
         if s.id in (landing.id, takeoff.id) or s.id in seen:
             continue
         seen.add(s.id)
-        best: tuple[float, tuple[float, float, float, str] | None] | None = None
-        for o in origins:
+        best: tuple[float, Origin, datetime, GlideCheck, list[tuple[float, float]]] | None = None
+        for o, t in origins:
             lat, lon, alt = (takeoff.lat, takeoff.lon, takeoff.elevation_m) if o is None else o[:3]
-            g = glide_to(ctx, lat, lon, alt, s, level, cand.wing, cand.glide_wind)
+            path = path_for(ctx, proj, lat, lon, s)[0] if o is None else []
+            g = glide_to(ctx, lat, lon, alt, s, level, cand.wing, cand.glide_wind, path=path, t=t)
             if g.margin_ok and (best is None or g.ratio < best[0]):
-                best = (g.ratio, o)
+                best = (g.ratio, o, t, g, path)
         if best is None:
             continue  # hors de portée de partout : jamais publié comme secours
         ev = evaluate_spot(ctx, takeoff, spot_for(ctx, s), level, cand.wing, cand.glide_wind, cand.landing_time,
-                           cand.policy, origin=best[1])  # fmt: skip
+                           cand.policy, origin=best[1], t_origin=best[2], path=best[4], glide=best[3])  # fmt: skip
         if ev.usable:
             evals.append((best[0], ev))
     evals.sort(key=lambda x: (x[0], -x[1].score))
@@ -2009,6 +2019,17 @@ def _window_check(
         if rl > 1.0 and why is None:
             why = "vent trop fort à l'atterro à l'arrivée"
         r = max(r, rl)
+    if why is None and not (ridge and td.top_landing) and td.landing.id != td.site.id:
+        # §14 : plané direct déco → atterro principal au vent rencontré à t (vent de face qui forcit, brise qui tourne)
+        field = GlideField(ctx, td.site, td.tl, t, tw=tw, main_landing=td.landing, main_ltl=td.ltl,
+                           main_big_valley=td.big_valley)  # fmt: skip
+        plouf = plouf_minutes(td.site.elevation_m - td.landing.elevation_m)
+        g = _direct_glide(ctx, td, cand.route, level, cand.wing, field, t,
+                          end if cand.variant == "plouf" else t + timedelta(minutes=plouf))  # fmt: skip
+        if g.ratio > 1.0:
+            w = g.wind
+            face = " (vent de face)" if w is not None and w.along_kmh <= -5 else ""
+            why = f"plané vers {td.landing.name} impossible{face}"
     if why is None and td.tl.at(t).precipitation_mm_h >= rules.NOGO["precip_mm_h"]:
         why = "pluie"
     if why is None and tw.angle.category == "tail" and tw.speed_kmh > tail_max:
@@ -2262,7 +2283,6 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         for b in ctx.beacons
         if haversine_km(b.lat, b.lon, cand.takeoff.lat, cand.takeoff.lon) <= rules.BEACON_SEARCH_RADIUS_KM
     ][:10]
-    g = cand.route.glide
     plan_id = _plan_id(ctx, cand)
     if cand.window_start is None:
         cand.window_start = cand.start
@@ -2286,6 +2306,7 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         ctx, cand.takeoff, cand.landing, cand.alternates, cand.level, cand.wing, cand.glide_wind, cand.landing_time,
         cand.policy, cand.landing_wind, extra=cand.landing_sel.evals if cand.landing_sel is not None else None,
         alt_evals=cand.alt_evals, main_classic=True, pair=is_source_pair(cand.takeoff, cand.landing),
+        t_origin=cand.start, main_path=cand.route.glide_path, main_glide=cand.ref_glide,
     )  # fmt: skip
     cand.landing_warnings = analysis[0].warnings if analysis and analysis[0].site.id == cand.landing.id else []
     return FlightPlan(
@@ -2314,11 +2335,7 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         distance_km=round(cand.route.distance_km, 1),
         est_duration_min=round(cand.duration_min),
         max_altitude_m=round(cand.max_alt),
-        glide=Glide(
-            required_ratio=round(g.required_ratio, 2),
-            available_ratio=round(g.available_ratio, 2),
-            margin_ok=bool(g.margin_ok),
-        ),
+        glide=plan_glide(cand),
         weather=PlanWeather(takeoff=snap_to, landing=snap_ldg, timeline=timeline),
         thermals=thermals,
         sounding=sounding_from_analysis(tw.hour),
@@ -2332,6 +2349,23 @@ def to_flight_plan(ctx: DataContext, cand: Candidate, rank: int, sources) -> Fli
         confidence=round(cand.confidence, 2),
         sources=sources,
         links=PlanLinks(gpx=f"/api/plans/{plan_id}/gpx", xctsk=f"/api/plans/{plan_id}/xctsk"),
+    )
+
+
+def plan_glide(cand: Candidate) -> Glide:
+    """FlightPlan.glide (§14.7) : le pire plané du lot 6.11, tous les champs décrivent CE plané."""
+    g = cand.route.glide
+    w = g.wind
+    return Glide(
+        required_ratio=round(g.required_ratio, 2),
+        available_ratio=round(g.available_ratio, 2),
+        margin_ok=bool(g.margin_ok),
+        calm_available_ratio=round(g.calm_ratio, 2),
+        wind_along_track_kmh=0.0 if w is None else round(w.along_kmh, 1),
+        wind_credit_kmh=0.0 if w is None else round(w.credit_kmh, 1),
+        expected_arrival_height_m=None if w is None or g.expected_arrival_m is None else round(g.expected_arrival_m),
+        comment=glide_comment(g, g.landing_name or cand.landing.name, cand.level, cand.wing, g.detour_zones,
+                              cand.high_arrival_m),  # fmt: skip
     )
 
 

@@ -101,6 +101,14 @@ export function formatWindGain(calm: number, available: number): string {
   return p > 0 ? `+${p}${NBSP}%` : `${MINUS}${-p}${NBSP}%`;
 }
 
+/** Effet du vent en clair : « +21 % grâce au vent », « −35 % à cause du vent », « sans effet du vent ». */
+export function formatWindEffect(calm: number, available: number): string {
+  const gain = formatWindGain(calm, available);
+  if (!gain) return "";
+  if (gain === "=") return "sans effet du vent";
+  return gain.startsWith("+") ? `${gain} grâce au vent` : `${gain} à cause du vent`;
+}
+
 /** La valeur en air calme mérite-t-elle d'être montrée (différente de la disponible) ? */
 export function showCalmRatio(g: Pick<FlightPlanGlide, "calm_available_ratio" | "available_ratio">): boolean {
   return known(g.calm_available_ratio) && g.calm_available_ratio > 0 && Math.abs(g.calm_available_ratio - g.available_ratio) >= 0.05;

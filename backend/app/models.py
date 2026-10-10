@@ -267,9 +267,16 @@ class ScoreItem(_Model):
 
 
 class Glide(_Model):
+    """Plané publié (CDC §14.7) : le pire cas du lot 6.11 ; tous les champs décrivent ce même plané."""
+
     required_ratio: float
-    available_ratio: float
+    available_ratio: float  # vent rencontré, crédit du vent arrière, accélérateur du niveau (§14.1-14.3), × f du kind
     margin_ok: bool
+    calm_available_ratio: float = 0.0  # wing × k × f : même k, même f, vent nul, bras hauts
+    wind_along_track_kmh: float = 0.0  # composante BRUTE du vent rencontré (moyenne des branches) ; + = arrière
+    wind_credit_kmh: float = 0.0  # composante RETENUE dans available_ratio (arrière crédité en partie, face × rafales)
+    expected_arrival_height_m: float | None = None  # §14.4 : vent prévu à 100 %, 0,90 × polaire ; null en top landing
+    comment: str = ""  # une ou deux phrases en français (§14.7)
 
 
 class PlanWeather(_Model):
@@ -326,6 +333,7 @@ class LandingCandidate(_Model):
     score: float  # 0..100
     required_glide_ratio: float  # finesse sol nécessaire depuis le déco (vent compris)
     available_glide_ratio: float  # finesse de calcul retenue (prudente, facteur du kind compris)
+    wind_along_track_kmh: float | None = None  # composante du vent sur le plané vers ce candidat (§14.7), + = arrière
     arrival_height_m: float  # hauteur estimée à l'arrivée au-dessus de l'atterro
     size_m: SizeM | None = None
     slope_pct: float | None = None
